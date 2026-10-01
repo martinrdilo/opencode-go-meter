@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Tool caches
+.atl/
+
+# Build artifacts
+dist/
+*.shell-extension.zip
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
