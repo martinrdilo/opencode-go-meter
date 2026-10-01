@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Run the ocgo CLI straight from the repository, without installation."""
+
+import os
+import sys
+
+_CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _CORE_DIR not in sys.path:
+    sys.path.insert(0, _CORE_DIR)
+
+from ocgo.cli import main  # noqa: E402  (import after sys.path setup)
+
+if __name__ == "__main__":
+    raise SystemExit(main())
