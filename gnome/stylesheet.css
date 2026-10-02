@@ -1,0 +1,46 @@
+/* OpenCode Go Meter — panel and popup styling. */
+
+.ocgo-window-name {
+    opacity: 0.65;
+}
+
+.ocgo-separator {
+    opacity: 0.35;
+    padding: 0 6px;
+}
+
+.ocgo-pct {
+    font-weight: bold;
+    margin-left: 4px;
+    min-width: 2.6em;
+}
+
+.ocgo-green {
+    color: #33d17a;
+}
+
+.ocgo-amber {
+    color: #f5c211;
+}
+
+.ocgo-red {
+    color: #e01b24;
+}
+
+.ocgo-header {
+    font-weight: bold;
+}
+
+.ocgo-warning {
+    color: #f5c211;
+}
+
+.ocgo-countdown {
+    margin-left: 14px;
+    min-width: 7em;
+}
+
+.ocgo-footer {
+    opacity: 0.6;
+    font-size: 0.9em;
+}
