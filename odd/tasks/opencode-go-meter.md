@@ -38,7 +38,7 @@ The OpenCode Go console (`opencode.ai/console`) is the only place showing the th
 - Mapping:
   - `rolling` ← `fiveHour`, `weekly` ← `week`, `monthly` ← `month`.
   - Micro-cents: `1e-8` USD (1,200,000,000 = $12).
-  - **percent = round(used / limit × 100), clamped 0–100** — calibrated against the console capture (63.6 → 63, 57.9 → 58). Adjustable in one function.
+  - **percent = round(used / limit × 100), clamped 0–100** — single calibration function; adjust there if the console ever differs by ±1.
   - Monthly has **no `resetsAt`** → its countdown uses `access.endsAt` (subscription renewal, "Renews Oct 11").
   - Countdown format: `Xd Yh` / `Xh Ym` / `Xm` (e.g. `4h 24m`, `3d 0h`, `9d 3h`).
   - Colors: green < 50, amber 50–84, red ≥ 85 (tunable constants).
@@ -61,7 +61,7 @@ Planned, not now:
 - Core: Python 3 stdlib only (no pip deps at runtime). Tests: `unittest` (pytest is NOT installed on this machine).
 - Extension: GJS (ESM), `shell-version: ["50"]`, uuid `opencode-go-meter@martin.local` (local install; widen versions after testing).
 - Cache: `$XDG_CACHE_HOME/ocgo/status.json` (fallback `~/.cache/ocgo/status.json`); schema v1 below; atomic writes; a failed refresh keeps the last good values and records `last_error`.
-- CLI: `ocgo refresh` / `ocgo status [--json] [--no-color]` / `ocgo auth show` / `ocgo --version`. Root `Makefile`: `test` now; `install` / `uninstall` in T5 (no sudo — copies under `~/.local`).
+- CLI: `ocgo refresh` / `ocgo status [--json] [--no-color]` / `ocgo auth show` / `ocgo --version`. Root `Makefile`: `test` now; `install` / `uninstall` in T5 (no sudo — symlinks under `~/.local`).
 - Refresh cadence: every ~5 min (extension-driven) + manual click.
 - TDD mode: OFF (no project/session TDD config). Unit tests are ordinary verification.
 - Delivery: `single-pr` (new local repo; no external gates). Work-unit commits on `feat/gnome-indicator`.
@@ -74,18 +74,20 @@ Planned, not now:
 {"schema":1,"fetched_at":"2026-10-01T23:30:00Z","last_error":null,"last_error_at":null,"product":"go",
  "renewal_ends_at":"2026-10-11T02:26:15Z",
  "windows":{
-   "rolling":{"percent":2,"used_usd":0.18,"limit_usd":12.0,"resets_at":"2026-10-02T03:46:18Z"},
-   "weekly":{"percent":64,"used_usd":19.09,"limit_usd":30.0,"resets_at":"2026-10-05T00:00:00Z"},
-   "monthly":{"percent":58,"used_usd":34.71,"limit_usd":60.0,"resets_at":null}}}
+   "rolling":{"percent":3,"used_usd":0.3103,"limit_usd":12.0,"resets_at":"2026-10-02T03:46:18Z"},
+   "weekly":{"percent":64,"used_usd":19.221,"limit_usd":30.0,"resets_at":"2026-10-05T00:00:00Z"},
+   "monthly":{"percent":58,"used_usd":34.8412,"limit_usd":60.0,"resets_at":null}}}
 ```
+
+Note: `used_usd` / `limit_usd` carry up to 4 decimals (do not assume a fixed number).
 
 ## Tasks
 
 - [x] **T1 — Spike** *(route: inline — credential-sensitive)*: endpoint + credential verified live (HTTP 200; numbers match the console capture). Evidence: see Data source.
-- [ ] **T2 — Core CLI `ocgo`** *(route: delegated writer — 2+ non-trivial files)*: credentials (env > opencode DB), HTTP fetch, compute, cache, `refresh` / `status [--json]`, `auth show` (masked), error handling (no credential, expired, 401, network). Layout: `core/ocgo/` package, `core/bin/ocgo`, `core/tests/` (unittest, no live network), root `Makefile` (`test`). Writer runs `make test` + `--help`; parent runs the live smoke test.
+- [x] **T2 — Core CLI `ocgo`** *(route: delegated writer — 2+ non-trivial files)*: credentials (env > opencode DB), HTTP fetch, compute, cache, `refresh` / `status [--json]`, `auth show` (masked), error handling (no credential, expired, 401, network). Evidence: commits `ff91984`, `9df28eb`, `6eded03`, hardening `6bf2cb8`; `make test` 86 green; live smoke OK (rolling 3% · weekly 64% · monthly 58%); independent verification pass-with-findings → all fixed.
 - [ ] **T3 — GNOME extension** *(route: delegated writer)*: metadata (uuid `opencode-go-meter@martin.local`, shell-version 50), top-bar label `5h X% · 7d Y% · 30d Z%` with per-figure colors, popup: header "OpenCode Go — Renews <date>", three rows (label, colored %, "Resets in …"; simple bar if clean to implement), footer "Updated Xm ago · Refresh". Reads cache; triggers `ocgo refresh` (5 min timer + click).
 - [ ] **T4 — Extension ↔ core wiring** *(route: same writer as T3)*: cache path discovery, `ocgo` path resolution (`~/.local/bin/ocgo` default, pref override), stale/error state.
-- [ ] **T5 — Install / uninstall** *(route: same writer as T3/T4)*: `make install` (CLI under `~/.local`, extension symlink into the GNOME extensions dir), `make uninstall`; README quickstart (Wayland note about enabling the extension).
+- [ ] **T5 — Install / uninstall** *(route: same writer as T3/T4)*: `make install` (CLI symlink `~/.local/bin/ocgo` + extension symlink into the GNOME extensions dir), `make uninstall`; README quickstart (Wayland note about enabling the extension).
 - [ ] **T6 — Verification** *(route: parent, live)*: live `ocgo refresh` + `status` matching the console; extension visible after install; failure injection (no credential, network down, stale cache).
 - [ ] **T7 — Docs** *(route: with T5)*: README final (install, security, architecture, Cinnamon note).
 - [ ] **T8 — (Deferred)** Cinnamon frontend (applet vs tray) — out of current scope.
@@ -106,4 +108,5 @@ Planned, not now:
 ## Progress log
 
 - 2026-10-01 — Repo scaffolded (commits on `main`); T1 verified live (console endpoint HTTP 200; numbers match the capture). Credential strategy: read-only from the opencode DB.
-- Next step: T2 (core CLI) via delegated writer on `feat/gnome-indicator`.
+- 2026-10-01 — T2 closed: core CLI (`ff91984`, `9df28eb`, `6eded03`), hardening (`6bf2cb8`); `make test` 86 green; live smoke OK; independent verification pass → findings fixed.
+- Next step: T3–T5 (GNOME extension + install/uninstall + docs) via delegated writer.
