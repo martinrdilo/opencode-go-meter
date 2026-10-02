@@ -139,7 +139,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._buildPanel();
             this._buildMenu();
             Main.panel.addToStatusArea(
-                this.uuid, this._indicator, this._panelPosition(), this._panelBox());
+                this.uuid, this._indicator, this._panelPosition(), this._panelBoxSetting());
             this._panelBoxId = this._settings.connect(
                 'changed::panel-box', () => this._reposition());
             this._panelPositionId = this._settings.connect(
@@ -262,7 +262,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
 
     // -- panel position ------------------------------------------------------
 
-    _panelBox() {
+    _panelBoxSetting() {
         try {
             const value = this._settings.get_string('panel-box').trim().toLowerCase();
             if (PANEL_BOXES.includes(value))
@@ -295,7 +295,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             // the indicator itself, so drop the registration first.
             delete Main.panel.statusArea[this.uuid];
             Main.panel.addToStatusArea(
-                this.uuid, this._indicator, this._panelPosition(), this._panelBox());
+                this.uuid, this._indicator, this._panelPosition(), this._panelBoxSetting());
         } catch (error) {
             logError('could not move the indicator', error);
         }

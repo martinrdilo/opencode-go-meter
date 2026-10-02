@@ -3,10 +3,13 @@ UUID := opencode-go-meter@martin.local
 BIN_LINK := $(HOME)/.local/bin/ocgo
 EXT_LINK := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
-.PHONY: test install uninstall
+.PHONY: test check-gnome install uninstall
 
 test:
 	cd core && python3 -m unittest discover -s tests -v
+
+check-gnome:
+	python3 gnome/scripts/check_collisions.py
 
 install:
 	mkdir -p $(dir $(BIN_LINK)) $(dir $(EXT_LINK))
