@@ -67,7 +67,7 @@ Planned, not now:
 - Delivery: `single-pr` (new local repo; no external gates). Work-unit commits on `feat/gnome-indicator`.
 - RDD (gentle-ai review): off (global) — ordinary repository policy.
 - Artifacts in English.
-- Dev reload rule (GNOME 50): extension JS modules are cached per session — **code changes require logout/login** (the shell logs "You need to log out for changes to take effect" when `metadata.version` differs; bump it on every code change). Settings changes apply live once the new code is running.
+- Dev reload rule (GNOME 50): extension JS modules are cached per session — **code changes require logout/login** (the shell logs "You need to log out for changes to take effect" when `metadata.version` differs; bump it on every code change). Settings changes apply live once the new code is running. Pre-verify code changes without logging out using a throwaway shell: `dbus-run-session -- gnome-shell --devkit` (isolated session bus; loads user extensions from disk).
 
 ### Cache schema v1 (contract for the extension)
 
@@ -92,7 +92,7 @@ Note: `used_usd` / `limit_usd` carry up to 4 decimals (do not assume a fixed num
 - [ ] **T6 — Verification** *(route: parent, live)*: core live smoke OK (T2: rolling 3% · weekly 64% · monthly 58%). Extension installed + pre-enabled; user confirmed the indicator live after a session restart. Failure injection pending.
 - [x] **T7 — Docs** *(route: with T5)*: README quickstart + security/architecture/Cinnamon notes. Evidence: commit `90c0514`.
 - [ ] **T8 — (Deferred)** Cinnamon frontend (applet vs tray) — out of current scope.
-- [x] **T9 — Panel position preference** *(user request, 2026-10-01; route: delegated writer)*: `panel-box` (left/center/right) + `panel-position` settings, live reposition, prefs UI. Evidence: commit `4a9c8f9`; schema/pack/syntax checks OK; defaults match the previous placement (right/0); reloaded live (disable/enable) with no errors — updates don't need a session restart (shell 50 rebuilds the schema source per `getSettings()` call).
+- [x] **T9 — Panel position preference** *(user request, 2026-10-01; route: delegated writer)*: `panel-box` (left/center/right) + `panel-position` settings, live reposition, prefs UI. Evidence: commits `4a9c8f9` + fix `6103daf`; schema/pack/syntax checks OK; defaults match the previous placement (right/0); verified end-to-end in an isolated devkit shell (see progress log for the v2 collision fix).
 
 ## Acceptance criteria
 
@@ -112,5 +112,6 @@ Note: `used_usd` / `limit_usd` carry up to 4 decimals (do not assume a fixed num
 - 2026-10-01 — Repo scaffolded (commits on `main`); T1 verified live (console endpoint HTTP 200; numbers match the capture). Credential strategy: read-only from the opencode DB.
 - 2026-10-01 — T2 closed: core CLI (`ff91984`, `9df28eb`, `6eded03`), hardening (`6bf2cb8`); `make test` 86 green; live smoke OK; independent verification pass → findings fixed.
 - 2026-10-01 — T3–T5 closed: GNOME extension (`446e26b`), install/uninstall + quickstart docs (`90c0514`); installed in the user session (symlinks) and pre-enabled in dconf; user confirmed the indicator live after the session restart.
-- 2026-10-01 — T9 closed: panel zone/order preferences (`4a9c8f9`); extension reloaded live (disable/enable) — no session restart needed for updates.
-- Next step: user picks zone/order in preferences; optional polish (stretch bar, shell-version widening, T6 failure injection).
+- 2026-10-01 — T9 closed: panel zone/order preferences (`4a9c8f9`); defaults match the previous placement (right/0).
+- 2026-10-02 — v2 bug: `_panelBox` method/property collision broke enable() (journal: `TypeError: this._panelBox is not a function`); fixed in `6103daf` (renamed to `_panelBoxSetting`, added `make check-gnome` guard); v3 verified end-to-end in an isolated `gnome-shell --devkit` session (loads, reacts to settings, refreshes).
+- Next step: user relogin; then confirm the indicator + live zone/order move (T6). Optional polish (stretch bar, shell-version widening, failure injection).
