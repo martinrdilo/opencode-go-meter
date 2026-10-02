@@ -115,4 +115,5 @@ Note: `used_usd` / `limit_usd` carry up to 4 decimals (do not assume a fixed num
 - 2026-10-01 — T9 closed: panel zone/order preferences (`4a9c8f9`); defaults match the previous placement (right/0).
 - 2026-10-02 — v2 bug: `_panelBox` method/property collision broke enable() (journal: `TypeError: this._panelBox is not a function`); fixed in `6103daf` (renamed to `_panelBoxSetting`, added `make check-gnome` guard); v3 verified end-to-end in an isolated `gnome-shell --devkit` session (loads, reacts to settings, refreshes).
 - 2026-10-02 — 🎉 Extension live and working in the user's session (v3): State ACTIVE, journal clean, auto-refresh active (120 s). User confirmed. T6 closed; user adjusted zone/order (now right/1). Feature complete for GNOME.
+- 2026-10-02 — New feature planned: multi-account (add/switch/replace) → `odd/tasks/multi-account.md`; branch `feat/multi-account`.
 - Next step (when resumed): optional polish (popup mini-bars, notifications, failure injection) or the deferred Cinnamon frontend (T8).
