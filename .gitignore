@@ -9,6 +9,7 @@ __pycache__/
 # Build artifacts
 dist/
 *.shell-extension.zip
+gnome/schemas/gschemas.compiled
 
 # Editors / OS
 .vscode/
