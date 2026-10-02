@@ -1,6 +1,6 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
-**Status**: Plan ready (2026-10-02); implementation not started
+**Status**: In progress — T1 done (2026-10-02); T2 next
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
@@ -52,7 +52,7 @@ Out (not now):
 
 ## Tasks
 
-- [ ] **T1 — Core: accounts module + tests** *(route: delegated writer — new module + tests, 2+ non-trivial files)*
+- [x] **T1 — Core: accounts module + tests** *(route: delegated writer — new module + tests, 2+ non-trivial files)* — done: commits `f17d69f` + hardening `edb87ea`; suite 140 green; independent verification PASS-WITH-FINDINGS (all minor, fixed).
   `core/ocgo/accounts.py`, `core/tests/test_accounts.py`.
   Registry at `~/.config/ocgo/accounts.json` (`$XDG_CONFIG_HOME` fallback): id/label/kind/hint/active; atomic writes, 0600; id validation (`[a-z0-9][a-z0-9._-]*`, reserved `default`); secret-tool store/lookup/delete via subprocess; masked hint; opt-in 0600 file store; `OCGO_TOKEN_<ID>` override; unit tests with a fake `secret-tool` on PATH and temp XDG dirs.
 - [ ] **T2 — Core: zen adapter + account-aware CLI/cache + tests** *(route: delegated writer — same writer session for coherence)*
@@ -87,7 +87,8 @@ Out (not now):
 ## Progress log
 
 - 2026-10-02 — Feasibility verified live (zen 401/403/200; console rejects api-keys); route source reviewed; plan written. Baseline `make test`: 86 green. Branch `feat/multi-account` created.
+- 2026-10-02 — T1 closed: `core/ocgo/accounts.py` (registry + secret-tool/file/env secret storage) with 54 tests (`f17d69f`); hardening `edb87ea` (int-only version check, unreadable-file errors, fd-leak fix, secret deleted before registry on remove); full suite 140 green; independent verifier PASS-WITH-FINDINGS (6 minor: 4 fixed + 2 documented; keyring-clear stays best-effort by design).
 
 ## Next step
 
-Start T1 (core accounts module) when implementation begins.
+Start T2 (zen adapter + account-aware CLI/cache).
