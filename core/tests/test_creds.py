@@ -159,6 +159,54 @@ class CredentialResolutionTests(unittest.TestCase):
             creds.resolve_credential(now_ms=now_ms)
         self.assertEqual(str(caught.exception), creds.EXPIRED_MESSAGE)
 
+    def test_expiry_nan_is_ignored(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode",
+                    json.dumps({"access": "tok-abcdefgh", "expires": float("nan")}),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential()
+        self.assertIsNone(credential.expires_ms)
+        self.assertIsNone(credential.expires_at)
+
+    def test_expiry_overflow_is_ignored(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode",
+                    json.dumps({"access": "tok-abcdefgh", "expires": 1e30}),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential()
+        self.assertIsNone(credential.expires_ms)
+        self.assertIsNone(credential.expires_at)
+
+    def test_expiry_non_numeric_string_is_ignored(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode",
+                    json.dumps({"access": "tok-abcdefgh", "expires": "abc"}),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential()
+        self.assertIsNone(credential.expires_ms)
+        self.assertIsNone(credential.expires_at)
+
 
 class DefaultPathTests(unittest.TestCase):
     def test_xdg_data_home_wins(self):
@@ -183,6 +231,19 @@ class MaskTokenTests(unittest.TestCase):
     def test_short_token_is_fully_hidden(self):
         self.assertEqual(creds.mask_token("short"), "…")
         self.assertEqual(creds.mask_token("twelve-chars"), "…")
+
+
+class CredentialObjectTests(unittest.TestCase):
+    def test_expires_at_returns_none_for_out_of_range_value(self):
+        credential = creds.Credential(
+            token="tok-abcdefgh", source="test", expires_ms=10**30
+        )
+        self.assertIsNone(credential.expires_at)
+
+    def test_repr_does_not_expose_the_token(self):
+        credential = creds.Credential(token="super-secret-token", source="test")
+        self.assertNotIn("super-secret-token", repr(credential))
+        self.assertIn("source='test'", repr(credential))
 
 
 if __name__ == "__main__":

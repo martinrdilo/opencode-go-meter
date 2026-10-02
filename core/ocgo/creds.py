@@ -11,11 +11,12 @@ The token is never logged, printed in full, cached, or written anywhere.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,7 +44,7 @@ class CredentialError(Exception):
 class Credential:
     """A resolved token plus where it came from (never the full value)."""
 
-    token: str
+    token: str = field(repr=False)
     source: str
     expires_ms: int | None = None
 
@@ -51,7 +52,10 @@ class Credential:
     def expires_at(self) -> datetime | None:
         if self.expires_ms is None:
             return None
-        return datetime.fromtimestamp(self.expires_ms / 1000, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(self.expires_ms / 1000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
 
 
 def default_db_path() -> Path:
@@ -105,9 +109,22 @@ def _read_db_row(db_path: Path) -> tuple[str, int | None]:
         raise CredentialError(NO_CREDENTIAL_MESSAGE) from exc
     if not isinstance(token, str) or not token.strip():
         raise CredentialError(NO_CREDENTIAL_MESSAGE)
-    expires = value.get("expires")
-    if isinstance(expires, (int, float)) and not isinstance(expires, bool):
-        expires_ms: int | None = int(expires)
-    else:
-        expires_ms = None
-    return token.strip(), expires_ms
+    return token.strip(), _parse_expiry(value.get("expires"))
+
+
+def _parse_expiry(value: object) -> int | None:
+    """Return a sane ms-epoch expiry, or None when absent/malformed.
+
+    Non-finite values (NaN, inf) and timestamps outside ``datetime``'s range
+    are treated as "no expiry" so a corrupt credential row cannot crash the CLI.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    expires_ms = int(value)
+    try:
+        datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return expires_ms

@@ -99,9 +99,13 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     colors = colors_enabled(args.no_color)
     now = datetime.now(timezone.utc)
-    windows = data.get("windows") or {}
+    windows = data.get("windows")
+    if not isinstance(windows, dict):
+        windows = {}
     for name, label in WINDOW_LABELS:
-        window = windows.get(name) or {}
+        window = windows.get(name)
+        if not isinstance(window, dict):
+            window = {}
         value = window.get("percent")
         if isinstance(value, int):
             pct_text = f"{value:>3}%"

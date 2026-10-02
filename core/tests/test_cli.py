@@ -209,6 +209,27 @@ class StatusTests(CliTestCase):
         self.assertEqual(out, "")
         self.assertIn("ocgo refresh", err)
 
+    def test_non_dict_windows_is_handled_gracefully(self):
+        self._env(XDG_CACHE_HOME=str(self.tmp))
+        data = good_cache_data()
+        data["windows"] = [1, 2]
+        cache.save(data)
+        code, out, err = run_cli(["status", "--no-color"])
+        self.assertEqual(code, 0)
+        self.assertIn("Rolling usage  n/a   Resets in n/a", out)
+        self.assertIn("Weekly usage   n/a   Resets in n/a", out)
+        self.assertIn("Monthly usage  n/a   Resets in", out)  # renewal countdown stays
+        self.assertNotIn("Traceback", err)
+
+    def test_non_dict_window_entry_is_handled_gracefully(self):
+        self._env(XDG_CACHE_HOME=str(self.tmp))
+        data = good_cache_data()
+        data["windows"]["weekly"] = [1]
+        cache.save(data)
+        code, out, _ = run_cli(["status", "--no-color"])
+        self.assertEqual(code, 0)
+        self.assertIn("Weekly usage   n/a   Resets in n/a", out)
+
     def test_tty_uses_per_window_colors(self):
         self._env(XDG_CACHE_HOME=str(self.tmp))
         data = good_cache_data()
