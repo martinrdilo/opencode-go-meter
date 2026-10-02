@@ -67,6 +67,7 @@ Planned, not now:
 - Delivery: `single-pr` (new local repo; no external gates). Work-unit commits on `feat/gnome-indicator`.
 - RDD (gentle-ai review): off (global) — ordinary repository policy.
 - Artifacts in English.
+- Dev reload rule (GNOME 50): extension JS modules are cached per session — **code changes require logout/login** (the shell logs "You need to log out for changes to take effect" when `metadata.version` differs; bump it on every code change). Settings changes apply live once the new code is running.
 
 ### Cache schema v1 (contract for the extension)
 
