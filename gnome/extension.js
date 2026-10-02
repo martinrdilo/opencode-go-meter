@@ -24,6 +24,12 @@ const WINDOWS = [
     {key: 'monthly', label: 'Monthly usage', short: '30d'},
 ];
 
+const PANEL_BOXES = ['left', 'center', 'right'];
+const DEFAULT_PANEL_BOX = 'right';
+const DEFAULT_PANEL_POSITION = 0;
+const MIN_PANEL_POSITION = -1;
+const MAX_PANEL_POSITION = 30;
+
 function logError(message, error) {
     console.error(`[opencode-go-meter] ${message}${error ? `: ${error}` : ''}`);
 }
@@ -126,11 +132,18 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._monitorId = 0;
             this._refreshTimerId = 0;
             this._tickTimerId = 0;
+            this._panelBoxId = 0;
+            this._panelPositionId = 0;
 
             this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
             this._buildPanel();
             this._buildMenu();
-            Main.panel.addToStatusArea(this.uuid, this._indicator);
+            Main.panel.addToStatusArea(
+                this.uuid, this._indicator, this._panelPosition(), this._panelBox());
+            this._panelBoxId = this._settings.connect(
+                'changed::panel-box', () => this._reposition());
+            this._panelPositionId = this._settings.connect(
+                'changed::panel-position', () => this._reposition());
 
             this._updateDisplay();
             this._startTimers();
@@ -142,6 +155,14 @@ export default class OpenCodeGoMeterExtension extends Extension {
     }
 
     disable() {
+        if (this._panelBoxId) {
+            this._settings?.disconnect(this._panelBoxId);
+            this._panelBoxId = 0;
+        }
+        if (this._panelPositionId) {
+            this._settings?.disconnect(this._panelPositionId);
+            this._panelPositionId = 0;
+        }
         if (this._refreshTimerId) {
             GLib.source_remove(this._refreshTimerId);
             this._refreshTimerId = 0;
@@ -236,6 +257,47 @@ export default class OpenCodeGoMeterExtension extends Extension {
             const label = this._panelPercents.get(window.key);
             label.text = percentText(percent);
             label.style_class = percentStyle(percent);
+        }
+    }
+
+    // -- panel position ------------------------------------------------------
+
+    _panelBox() {
+        try {
+            const value = this._settings.get_string('panel-box').trim().toLowerCase();
+            if (PANEL_BOXES.includes(value))
+                return value;
+            logError(`unknown panel-box '${value}'; using '${DEFAULT_PANEL_BOX}'`);
+        } catch (error) {
+            logError('could not read panel-box', error);
+        }
+        return DEFAULT_PANEL_BOX;
+    }
+
+    _panelPosition() {
+        try {
+            const value = this._settings.get_int('panel-position');
+            if (Number.isInteger(value) &&
+                value >= MIN_PANEL_POSITION && value <= MAX_PANEL_POSITION)
+                return value;
+            logError(`panel-position ${value} is out of range; using ${DEFAULT_PANEL_POSITION}`);
+        } catch (error) {
+            logError('could not read panel-position', error);
+        }
+        return DEFAULT_PANEL_POSITION;
+    }
+
+    _reposition() {
+        try {
+            if (!this._indicator)
+                return;
+            // The shell throws on an existing statusArea entry and re-parents
+            // the indicator itself, so drop the registration first.
+            delete Main.panel.statusArea[this.uuid];
+            Main.panel.addToStatusArea(
+                this.uuid, this._indicator, this._panelPosition(), this._panelBox());
+        } catch (error) {
+            logError('could not move the indicator', error);
         }
     }
 

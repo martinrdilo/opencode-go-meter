@@ -17,7 +17,7 @@ ocgo status
 | `ocgo` CLI | `~/.local/bin/ocgo` → `core/bin/ocgo` |
 | GNOME extension | `~/.local/share/gnome-shell/extensions/opencode-go-meter@martin.local` → `gnome/` |
 
-The top bar then shows `5h 3% · 7d 64% · 30d 58%`; click it for countdowns, the renewal date, and a manual refresh. On Wayland, log out and back in if the indicator does not appear after enabling. `make uninstall` removes only links that point into this repo.
+The top bar then shows `5h 3% · 7d 64% · 30d 58%`; click it for countdowns, the renewal date, and a manual refresh. Pick the panel zone (left / center / right) and the order within it in the extension preferences. On Wayland, log out and back in if the indicator does not appear after enabling. `make uninstall` removes only links that point into this repo.
 
 `ocgo status` sample:
 

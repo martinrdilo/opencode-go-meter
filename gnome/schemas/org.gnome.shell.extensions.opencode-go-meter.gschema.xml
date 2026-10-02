@@ -16,5 +16,19 @@
       <description>How often the extension triggers "ocgo refresh".</description>
       <range min="60" max="86400"/>
     </key>
+    <key name="panel-box" type="s">
+      <default>'right'</default>
+      <summary>Panel zone</summary>
+      <description>
+        Top-bar zone for the indicator: left, center, or right. Values outside
+        that set fall back to right in the extension code.
+      </description>
+    </key>
+    <key name="panel-position" type="i">
+      <default>0</default>
+      <summary>Order within the panel zone</summary>
+      <description>0 is first in the zone; -1 appends the indicator last.</description>
+      <range min="-1" max="30"/>
+    </key>
   </schema>
 </schemalist>
