@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -253,6 +254,8 @@ class RegistryTests(AccountsTestCase):
         cases = {
             "not-object": [1, 2],
             "bad-version": {**base, "version": 2},
+            "float-version": {**base, "version": 1.0},
+            "bool-version": {**base, "version": True},
             "missing-active": {"version": 1, "accounts": []},
             "bad-active": {**base, "active": "GHOST"},
             "accounts-not-list": {**base, "accounts": {}},
@@ -340,6 +343,16 @@ class RegistryTests(AccountsTestCase):
     def test_remove_missing_raises(self):
         with self.assertRaises(accounts.AccountError):
             accounts.remove_account("ghost")
+
+    def test_remove_aborts_when_secret_delete_fails(self):
+        accounts.add_account("work", "Work")
+        accounts.keys_dir().write_text("obstructed", encoding="utf-8")
+        before = accounts.registry_path().read_text(encoding="utf-8")
+        with self.assertRaises(accounts.AccountError):
+            accounts.remove_account("work")
+        self.assertEqual(accounts.registry_path().read_text(encoding="utf-8"), before)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["default", "work"])
 
     def test_update_hint(self):
         accounts.add_account("work", "Work")
@@ -450,6 +463,21 @@ class FileSecretTests(AccountsTestCase):
         names = [entry.name for entry in accounts.keys_dir().iterdir()]
         self.assertEqual(names, ["work.key"])
 
+    @unittest.skipIf(os.geteuid() == 0, "file permissions are not enforced for root")
+    def test_unreadable_secret_file_raises_clear_error(self):
+        accounts.store_secret("work", _SECRET, backend="file")
+        path = accounts.secret_file_path("work")
+        os.chmod(path, 0o000)
+        self.addCleanup(os.chmod, path, 0o600)
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.read_secret("work")
+        message = str(caught.exception)
+        self.assertIn("work", message)
+        self.assertIn("cannot read", message)
+        self.assertNotIn(_SECRET, message)
+        with self.assertRaises(accounts.AccountError):
+            accounts.has_secret("work")
+
     def test_file_backend_works_without_keyring(self):
         self.assertFalse(accounts.secret_available())
         accounts.store_secret("work", _SECRET, backend="file")
@@ -488,6 +516,28 @@ class FileSecretTests(AccountsTestCase):
         accounts.store_secret("work", _SECRET)
         self.assertFalse(accounts.secret_file_path("work").exists())
         self.assertTrue(accounts.has_secret("work"))
+
+
+class AtomicWriteTests(AccountsTestCase):
+    def test_fchmod_failure_closes_fd_and_cleans_up(self):
+        target = self.tmp / "output.json"
+        probe_fd, probe_path = tempfile.mkstemp(dir=self.tmp, prefix=".probe-")
+        with mock.patch("ocgo.accounts.os.fchmod", side_effect=OSError("denied")):
+            with mock.patch(
+                "ocgo.accounts.tempfile.mkstemp",
+                return_value=(probe_fd, probe_path),
+            ):
+                with self.assertRaises(OSError):
+                    accounts._atomic_write_text(target, "{}\n")
+        try:
+            os.fstat(probe_fd)
+        except OSError:
+            pass
+        else:
+            os.close(probe_fd)
+            self.fail("temporary file descriptor was leaked")
+        self.assertFalse(Path(probe_path).exists())
+        self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":

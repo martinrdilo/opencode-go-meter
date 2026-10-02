@@ -9,6 +9,10 @@ Secrets are resolved in this order: the ``OCGO_TOKEN_<ID>`` environment
 variable, the GNOME keyring through the ``secret-tool`` CLI, and finally an
 opt-in 0600 file under ``keys_dir()``. Secret values never appear in argv,
 logs, exception messages, or the registry; only masked hints are stored.
+
+The registry targets a single-user CLI: mutations are not locked or serialized
+against concurrent writers. Account hints must always be masked values
+returned by :func:`store_secret`; callers must never pass a raw secret.
 """
 
 from __future__ import annotations
@@ -166,7 +170,11 @@ def add_account(account_id: str, label: str, *, hint: str | None = None) -> Acco
 
 
 def remove_account(account_id: str) -> None:
-    """Remove an account plus its stored secret; refuses the default account."""
+    """Remove an account plus its stored secret; refuses the default account.
+
+    The secret is deleted before the registry entry: a real delete failure
+    aborts the removal and leaves the registry untouched. Absence stays fine.
+    """
     _require_valid_id(account_id)
     if account_id == DEFAULT_ACCOUNT_ID:
         raise AccountError("the default account cannot be removed")
@@ -176,11 +184,11 @@ def remove_account(account_id: str) -> None:
             entry for entry in registry["accounts"] if entry["id"] != account_id
         ]
         if len(remaining) != len(registry["accounts"]):
+            delete_secret(account_id)
             registry["accounts"] = remaining
             if registry["active"] == account_id:
                 registry["active"] = DEFAULT_ACCOUNT_ID
             _save_registry(registry)
-            delete_secret(account_id)
             return
     raise AccountError(f"account '{account_id}' does not exist")
 
@@ -201,7 +209,10 @@ def set_active(account_id: str) -> None:
 
 
 def update_hint(account_id: str, hint: str | None) -> Account:
-    """Replace a named account's masked hint and return the updated account."""
+    """Replace a named account's masked hint and return the updated account.
+
+    ``hint`` must come from :func:`store_secret`; never pass a raw secret.
+    """
     validate_account_id(account_id)
     normalized: str | None = None
     if isinstance(hint, str):
@@ -287,7 +298,11 @@ def delete_secret(account_id: str) -> None:
 
 
 def has_secret(account_id: str) -> bool:
-    """True when any backend (env, keyring, or file) holds a secret."""
+    """True when any backend (env, keyring, or file) holds a secret.
+
+    An unreadable-but-present file raises ``AccountError`` instead of
+    masquerading as "no secret".
+    """
     _require_valid_id(account_id)
     if os.environ.get(env_var_for(account_id), "").strip():
         return True
@@ -313,7 +328,11 @@ def _validate_registry(data: object, path: Path) -> None:
     if not isinstance(data, dict):
         raise _registry_error(path, "expected a JSON object")
     version = data.get("version")
-    if isinstance(version, bool) or version != REGISTRY_VERSION:
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != REGISTRY_VERSION
+    ):
         raise _registry_error(path, f"unsupported version {version!r}")
     active = data.get("active")
     if not isinstance(active, str) or not _ID_PATTERN.match(active):
@@ -369,11 +388,17 @@ def _write_secret_file(account_id: str, secret: str) -> None:
 
 
 def _read_secret_file(account_id: str) -> str | None:
+    """Read the file backend; a missing file is ``None``, a read error raises."""
     path = secret_file_path(account_id)
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise AccountError(
+            f"cannot read the secret file at {path} for account "
+            f"'{account_id}': {exc}"
+        ) from exc
     return text.strip() or None
 
 
@@ -392,11 +417,17 @@ def _atomic_write_text(target: Path, text: str) -> None:
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1  # ownership transferred to the file object
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, target)
     except BaseException:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp_name)
         except OSError:
