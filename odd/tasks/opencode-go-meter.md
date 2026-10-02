@@ -1,6 +1,6 @@
 # Feature: opencode-go-meter — OpenCode Go usage meter (GNOME first, Cinnamon planned)
 
-**Status**: in progress
+**Status**: GNOME feature complete and live (2026-10-02); Cinnamon frontend deferred (T8)
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/gnome-indicator` (implementation)
 **Created**: 2026-10-01
@@ -89,7 +89,7 @@ Note: `used_usd` / `limit_usd` carry up to 4 decimals (do not assume a fixed num
 - [x] **T3 — GNOME extension** *(route: delegated writer)*: metadata (uuid `opencode-go-meter@martin.local`, shell-version 50), top-bar label `5h X% · 7d Y% · 30d Z%` with per-figure colors, popup: header "OpenCode Go — Renews <date>", three rows (label, colored %, "Resets in …"; simple bar if clean to implement), footer "Updated Xm ago · Refresh". Reads cache; triggers `ocgo refresh` (5 min timer + click). Evidence: commit `446e26b`; `gnome-extensions pack` + schema dry-run + JS syntax checks OK; stretch bar intentionally skipped (text V1).
 - [x] **T4 — Extension ↔ core wiring** *(route: same writer as T3)*: cache path discovery, `ocgo` path resolution (`~/.local/bin/ocgo` default, pref override), stale/error state. Evidence: commit `446e26b`.
 - [x] **T5 — Install / uninstall** *(route: same writer as T3/T4)*: `make install` (CLI symlink `~/.local/bin/ocgo` + extension symlink into the GNOME extensions dir), `make uninstall`; README quickstart (Wayland note about enabling the extension). Evidence: commit `90c0514`; real `make install` run OK; uninstall verified in a fake HOME incl. foreign-link guard.
-- [ ] **T6 — Verification** *(route: parent, live)*: core live smoke OK (T2: rolling 3% · weekly 64% · monthly 58%). Extension installed + pre-enabled; user confirmed the indicator live after a session restart. Failure injection pending.
+- [x] **T6 — Verification** *(route: parent, live)*: core live smoke OK (T2). Extension live and working in the user's session after relogin (2026-10-02, v3): State ACTIVE, journal clean, auto-refresh active (120 s per user settings). User confirmed. Failure injection (no credential / network down / stale cache) left as optional polish.
 - [x] **T7 — Docs** *(route: with T5)*: README quickstart + security/architecture/Cinnamon notes. Evidence: commit `90c0514`.
 - [ ] **T8 — (Deferred)** Cinnamon frontend (applet vs tray) — out of current scope.
 - [x] **T9 — Panel position preference** *(user request, 2026-10-01; route: delegated writer)*: `panel-box` (left/center/right) + `panel-position` settings, live reposition, prefs UI. Evidence: commits `4a9c8f9` + fix `6103daf`; schema/pack/syntax checks OK; defaults match the previous placement (right/0); verified end-to-end in an isolated devkit shell (see progress log for the v2 collision fix).
@@ -114,4 +114,5 @@ Note: `used_usd` / `limit_usd` carry up to 4 decimals (do not assume a fixed num
 - 2026-10-01 — T3–T5 closed: GNOME extension (`446e26b`), install/uninstall + quickstart docs (`90c0514`); installed in the user session (symlinks) and pre-enabled in dconf; user confirmed the indicator live after the session restart.
 - 2026-10-01 — T9 closed: panel zone/order preferences (`4a9c8f9`); defaults match the previous placement (right/0).
 - 2026-10-02 — v2 bug: `_panelBox` method/property collision broke enable() (journal: `TypeError: this._panelBox is not a function`); fixed in `6103daf` (renamed to `_panelBoxSetting`, added `make check-gnome` guard); v3 verified end-to-end in an isolated `gnome-shell --devkit` session (loads, reacts to settings, refreshes).
-- Next step: user relogin; then confirm the indicator + live zone/order move (T6). Optional polish (stretch bar, shell-version widening, failure injection).
+- 2026-10-02 — 🎉 Extension live and working in the user's session (v3): State ACTIVE, journal clean, auto-refresh active (120 s). User confirmed. T6 closed; user adjusted zone/order (now right/1). Feature complete for GNOME.
+- Next step (when resumed): optional polish (popup mini-bars, notifications, failure injection) or the deferred Cinnamon frontend (T8).
