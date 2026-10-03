@@ -1,6 +1,6 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
-**Status**: In progress — T1–T4 done (2026-10-02); T5 next
+**Status**: Implementation complete (2026-10-02) — T1–T6 done; user live test (relogin) pending
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
@@ -63,9 +63,9 @@ Out (not now):
   Read accounts/active via `ocgo account list --json`; per-account cache path + monitor re-target on switch; submenu with radio entries → `ocgo account use <id>` + refresh; header shows account label; no-subscription/error states via the existing warning row.
 - [x] **T4 — GNOME: prefs account management** *(route: delegated writer — same session as T3)* — done: `5cb9d78` + guards/newest-wins fix `c8c4374` (validated PASS, no residual); static gates green.
   `gnome/prefs.js`: Accounts group — active-account combo (from `account list --json`), add/replace form (id, label, `PasswordEntry`) spawning `ocgo account add|set-key` with the key on **stdin**, remove action, feedback label; nothing secret persists in GSettings.
-- [ ] **T5 — Docs** *(route: same writer as T3/T4)*
+- [x] **T5 — Docs** *(route: same writer as T3/T4)* — done: README multi-account + security + architecture/data-source notes; `b96f90f`.
   `README.md` accounts section + security notes; update this doc.
-- [ ] **T6 — Verification** *(route: parent, live)*
+- [x] **T6 — Verification** *(route: parent, live)* — done (parent): 225 tests; `make check-gnome`; CLI smoke (list default-only; fake-key add rejected 401 with nothing stored; refresh default real 9%/75%/63%; status; masked `auth show`); isolated `gnome-shell --devkit` session: extension v5 Enabled / State ACTIVE, no `[opencode-go-meter]` errors. Pending: user relogin test (real accounts, switch, prefs).
   `make test`; `make check-gnome`; live smoke (switch default↔named, `refresh --all`, no-subscription account state, `set-key` rotation); isolated `gnome-shell --devkit` session for popup/prefs; secret hygiene spot check (argv/logs/cache/dconf).
 
 ## Acceptance criteria
@@ -91,7 +91,9 @@ Out (not now):
 - 2026-10-02 — T2 closed: zen adapter (`fetch_zen_status`, `to_cache_schema_zen`; 401/403-entitlement/error mapping) + account CLI (`account add|set-key|list|use|remove`, `refresh/status/auth show --account|--all`, per-account cache paths) in `e732126`+`0d2ded3`; independent verification PASS-WITH-FINDINGS (1 major: silent key-store shadowing on `set-key --store file`; 2 minors) → fixed in `d7005f1`, validated with before/after repro; residual best-effort keyring-clear path hardened in `a4a60fa`; suite 225 green; no-registry behavior byte-compatible (verified against the pre-T2 tree).
 - 2026-10-02 — T3 closed: `gnome/extension.js` account discovery (`account list --json`, fallback to default), per-account cache path + monitor re-target, popup account submenu (radio, hidden for single default), switch via `account use` + immediate refresh, named-account header; `747d646` (metadata v4); switch↔load race fixed in `661c29f` (newest-wins generation, before/after harness proof). Independent verification PASS-WITH-FINDINGS (2 minors fixed, validated; 1 accepted minor: rapid double-switch may skip the final immediate refresh).
 - 2026-10-02 — T4 closed: prefs Accounts group (active combo, add/replace key via stdin, remove with confirmation, feedback) in `5cb9d78` (metadata v5); verifier PASS-WITH-FINDINGS (2 minors: double-submit guard, loads without newest-wins) → `c8c4374` validated PASS (no residual).
+- 2026-10-02 — T5 closed: README multi-account + security + architecture notes (`b96f90f`).
+- 2026-10-02 — T6 (parent, live): `make test` 225 green; `make check-gnome`; CLI smoke OK (fake-key add → 401, nothing stored; refresh default real 9/75/63; status; auth show masked); isolated `gnome-shell --devkit`: extension v5 Enabled / State ACTIVE, no errors. Pending: user relogin test.
 
 ## Next step
 
-Start T5 (README accounts + security docs).
+User relogin test: log out/in to load extension v5, then add accounts (`ocgo account add …` or Preferences → Accounts), switch in the popup, and compare against the console. Optional follow-ups: Cinnamon frontend (base feature T8), notifications, popup mini-bars.
