@@ -527,6 +527,21 @@ class SecretMoveTests(AccountsTestCase):
         self.assertFalse((self.secrets / "items" / "work").exists())
         self.assertTrue(accounts.secret_file_path("work").is_file())
 
+    def test_file_store_aborts_when_keyring_clear_verifiably_fails(self):
+        self.use_fake_tool()
+        accounts.store_secret("work", "old-keyring-value")
+        with mock.patch.dict(os.environ, {"FAKE_SECRET_TOOL_FAIL": "clear"}):
+            with self.assertRaises(accounts.AccountError) as caught:
+                accounts.store_secret("work", "new-file-value", backend="file")
+        message = str(caught.exception)
+        self.assertIn("work", message)
+        self.assertIn("keyring", message)
+        self.assertNotIn("new-file-value", message)
+        self.assertNotIn("old-keyring-value", message)
+        self.assertFalse(accounts.secret_file_path("work").exists())
+        self.assertTrue((self.secrets / "items" / "work").exists())
+        self.assertEqual(accounts.read_secret("work"), "old-keyring-value")
+
     def test_keyring_store_removes_the_file_shadow(self):
         self.use_fake_tool()
         accounts.store_secret("work", "file-secret-value", backend="file")

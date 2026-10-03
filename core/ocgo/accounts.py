@@ -240,11 +240,13 @@ def store_secret(account_id: str, secret: str, *, backend: str = "auto") -> str:
     """Store a secret and return its masked hint.
 
     The selected backend becomes authoritative: the other backend's copy is
-    removed before writing ("move" semantics), so rotating a key can never
-    leave an older, shadowing copy in place. The caller registers the account
-    first; this function only touches secret storage. Backends: ``auto``
-    (keyring, error when unavailable), ``keyring`` and ``file`` (0600 file
-    under ``keys_dir()``).
+    removed before writing ("move" semantics). Rotating to ``file`` verifies
+    with a keyring lookup that the keyring copy is gone and aborts with
+    ``AccountError`` when a stale copy is still visible; a clear that cannot
+    be verified (the lookup itself failing) stays best-effort. The caller
+    registers the account first; this function only touches secret storage.
+    Backends: ``auto`` (keyring, error when unavailable), ``keyring`` and
+    ``file`` (0600 file under ``keys_dir()``).
     """
     _require_valid_id(account_id)
     if not isinstance(secret, str) or not secret.strip():
@@ -261,6 +263,12 @@ def store_secret(account_id: str, secret: str, *, backend: str = "auto") -> str:
         _keyring_store(account_id, secret)
     elif backend == "file":
         _clear_keyring_secret(account_id)
+        remaining = _keyring_lookup(account_id)
+        if remaining:
+            raise AccountError(
+                f"the keyring entry for account '{account_id}' could not be "
+                "cleared and would shadow the file store; no changes were made"
+            )
         _write_secret_file(account_id, secret)
     else:
         raise AccountError(
