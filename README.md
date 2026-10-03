@@ -33,7 +33,6 @@ The account list is fully yours: add, switch, and remove any account — includi
 
 ```bash
 ocgo account add work --label "Work"   # key prompted hidden, validated against the API
-ocgo account add login --from-db       # register the local OpenCode login (no key)
 ocgo account list
 ocgo account use work                  # any account can be the shown one
 ocgo account set-key work              # replace / rotate a key
@@ -41,9 +40,9 @@ ocgo account remove default            # the seeded default is removable too
 ocgo refresh --all                     # refresh every account
 ```
 
-A fresh install seeds `default` automatically; once `~/.config/ocgo/accounts.json` exists it is authoritative. Remove every account and the meter shows an empty state — a dash in the panel and "No accounts configured" in the popup; nothing is invented. Adding the first account to an empty list makes it active automatically; otherwise adding does not switch the active one.
+A fresh install seeds `default` automatically; once `~/.config/ocgo/accounts.json` exists it is authoritative. Every account is added with its api-key — the seeded `default`, once removed, comes back only by adding that account's console api-key. Remove every account and the meter shows an empty state — a dash in the panel and "No accounts configured" in the popup; nothing is invented. Adding the first account to an empty list makes it active automatically; otherwise adding does not switch the active one.
 
-In GNOME, the popup's **Account** submenu (radio) switches accounts and stays available in the empty state; the panel always shows the active one. Preferences → **Accounts** manages the list, adds or replaces API keys (typed in prefs, sent to the CLI over stdin), registers the OpenCode login (no key), and removes any account. Accounts without an active Go subscription can be registered — the popup shows the "no active OpenCode Go subscription" warning instead of breaking.
+In GNOME, the popup's **Account** submenu (radio) switches accounts and stays available in the empty state; the panel always shows the active one. Preferences → **Accounts** manages the list, adds or replaces API keys (typed in prefs, sent to the CLI over stdin), and removes any account. Accounts without an active Go subscription can be registered — the popup shows the "no active OpenCode Go subscription" warning instead of breaking.
 
 ## Layout
 

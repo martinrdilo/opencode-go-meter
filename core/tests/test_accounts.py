@@ -533,24 +533,12 @@ class RegistryV2Tests(AccountsTestCase):
             [entry["id"] for entry in registry["accounts"]], ["default", "work"]
         )
 
-    def test_add_db_kind(self):
-        account = accounts.add_account("login", "Login", kind="opencode-db")
-        self.assertEqual(account.kind, "opencode-db")
-        self.assertIsNone(account.hint)
+    def test_add_account_is_always_api_key(self):
+        account = accounts.add_account("work", "Work")
+        self.assertEqual(account.kind, "api-key")
         registry = accounts.load_registry()
-        stored = next(entry for entry in registry["accounts"] if entry["id"] == "login")
-        self.assertEqual(stored["kind"], "opencode-db")
-        self.assertIsNone(stored["hint"])
-
-    def test_add_db_kind_rejects_hint(self):
-        with self.assertRaises(accounts.AccountError):
-            accounts.add_account("login", "Login", kind="opencode-db", hint="x")
-        self.assertIsNone(accounts.load_registry())
-
-    def test_add_rejects_unknown_kind(self):
-        with self.assertRaises(accounts.AccountError):
-            accounts.add_account("login", "Login", kind="bogus")
-        self.assertIsNone(accounts.load_registry())
+        stored = next(entry for entry in registry["accounts"] if entry["id"] == "work")
+        self.assertEqual(stored["kind"], "api-key")
 
     def test_remove_db_kind_does_not_touch_secrets(self):
         self.use_fake_tool()

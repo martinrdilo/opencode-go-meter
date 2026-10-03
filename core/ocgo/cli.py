@@ -69,14 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add.add_argument("id", metavar="ID")
     add.add_argument("--label", help="human label (defaults to the id)")
-    add_source = add.add_mutually_exclusive_group()
-    add_source.add_argument(
+    add.add_argument(
         "--store", choices=("auto", "file"), default="auto", help="secret backend"
-    )
-    add_source.add_argument(
-        "--from-db",
-        action="store_true",
-        help="register the local OpenCode login (no API key)",
     )
     add.set_defaults(func=cmd_account_add)
 
@@ -284,20 +278,6 @@ def cmd_account_add(args: argparse.Namespace) -> int:
         return _fail(f"account '{account_id}' already exists")
 
     label = (args.label or account_id).strip() or account_id
-
-    if args.from_db:
-        try:
-            creds.resolve_credential()
-        except creds.CredentialError as exc:
-            return _fail(exc)
-        try:
-            accounts.add_account(
-                account_id, label, kind=accounts.KIND_OPENCODE_DB
-            )
-        except accounts.AccountError as exc:
-            return _fail(exc)
-        print(f"Added account '{account_id}' (OpenCode login)")
-        return 0
 
     key = _read_api_key().strip()
     if not key:

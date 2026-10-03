@@ -388,6 +388,28 @@ class AccountCliTestCase(CliTestCase):
         accounts.update_hint(account_id, hint)
         return hint
 
+    def _seed_db_account(self, account_id="login", label="Login"):
+        """Write a v2 registry with a single opencode-db account."""
+        path = accounts.registry_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "active": account_id,
+                    "accounts": [
+                        {
+                            "id": account_id,
+                            "label": label,
+                            "kind": "opencode-db",
+                            "hint": None,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
 
 class FakeStdin(io.StringIO):
     def __init__(self, text: str, tty: bool = False):
@@ -642,8 +664,7 @@ class AccountSetKeyTests(AccountCliTestCase):
 
     def test_set_key_refuses_db_accounts(self):
         self._isolate()
-        accounts.remove_account("default")
-        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        self._seed_db_account()
         with mock.patch.object(cli, "_read_api_key") as read:
             code, _out, err = run_cli(["account", "set-key", "login"])
         self.assertEqual(code, 1)
@@ -917,8 +938,7 @@ class RefreshAccountTests(AccountCliTestCase):
 
     def test_refresh_failure_on_named_db_account_is_labeled(self):
         self._isolate()
-        accounts.remove_account("default")
-        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        self._seed_db_account()
         with mock.patch.object(
             cli.creds,
             "resolve_credential",
@@ -1171,65 +1191,13 @@ class EmptyAccountsTests(AccountCliTestCase):
         )
 
 
-class FromDbTests(AccountCliTestCase):
+class DbKindTests(AccountCliTestCase):
     def _credential(self):
         return creds.Credential(token="console-token-abcdefgh", source="test")
 
-    def test_add_from_db_registers_without_key_prompt(self):
-        self._isolate()
-        with (
-            mock.patch.object(
-                cli.creds, "resolve_credential", return_value=self._credential()
-            ),
-            mock.patch.object(cli, "_read_api_key") as read,
-        ):
-            code, out, err = run_cli(["account", "add", "login", "--from-db"])
-        self.assertEqual(code, 0)
-        self.assertIn("Added account 'login' (OpenCode login)", out)
-        self.assertEqual(err, "")
-        read.assert_not_called()
-        entries, active = accounts.list_accounts()
-        self.assertEqual([account.id for account in entries], ["default", "login"])
-        self.assertEqual(entries[1].kind, "opencode-db")
-        self.assertEqual(active, "default")
-        self.assertFalse(accounts.has_secret("login"))
-
-    def test_add_from_db_invalid_credential_registers_nothing(self):
-        self._isolate()
-        with mock.patch.object(
-            cli.creds,
-            "resolve_credential",
-            side_effect=creds.CredentialError("No OpenCode credential found."),
-        ):
-            code, _out, err = run_cli(["account", "add", "login", "--from-db"])
-        self.assertEqual(code, 1)
-        self.assertIn("No OpenCode credential found.", err)
-        entries, _active = accounts.list_accounts()
-        self.assertEqual([account.id for account in entries], ["default"])
-
-    def test_add_from_db_rejects_store(self):
-        self._isolate()
-        code = run_cli(["account", "add", "login", "--from-db", "--store", "file"])[0]
-        self.assertEqual(code, 2)
-
-    def test_remove_default_then_add_from_db_under_any_id(self):
-        self._isolate()
-        code, _out, _err = run_cli(["account", "remove", "default"])
-        self.assertEqual(code, 0)
-        with mock.patch.object(
-            cli.creds, "resolve_credential", return_value=self._credential()
-        ):
-            code, _out, _err = run_cli(["account", "add", "opencode", "--from-db"])
-        self.assertEqual(code, 0)
-        entries, active = accounts.list_accounts()
-        self.assertEqual([account.id for account in entries], ["opencode"])
-        self.assertEqual(active, "opencode")
-        self.assertEqual(entries[0].kind, "opencode-db")
-
     def test_db_kind_named_refresh_uses_console_endpoint(self):
         self._isolate()
-        accounts.remove_account("default")
-        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        self._seed_db_account()
         with (
             mock.patch.object(
                 cli.creds, "resolve_credential", return_value=self._credential()
@@ -1249,8 +1217,7 @@ class FromDbTests(AccountCliTestCase):
 
     def test_db_kind_named_auth_show_uses_db_source(self):
         self._isolate()
-        accounts.remove_account("default")
-        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        self._seed_db_account()
         with mock.patch.object(
             cli.creds, "resolve_credential", return_value=self._credential()
         ):

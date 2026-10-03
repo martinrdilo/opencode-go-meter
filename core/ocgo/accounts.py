@@ -169,26 +169,17 @@ def get_active_id() -> str | None:
     return list_accounts()[1]
 
 
-def add_account(
-    account_id: str,
-    label: str,
-    *,
-    kind: str = KIND_API_KEY,
-    hint: str | None = None,
-) -> Account:
-    """Register an account (``api-key`` or ``opencode-db``) and return it.
+def add_account(account_id: str, label: str, *, hint: str | None = None) -> Account:
+    """Register a new ``api-key`` account and return it.
 
     When the current effective list is empty the added account becomes active.
+    ``opencode-db`` accounts are only ever materialized by the seeding path.
     """
     _require_valid_id(account_id)
-    if kind not in (KIND_API_KEY, KIND_OPENCODE_DB):
-        raise AccountError(f"unsupported account kind {kind!r}")
     if not isinstance(label, str) or not label.strip():
         raise AccountError("the account label must be a non-empty string")
     if hint is not None and not isinstance(hint, str):
         raise AccountError("the account hint must be a string or None")
-    if kind == KIND_OPENCODE_DB and hint is not None:
-        raise AccountError("opencode-db accounts cannot have a hint")
     registry = _effective_registry()
     if any(entry["id"] == account_id for entry in registry["accounts"]):
         raise AccountError(f"account '{account_id}' already exists")
@@ -196,13 +187,13 @@ def add_account(
     entry = {
         "id": account_id,
         "label": label.strip(),
-        "kind": kind,
+        "kind": KIND_API_KEY,
         "hint": hint,
     }
     registry["accounts"].append(entry)
     registry["active"] = current_active if current_active is not None else account_id
     _save_registry(registry)
-    return Account(account_id, entry["label"], kind, hint)
+    return Account(account_id, entry["label"], KIND_API_KEY, hint)
 
 
 def remove_account(account_id: str) -> None:

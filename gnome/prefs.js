@@ -71,12 +71,12 @@ function parseAccountsJson(text) {
     return {accounts, active};
 }
 
-function accountFormError(accountId, key, fromDb = false) {
+function accountFormError(accountId, key) {
     if (!accountId)
         return 'Enter an account id.';
     if (!ACCOUNT_ID_RE.test(accountId))
         return 'Invalid account id: use a-z, 0-9, dot, underscore, or dash (max 64).';
-    if (!fromDb && !key)
+    if (!key)
         return 'Enter an API key.';
     return null;
 }
@@ -188,10 +188,6 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._labelRow = new Adw.EntryRow({title: 'Label (optional)'});
         group.add(this._labelRow);
 
-        this._fromDbRow = new Adw.SwitchRow({title: 'OpenCode login (no API key)'});
-        this._fromDbRow.connect('notify::active', () => this._updateFormState());
-        group.add(this._fromDbRow);
-
         this._keyRow = new Adw.PasswordEntryRow({title: 'API key'});
         group.add(this._keyRow);
 
@@ -251,13 +247,6 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._applyRow.sensitive = !busy;
         const selected = this._selectedAccount();
         this._removeRow.sensitive = !busy && !!selected;
-    }
-
-    _updateFormState() {
-        const fromDb = this._fromDbRow.active;
-        this._keyRow.sensitive = !fromDb;
-        if (fromDb)
-            this._keyRow.text = '';
     }
 
     _beginAccountAction() {
@@ -377,27 +366,19 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     _applyAccountForm() {
         const accountId = this._idRow.text.trim();
         const label = this._labelRow.text.trim();
-        const fromDb = this._fromDbRow.active;
         const key = this._keyRow.text;
-        const error = accountFormError(accountId, key, fromDb);
+        const error = accountFormError(accountId, key);
         if (error) {
             this._setFeedback(error);
             return;
         }
         if (!this._beginAccountAction())
             return;
-        let args;
-        if (fromDb) {
-            args = ['account', 'add', accountId, '--from-db'];
-            if (label)
-                args.push('--label', label);
-        } else {
-            const command = accountCommandFor(accountId, this._accounts);
-            args = ['account', command, accountId, '--store', 'auto'];
-            if (command === 'add' && label)
-                args.push('--label', label);
-        }
-        this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
+        const command = accountCommandFor(accountId, this._accounts);
+        const args = ['account', command, accountId, '--store', 'auto'];
+        if (command === 'add' && label)
+            args.push('--label', label);
+        this._runAccountCommand(args, key, (ok, stdout, stderr) => {
             this._keyRow.text = '';
             if (ok) {
                 const summary = [stdout.trim(), stderr.trim()]
