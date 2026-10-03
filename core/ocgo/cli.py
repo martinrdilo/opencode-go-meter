@@ -23,6 +23,8 @@ ANSI_RESET = "\x1b[0m"
 
 WINDOW_WIDTH = 15  # label column width, matching the console layout
 
+NO_ACCOUNTS_MESSAGE = "no accounts configured — run 'ocgo account add <id>'"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -67,8 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add.add_argument("id", metavar="ID")
     add.add_argument("--label", help="human label (defaults to the id)")
-    add.add_argument(
+    add_source = add.add_mutually_exclusive_group()
+    add_source.add_argument(
         "--store", choices=("auto", "file"), default="auto", help="secret backend"
+    )
+    add_source.add_argument(
+        "--from-db",
+        action="store_true",
+        help="register the local OpenCode login (no API key)",
     )
     add.set_defaults(func=cmd_account_add)
 
@@ -109,19 +117,21 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         targets = _refresh_targets(args)
     except accounts.AccountError as exc:
         return _fail(exc)
+    if not targets:
+        return _fail(NO_ACCOUNTS_MESSAGE)
 
     failures = 0
     for account in targets:
         ok, message = _refresh_one(account)
         if ok:
-            if account.id == accounts.DEFAULT_ACCOUNT_ID and registry is None:
+            if account.kind == accounts.KIND_OPENCODE_DB and registry is None:
                 print(f"Refreshed OpenCode Go: {message}")
             else:
                 print(f"Refreshed OpenCode Go ({account.id}): {message}")
             continue
         failures += 1
         label = ""
-        if args.all or account.id != accounts.DEFAULT_ACCOUNT_ID:
+        if args.all or account.kind != accounts.KIND_OPENCODE_DB:
             label = f"account '{account.id}': "
         print(f"ocgo: {label}{message}", file=sys.stderr)
     return 1 if failures else 0
@@ -138,8 +148,9 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
     """Refresh one account; returns ``(ok, summary_or_error)``."""
     path = cache.cache_path(account.id)
     now = datetime.now(timezone.utc)
+    is_db = account.kind == accounts.KIND_OPENCODE_DB
     try:
-        if account.id == accounts.DEFAULT_ACCOUNT_ID:
+        if is_db:
             token = creds.resolve_credential().token
             payload = api.fetch_status(token)
             data = api.to_cache_schema(payload, now=now)
@@ -148,7 +159,7 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
             payload = api.fetch_zen_status(token)
             data = api.to_cache_schema_zen(payload, now=now)
     except (creds.CredentialError, accounts.AccountError) as exc:
-        if account.id != accounts.DEFAULT_ACCOUNT_ID:
+        if not is_db:
             _record_refresh_failure(exc, now, path)
         return False, str(exc)
     except api.ApiError as exc:
@@ -165,6 +176,8 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
 def _find_account(account_id: str | None) -> accounts.Account:
     """Return the requested account, or the active one when id is None."""
     entries, active_id = accounts.list_accounts()
+    if not entries:
+        raise accounts.AccountError(NO_ACCOUNTS_MESSAGE)
     target = account_id or active_id
     for account in entries:
         if account.id == target:
@@ -232,7 +245,7 @@ def cmd_auth_show(args: argparse.Namespace) -> int:
         account = _find_account(getattr(args, "account", None))
     except accounts.AccountError as exc:
         return _fail(exc)
-    if account.id != accounts.DEFAULT_ACCOUNT_ID:
+    if account.kind != accounts.KIND_OPENCODE_DB:
         return _show_stored_key(account)
 
     try:
@@ -264,13 +277,27 @@ def cmd_account_add(args: argparse.Namespace) -> int:
     account_id = args.id
     try:
         accounts.validate_account_id(account_id)
-        registry = accounts.load_registry()
+        entries, _active = accounts.list_accounts()
     except accounts.AccountError as exc:
         return _fail(exc)
-    if registry is not None and any(
-        entry["id"] == account_id for entry in registry["accounts"]
-    ):
+    if any(account.id == account_id for account in entries):
         return _fail(f"account '{account_id}' already exists")
+
+    label = (args.label or account_id).strip() or account_id
+
+    if args.from_db:
+        try:
+            creds.resolve_credential()
+        except creds.CredentialError as exc:
+            return _fail(exc)
+        try:
+            accounts.add_account(
+                account_id, label, kind=accounts.KIND_OPENCODE_DB
+            )
+        except accounts.AccountError as exc:
+            return _fail(exc)
+        print(f"Added account '{account_id}' (OpenCode login)")
+        return 0
 
     key = _read_api_key().strip()
     if not key:
@@ -283,7 +310,6 @@ def cmd_account_add(args: argparse.Namespace) -> int:
     except api.ApiError as exc:
         return _fail(exc)
 
-    label = (args.label or account_id).strip() or account_id
     try:
         hint = accounts.store_secret(account_id, key, backend=args.store)
     except accounts.AccountError as exc:
@@ -306,17 +332,20 @@ def cmd_account_add(args: argparse.Namespace) -> int:
 
 def cmd_account_set_key(args: argparse.Namespace) -> int:
     account_id = args.id
-    if account_id == accounts.DEFAULT_ACCOUNT_ID:
-        return _fail(
-            "the default account uses the local OpenCode login; "
-            "there is no API key to set"
-        )
     try:
         entries, _active = accounts.list_accounts()
     except accounts.AccountError as exc:
         return _fail(exc)
-    if not any(account.id == account_id for account in entries):
+    account = next(
+        (entry for entry in entries if entry.id == account_id), None
+    )
+    if account is None:
         return _fail(f"account '{account_id}' does not exist")
+    if account.kind == accounts.KIND_OPENCODE_DB:
+        return _fail(
+            f"account '{account_id}' uses the OpenCode login; "
+            "there is no API key to set"
+        )
 
     key = _read_api_key().strip()
     if not key:
@@ -352,7 +381,7 @@ def cmd_account_list(args: argparse.Namespace) -> int:
         return _fail(exc)
     if args.json:
         payload = {
-            "schema": 1,
+            "schema": 2,
             "active": active,
             "accounts": [
                 {
@@ -366,6 +395,9 @@ def cmd_account_list(args: argparse.Namespace) -> int:
             ],
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    if not entries:
+        print("no accounts configured")
         return 0
     for account in entries:
         marker = "*" if account.id == active else " "
@@ -388,8 +420,6 @@ def cmd_account_use(args: argparse.Namespace) -> int:
 
 def cmd_account_remove(args: argparse.Namespace) -> int:
     account_id = args.id
-    if account_id == accounts.DEFAULT_ACCOUNT_ID:
-        return _fail("the default account cannot be removed")
     try:
         accounts.remove_account(account_id)
     except accounts.AccountError as exc:

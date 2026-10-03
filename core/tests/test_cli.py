@@ -500,14 +500,20 @@ class AccountAddTests(AccountCliTestCase):
         fetch.assert_not_called()
         self.assertEqual(accounts.read_secret("work"), _ZEN_KEY)
 
-    def test_add_reserved_id_is_rejected_without_prompt(self):
+    def test_add_default_id_after_removal(self):
         self._isolate()
-        with mock.patch.object(cli, "_read_api_key") as read:
-            code, _out, err = run_cli(["account", "add", "default"])
-        self.assertEqual(code, 1)
-        self.assertIn("reserved", err)
-        read.assert_not_called()
-        self.assertIsNone(accounts.load_registry())
+        code, _out, _err = run_cli(["account", "remove", "default"])
+        self.assertEqual(code, 0)
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+        ):
+            code, _out, _err = run_cli(["account", "add", "default"])
+        self.assertEqual(code, 0)
+        entries, active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["default"])
+        self.assertEqual(active, "default")
+        self.assertEqual(accounts.read_secret("default"), _ZEN_KEY)
 
     def test_add_invalid_id_is_rejected(self):
         self._isolate()
@@ -634,12 +640,14 @@ class AccountSetKeyTests(AccountCliTestCase):
         self.assertEqual(code, 0)
         fetch.assert_called_once_with(_OTHER_KEY)
 
-    def test_set_key_refuses_default(self):
+    def test_set_key_refuses_db_accounts(self):
         self._isolate()
+        accounts.remove_account("default")
+        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
         with mock.patch.object(cli, "_read_api_key") as read:
-            code, _out, err = run_cli(["account", "set-key", "default"])
+            code, _out, err = run_cli(["account", "set-key", "login"])
         self.assertEqual(code, 1)
-        self.assertIn("default account", err)
+        self.assertIn("uses the OpenCode login", err)
         read.assert_not_called()
 
     def test_set_key_unknown_account_fails(self):
@@ -668,7 +676,7 @@ class AccountListTests(AccountCliTestCase):
         self.assertEqual(
             json.loads(out),
             {
-                "schema": 1,
+                "schema": 2,
                 "active": "default",
                 "accounts": [
                     {
@@ -691,7 +699,7 @@ class AccountListTests(AccountCliTestCase):
         self.assertEqual(code, 0)
         payload = json.loads(out)
         self.assertEqual(list(payload), ["schema", "active", "accounts"])
-        self.assertEqual(payload["schema"], 1)
+        self.assertEqual(payload["schema"], 2)
         self.assertEqual(payload["active"], "personal")
         self.assertEqual(
             [account["id"] for account in payload["accounts"]],
@@ -765,11 +773,19 @@ class AccountUseRemoveTests(AccountCliTestCase):
         self.assertEqual(code, 0)
         self.assertEqual(accounts.get_active_id(), "default")
 
-    def test_remove_default_is_refused(self):
+    def test_remove_default_works(self):
         self._isolate()
-        code, _out, err = run_cli(["account", "remove", "default"])
-        self.assertEqual(code, 1)
-        self.assertIn("default account cannot be removed", err)
+        code, out, err = run_cli(["account", "remove", "default"])
+        self.assertEqual(code, 0)
+        self.assertIn("Removed account 'default'", out)
+        self.assertEqual(err, "")
+        entries, active = accounts.list_accounts()
+        self.assertEqual(entries, [])
+        self.assertIsNone(active)
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 2)
+        self.assertIsNone(registry["active"])
+        self.assertEqual(registry["accounts"], [])
 
     def test_remove_unknown_fails(self):
         self._isolate()
@@ -1033,6 +1049,166 @@ class AuthShowAccountTests(AccountCliTestCase):
         code, _out, err = run_cli(["auth", "show", "--account", "work"])
         self.assertEqual(code, 1)
         self.assertIn("ocgo account set-key work", err)
+
+
+class EmptyAccountsTests(AccountCliTestCase):
+    def _empty(self):
+        self._isolate()
+        accounts.remove_account("default")
+
+    def test_refresh_errors(self):
+        self._empty()
+        code, out, err = run_cli(["refresh"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("no accounts configured — run 'ocgo account add <id>'", err)
+
+    def test_refresh_all_errors(self):
+        self._empty()
+        code, _out, err = run_cli(["refresh", "--all"])
+        self.assertEqual(code, 1)
+        self.assertIn("no accounts configured", err)
+
+    def test_status_errors(self):
+        self._empty()
+        code, out, err = run_cli(["status"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("no accounts configured", err)
+
+    def test_status_json_errors(self):
+        self._empty()
+        code, out, err = run_cli(["status", "--json"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("no accounts configured", err)
+
+    def test_auth_show_errors(self):
+        self._empty()
+        code, out, err = run_cli(["auth", "show"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("no accounts configured", err)
+
+    def test_list_human_empty(self):
+        self._empty()
+        code, out, err = run_cli(["account", "list"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "no accounts configured\n")
+        self.assertEqual(err, "")
+
+    def test_list_json_empty_schema_2(self):
+        self._empty()
+        code, out, err = run_cli(["account", "list", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(
+            json.loads(out),
+            {"schema": 2, "active": None, "accounts": []},
+        )
+
+
+class FromDbTests(AccountCliTestCase):
+    def _credential(self):
+        return creds.Credential(token="console-token-abcdefgh", source="test")
+
+    def test_add_from_db_registers_without_key_prompt(self):
+        self._isolate()
+        with (
+            mock.patch.object(
+                cli.creds, "resolve_credential", return_value=self._credential()
+            ),
+            mock.patch.object(cli, "_read_api_key") as read,
+        ):
+            code, out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 0)
+        self.assertIn("Added account 'login' (OpenCode login)", out)
+        self.assertEqual(err, "")
+        read.assert_not_called()
+        entries, active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["default", "login"])
+        self.assertEqual(entries[1].kind, "opencode-db")
+        self.assertEqual(active, "default")
+        self.assertFalse(accounts.has_secret("login"))
+
+    def test_add_from_db_invalid_credential_registers_nothing(self):
+        self._isolate()
+        with mock.patch.object(
+            cli.creds,
+            "resolve_credential",
+            side_effect=creds.CredentialError("No OpenCode credential found."),
+        ):
+            code, _out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("No OpenCode credential found.", err)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["default"])
+
+    def test_add_from_db_rejects_store(self):
+        self._isolate()
+        code = run_cli(["account", "add", "login", "--from-db", "--store", "file"])[0]
+        self.assertEqual(code, 2)
+
+    def test_remove_default_then_add_from_db_under_any_id(self):
+        self._isolate()
+        code, _out, _err = run_cli(["account", "remove", "default"])
+        self.assertEqual(code, 0)
+        with mock.patch.object(
+            cli.creds, "resolve_credential", return_value=self._credential()
+        ):
+            code, _out, _err = run_cli(["account", "add", "opencode", "--from-db"])
+        self.assertEqual(code, 0)
+        entries, active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["opencode"])
+        self.assertEqual(active, "opencode")
+        self.assertEqual(entries[0].kind, "opencode-db")
+
+    def test_db_kind_named_refresh_uses_console_endpoint(self):
+        self._isolate()
+        accounts.remove_account("default")
+        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        with (
+            mock.patch.object(
+                cli.creds, "resolve_credential", return_value=self._credential()
+            ) as resolve,
+            mock.patch.object(
+                cli.api, "fetch_status", return_value=live_payload()
+            ) as fetch,
+            mock.patch.object(cli.api, "fetch_zen_status") as zen,
+        ):
+            code, out, _err = run_cli(["refresh", "--account", "login"])
+        self.assertEqual(code, 0)
+        resolve.assert_called_once_with()
+        fetch.assert_called_once_with("console-token-abcdefgh")
+        zen.assert_not_called()
+        self.assertIn("Refreshed OpenCode Go (login):", out)
+        self.assertIsNotNone(cache.load(cache.cache_path("login")))
+
+    def test_db_kind_named_auth_show_uses_db_source(self):
+        self._isolate()
+        accounts.remove_account("default")
+        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        with mock.patch.object(
+            cli.creds, "resolve_credential", return_value=self._credential()
+        ):
+            code, out, err = run_cli(["auth", "show", "--account", "login"])
+        self.assertEqual(code, 0)
+        self.assertIn("Source:  test", out)
+        self.assertIn("Token:   consol…efgh", out)
+        self.assertEqual(err, "")
+
+    def test_api_key_account_with_default_id_uses_zen(self):
+        self._isolate()
+        accounts.remove_account("default")
+        accounts.add_account("default", "Work key")
+        hint = accounts.store_secret("default", _ZEN_KEY)
+        accounts.update_hint("default", hint)
+        with mock.patch.object(
+            cli.api, "fetch_zen_status", return_value=zen_payload()
+        ) as zen:
+            code, _out, _err = run_cli(["refresh", "--account", "default"])
+        self.assertEqual(code, 0)
+        zen.assert_called_once_with(_ZEN_KEY)
 
 
 if __name__ == "__main__":

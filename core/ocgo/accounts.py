@@ -1,9 +1,11 @@
 """Accounts registry and secret storage for ocgo.
 
 The registry (``$XDG_CONFIG_HOME/ocgo/accounts.json``) is the single source of
-truth for the account list and the active account. Named accounts are
-``api-key`` accounts; the implicit ``default`` account (``opencode-db``)
-always exists, is listed first, and cannot be removed.
+truth for the account list and the active account. It is fully user-owned: the
+list may be empty, ``active`` may be ``null``, and every account — of kind
+``api-key`` or ``opencode-db`` — can be added and removed. Absent or v1
+registries materialize the seeded ``default`` (``opencode-db``) account in
+memory; the next mutation writes v2 with the effective list.
 
 Secrets are resolved in this order: the ``OCGO_TOKEN_<ID>`` environment
 variable, the GNOME keyring through the ``secret-tool`` CLI, and finally an
@@ -32,7 +34,7 @@ DEFAULT_ACCOUNT_ID = "default"
 DEFAULT_LABEL = "Default"
 KIND_OPENCODE_DB = "opencode-db"
 KIND_API_KEY = "api-key"
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 
 _SECRET_TOOL = "secret-tool"
 _SECRET_TIMEOUT = 10
@@ -91,11 +93,8 @@ def env_var_for(account_id: str) -> str:
 
 
 def validate_account_id(account_id: str) -> str:
-    """Validate a named account id, rejecting the reserved ``default``."""
-    _require_valid_id(account_id)
-    if account_id == DEFAULT_ACCOUNT_ID:
-        raise AccountError("'default' is a reserved account id")
-    return account_id
+    """Validate an account id (``default`` is a regular id since v2)."""
+    return _require_valid_id(account_id)
 
 
 def load_registry() -> dict | None:
@@ -117,117 +116,154 @@ def load_registry() -> dict | None:
     return data
 
 
-def list_accounts() -> tuple[list[Account], str]:
-    """Return ``(accounts, active_id)``; default is always first.
+def _seeded_default_entry() -> dict:
+    return {
+        "id": DEFAULT_ACCOUNT_ID,
+        "label": DEFAULT_LABEL,
+        "kind": KIND_OPENCODE_DB,
+        "hint": None,
+    }
 
-    ``active_id`` falls back to ``default`` when the stored value points at an
-    account that no longer exists.
-    """
+
+def _effective_registry() -> dict:
+    """Return a v2 view: absent and v1 registries materialize the seeded default."""
     registry = load_registry()
-    accounts = [Account(DEFAULT_ACCOUNT_ID, DEFAULT_LABEL, KIND_OPENCODE_DB)]
-    active = DEFAULT_ACCOUNT_ID
-    if registry is not None:
-        for entry in registry["accounts"]:
-            accounts.append(
-                Account(entry["id"], entry["label"], entry["kind"], entry.get("hint"))
-            )
-        stored = registry["active"]
-        if any(account.id == stored for account in accounts):
-            active = stored
-    return accounts, active
+    if registry is None:
+        return {
+            "version": REGISTRY_VERSION,
+            "active": DEFAULT_ACCOUNT_ID,
+            "accounts": [_seeded_default_entry()],
+        }
+    if registry["version"] == 1:
+        return {
+            "version": REGISTRY_VERSION,
+            "active": registry["active"],
+            "accounts": [_seeded_default_entry(), *registry["accounts"]],
+        }
+    return registry
 
 
-def get_active_id() -> str:
-    """Return the active account id, falling back to ``default``."""
+def _account_from_entry(entry: dict) -> Account:
+    return Account(entry["id"], entry["label"], entry["kind"], entry.get("hint"))
+
+
+def _effective_active(entries: list[dict], stored: str | None) -> str | None:
+    if stored is not None and any(entry["id"] == stored for entry in entries):
+        return stored
+    return entries[0]["id"] if entries else None
+
+
+def list_accounts() -> tuple[list[Account], str | None]:
+    """Return ``(accounts, active_id)``.
+
+    ``active_id`` is a listed id, else the first account's id, else ``None``.
+    """
+    registry = _effective_registry()
+    entries = [_account_from_entry(entry) for entry in registry["accounts"]]
+    active = _effective_active(registry["accounts"], registry["active"])
+    return entries, active
+
+
+def get_active_id() -> str | None:
+    """Return the active account id, or ``None`` when no account is listed."""
     return list_accounts()[1]
 
 
-def add_account(account_id: str, label: str, *, hint: str | None = None) -> Account:
-    """Register a new ``api-key`` account and return it."""
-    validate_account_id(account_id)
+def add_account(
+    account_id: str,
+    label: str,
+    *,
+    kind: str = KIND_API_KEY,
+    hint: str | None = None,
+) -> Account:
+    """Register an account (``api-key`` or ``opencode-db``) and return it.
+
+    When the current effective list is empty the added account becomes active.
+    """
+    _require_valid_id(account_id)
+    if kind not in (KIND_API_KEY, KIND_OPENCODE_DB):
+        raise AccountError(f"unsupported account kind {kind!r}")
     if not isinstance(label, str) or not label.strip():
         raise AccountError("the account label must be a non-empty string")
     if hint is not None and not isinstance(hint, str):
         raise AccountError("the account hint must be a string or None")
-    registry = load_registry()
-    if registry is None:
-        registry = {
-            "version": REGISTRY_VERSION,
-            "active": DEFAULT_ACCOUNT_ID,
-            "accounts": [],
-        }
+    if kind == KIND_OPENCODE_DB and hint is not None:
+        raise AccountError("opencode-db accounts cannot have a hint")
+    registry = _effective_registry()
     if any(entry["id"] == account_id for entry in registry["accounts"]):
         raise AccountError(f"account '{account_id}' already exists")
+    current_active = _effective_active(registry["accounts"], registry["active"])
     entry = {
         "id": account_id,
         "label": label.strip(),
-        "kind": KIND_API_KEY,
+        "kind": kind,
         "hint": hint,
     }
     registry["accounts"].append(entry)
+    registry["active"] = current_active if current_active is not None else account_id
     _save_registry(registry)
-    return Account(account_id, entry["label"], KIND_API_KEY, hint)
+    return Account(account_id, entry["label"], kind, hint)
 
 
 def remove_account(account_id: str) -> None:
-    """Remove an account plus its stored secret; refuses the default account.
+    """Remove any account, including the seeded default.
 
-    The secret is deleted before the registry entry: a real delete failure
-    aborts the removal and leaves the registry untouched. Absence stays fine.
+    The secret of an ``api-key`` account is deleted before the registry entry:
+    a real delete failure aborts the removal and leaves the registry untouched.
+    ``opencode-db`` accounts have no secret. The active account falls back to
+    the first remaining account, or ``None`` when none remain.
     """
     _require_valid_id(account_id)
-    if account_id == DEFAULT_ACCOUNT_ID:
-        raise AccountError("the default account cannot be removed")
-    registry = load_registry()
-    if registry is not None:
-        remaining = [
-            entry for entry in registry["accounts"] if entry["id"] != account_id
-        ]
-        if len(remaining) != len(registry["accounts"]):
-            delete_secret(account_id)
-            registry["accounts"] = remaining
-            if registry["active"] == account_id:
-                registry["active"] = DEFAULT_ACCOUNT_ID
-            _save_registry(registry)
-            return
-    raise AccountError(f"account '{account_id}' does not exist")
+    registry = _effective_registry()
+    entry = next(
+        (item for item in registry["accounts"] if item["id"] == account_id), None
+    )
+    if entry is None:
+        raise AccountError(f"account '{account_id}' does not exist")
+    if entry["kind"] == KIND_API_KEY:
+        delete_secret(account_id)
+    current_active = _effective_active(registry["accounts"], registry["active"])
+    remaining = [item for item in registry["accounts"] if item["id"] != account_id]
+    registry["accounts"] = remaining
+    if current_active == account_id:
+        registry["active"] = remaining[0]["id"] if remaining else None
+    else:
+        registry["active"] = current_active
+    _save_registry(registry)
 
 
 def set_active(account_id: str) -> None:
-    """Switch the active account; ``default`` is always valid."""
+    """Switch the active account; the id must be listed in the registry."""
     _require_valid_id(account_id)
-    registry = load_registry()
-    if account_id == DEFAULT_ACCOUNT_ID:
-        if registry is None:
-            return
-    elif registry is None or not any(
-        entry["id"] == account_id for entry in registry["accounts"]
-    ):
+    registry = _effective_registry()
+    if not any(entry["id"] == account_id for entry in registry["accounts"]):
         raise AccountError(f"account '{account_id}' does not exist")
     registry["active"] = account_id
     _save_registry(registry)
 
 
 def update_hint(account_id: str, hint: str | None) -> Account:
-    """Replace a named account's masked hint and return the updated account.
+    """Replace an account's masked hint and return the updated account.
 
     ``hint`` must come from :func:`store_secret`; never pass a raw secret.
+    ``opencode-db`` accounts cannot have a hint.
     """
-    validate_account_id(account_id)
+    _require_valid_id(account_id)
     normalized: str | None = None
     if isinstance(hint, str):
         normalized = hint.strip() or None
     elif hint is not None:
         raise AccountError("the account hint must be a string or None")
-    registry = load_registry()
-    if registry is not None:
-        for entry in registry["accounts"]:
-            if entry["id"] == account_id:
-                entry["hint"] = normalized
-                _save_registry(registry)
-                return Account(
-                    entry["id"], entry["label"], entry["kind"], normalized
+    registry = _effective_registry()
+    for entry in registry["accounts"]:
+        if entry["id"] == account_id:
+            if entry["kind"] == KIND_OPENCODE_DB and normalized is not None:
+                raise AccountError(
+                    f"account '{account_id}' uses the OpenCode login and has no hint"
                 )
+            entry["hint"] = normalized
+            _save_registry(registry)
+            return _account_from_entry(entry)
     raise AccountError(f"account '{account_id}' does not exist")
 
 
@@ -354,27 +390,38 @@ def _validate_registry(data: object, path: Path) -> None:
     if (
         isinstance(version, bool)
         or not isinstance(version, int)
-        or version != REGISTRY_VERSION
+        or version not in (1, 2)
     ):
         raise _registry_error(path, f"unsupported version {version!r}")
     active = data.get("active")
-    if not isinstance(active, str) or not _ID_PATTERN.match(active):
-        raise _registry_error(path, f"'active' must be a valid account id, got {active!r}")
+    if version == 1:
+        if not isinstance(active, str) or not _ID_PATTERN.match(active):
+            raise _registry_error(
+                path, f"'active' must be a valid account id, got {active!r}"
+            )
+    elif active is not None and (
+        not isinstance(active, str) or not _ID_PATTERN.match(active)
+    ):
+        raise _registry_error(
+            path, f"'active' must be a valid account id or null, got {active!r}"
+        )
     entries = data.get("accounts")
     if not isinstance(entries, list):
         raise _registry_error(path, "'accounts' must be a list")
     seen: set[str] = set()
     for index, entry in enumerate(entries):
-        _validate_entry(entry, index, seen, path)
+        _validate_entry(entry, index, seen, path, version)
 
 
-def _validate_entry(entry: object, index: int, seen: set[str], path: Path) -> None:
+def _validate_entry(
+    entry: object, index: int, seen: set[str], path: Path, version: int
+) -> None:
     if not isinstance(entry, dict):
         raise _registry_error(path, f"account #{index} is not an object")
     account_id = entry.get("id")
     if not isinstance(account_id, str) or not _ID_PATTERN.match(account_id):
         raise _registry_error(path, f"account #{index} has an invalid id {account_id!r}")
-    if account_id == DEFAULT_ACCOUNT_ID:
+    if version == 1 and account_id == DEFAULT_ACCOUNT_ID:
         raise _registry_error(path, "the reserved 'default' account must not be stored")
     if account_id in seen:
         raise _registry_error(path, f"duplicate account id {account_id!r}")
@@ -382,13 +429,19 @@ def _validate_entry(entry: object, index: int, seen: set[str], path: Path) -> No
     label = entry.get("label")
     if not isinstance(label, str) or not label.strip():
         raise _registry_error(path, f"account '{account_id}' has an invalid label")
-    if entry.get("kind") != KIND_API_KEY:
+    kind = entry.get("kind")
+    allowed = (KIND_API_KEY,) if version == 1 else (KIND_API_KEY, KIND_OPENCODE_DB)
+    if kind not in allowed:
         raise _registry_error(
-            path, f"account '{account_id}' has an unsupported kind {entry.get('kind')!r}"
+            path, f"account '{account_id}' has an unsupported kind {kind!r}"
         )
     hint = entry.get("hint")
     if hint is not None and not isinstance(hint, str):
         raise _registry_error(path, f"account '{account_id}' has an invalid hint")
+    if kind == KIND_OPENCODE_DB and hint is not None:
+        raise _registry_error(
+            path, f"account '{account_id}' is opencode-db and cannot have a hint"
+        )
 
 
 def _save_registry(data: dict) -> None:

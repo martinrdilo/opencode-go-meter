@@ -163,14 +163,16 @@ class IdValidationTests(AccountsTestCase):
                 with self.assertRaises(accounts.AccountError):
                     accounts.validate_account_id(account_id)
 
-    def test_default_is_reserved(self):
-        with self.assertRaises(accounts.AccountError):
-            accounts.validate_account_id("default")
+    def test_default_is_a_valid_id(self):
+        self.assertEqual(accounts.validate_account_id("default"), "default")
 
-    def test_add_rejects_default(self):
-        with self.assertRaises(accounts.AccountError):
-            accounts.add_account("default", "Nope")
-        self.assertIsNone(accounts.load_registry())
+    def test_add_accepts_default_id(self):
+        accounts.remove_account("default")  # writes the empty v2 registry
+        account = accounts.add_account("default", "My login")
+        self.assertEqual(account.id, "default")
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["default"])
+        self.assertEqual(active, "default")
 
     def test_add_rejects_invalid_id(self):
         with self.assertRaises(accounts.AccountError):
@@ -253,7 +255,7 @@ class RegistryTests(AccountsTestCase):
         base = {"version": 1, "active": "default", "accounts": []}
         cases = {
             "not-object": [1, 2],
-            "bad-version": {**base, "version": 2},
+            "bad-version": {**base, "version": 3},
             "float-version": {**base, "version": 1.0},
             "bool-version": {**base, "version": True},
             "missing-active": {"version": 1, "accounts": []},
@@ -290,6 +292,19 @@ class RegistryTests(AccountsTestCase):
                     {"id": "work", "label": "W", "kind": "api-key", "hint": 7}
                 ],
             },
+            "v2-active-wrong-type": {"version": 2, "active": 5, "accounts": []},
+            "v2-unknown-kind": {
+                "version": 2,
+                "active": None,
+                "accounts": [{"id": "work", "label": "W", "kind": "bogus"}],
+            },
+            "v2-db-with-hint": {
+                "version": 2,
+                "active": None,
+                "accounts": [
+                    {"id": "login", "label": "L", "kind": "opencode-db", "hint": "x"}
+                ],
+            },
         }
         for name, data in cases.items():
             with self.subTest(case=name):
@@ -311,9 +326,14 @@ class RegistryTests(AccountsTestCase):
             accounts.set_active("ghost")
         self.assertIsNone(accounts.load_registry())
 
-    def test_set_active_default_without_registry_is_noop(self):
+    def test_set_active_default_without_registry_materializes_v2(self):
         accounts.set_active("default")
-        self.assertIsNone(accounts.load_registry())
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 2)
+        self.assertEqual(registry["active"], "default")
+        self.assertEqual(
+            [entry["id"] for entry in registry["accounts"]], ["default"]
+        )
 
     def test_set_active_default_switches_back(self):
         accounts.add_account("work", "Work")
@@ -336,9 +356,15 @@ class RegistryTests(AccountsTestCase):
         accounts.remove_account("work")
         self.assertEqual(accounts.get_active_id(), "default")
 
-    def test_remove_default_refused(self):
-        with self.assertRaises(accounts.AccountError):
-            accounts.remove_account("default")
+    def test_remove_seeded_default_writes_empty_registry(self):
+        accounts.remove_account("default")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 2)
+        self.assertIsNone(registry["active"])
+        self.assertEqual(registry["accounts"], [])
+        entries, active = accounts.list_accounts()
+        self.assertEqual(entries, [])
+        self.assertIsNone(active)
 
     def test_remove_missing_raises(self):
         with self.assertRaises(accounts.AccountError):
@@ -368,6 +394,203 @@ class RegistryTests(AccountsTestCase):
     def test_update_hint_rejects_default(self):
         with self.assertRaises(accounts.AccountError):
             accounts.update_hint("default", "x")
+
+
+class RegistryV2Tests(AccountsTestCase):
+    def test_v1_registry_prepends_seeded_default(self):
+        self.write_registry(
+            {
+                "version": 1,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None}
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["default", "work"])
+        self.assertEqual(entries[0].kind, "opencode-db")
+        self.assertEqual(active, "work")
+
+    def test_v1_mutation_writes_v2_with_seeded_default(self):
+        self.write_registry(
+            {
+                "version": 1,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None}
+                ],
+            }
+        )
+        accounts.add_account("personal", "Personal")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 2)
+        self.assertEqual(registry["active"], "work")
+        self.assertEqual(
+            [entry["id"] for entry in registry["accounts"]],
+            ["default", "work", "personal"],
+        )
+
+    def test_v2_empty_list_and_null_active(self):
+        self.write_registry({"version": 2, "active": None, "accounts": []})
+        entries, active = accounts.list_accounts()
+        self.assertEqual(entries, [])
+        self.assertIsNone(active)
+        self.assertIsNone(accounts.get_active_id())
+
+    def test_v2_active_falls_back_to_first_account(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": None,
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None},
+                    {"id": "personal", "label": "P", "kind": "api-key", "hint": None},
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(active, "work")
+
+    def test_v2_stored_default_id_is_not_duplicated(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "default",
+                "accounts": [
+                    {
+                        "id": "default",
+                        "label": "My login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    }
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["default"])
+        self.assertEqual(entries[0].label, "My login")
+        self.assertEqual(active, "default")
+
+    def test_add_after_empty_becomes_active(self):
+        self.write_registry({"version": 2, "active": None, "accounts": []})
+        accounts.add_account("work", "Work")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["active"], "work")
+        self.assertEqual([entry["id"] for entry in registry["accounts"]], ["work"])
+
+    def test_add_materializes_effective_active(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": None,
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None}
+                ],
+            }
+        )
+        accounts.add_account("personal", "Personal")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["active"], "work")
+
+    def test_remove_last_account_sets_active_null(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None}
+                ],
+            }
+        )
+        accounts.remove_account("work")
+        registry = accounts.load_registry()
+        self.assertIsNone(registry["active"])
+        self.assertEqual(registry["accounts"], [])
+
+    def test_remove_active_falls_back_to_first_remaining(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "personal",
+                "accounts": [
+                    {
+                        "id": "default",
+                        "label": "D",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    },
+                    {"id": "work", "label": "W", "kind": "api-key", "hint": None},
+                    {"id": "personal", "label": "P", "kind": "api-key", "hint": None},
+                ],
+            }
+        )
+        accounts.remove_account("personal")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["active"], "default")
+        self.assertEqual(
+            [entry["id"] for entry in registry["accounts"]], ["default", "work"]
+        )
+
+    def test_add_db_kind(self):
+        account = accounts.add_account("login", "Login", kind="opencode-db")
+        self.assertEqual(account.kind, "opencode-db")
+        self.assertIsNone(account.hint)
+        registry = accounts.load_registry()
+        stored = next(entry for entry in registry["accounts"] if entry["id"] == "login")
+        self.assertEqual(stored["kind"], "opencode-db")
+        self.assertIsNone(stored["hint"])
+
+    def test_add_db_kind_rejects_hint(self):
+        with self.assertRaises(accounts.AccountError):
+            accounts.add_account("login", "Login", kind="opencode-db", hint="x")
+        self.assertIsNone(accounts.load_registry())
+
+    def test_add_rejects_unknown_kind(self):
+        with self.assertRaises(accounts.AccountError):
+            accounts.add_account("login", "Login", kind="bogus")
+        self.assertIsNone(accounts.load_registry())
+
+    def test_remove_db_kind_does_not_touch_secrets(self):
+        self.use_fake_tool()
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "login",
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "Login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    }
+                ],
+            }
+        )
+        accounts.remove_account("login")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["accounts"], [])
+        self.assertIsNone(registry["active"])
+        self.assertNotIn("clear", self.argv_log())
+
+    def test_update_hint_rejects_db_kind(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "login",
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "Login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    }
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError):
+            accounts.update_hint("login", "oc_sk_…x")
 
 
 class KeyringSecretTests(AccountsTestCase):
@@ -409,7 +632,9 @@ class KeyringSecretTests(AccountsTestCase):
         self.assertNotIn(_SECRET, log)
         registry_text = accounts.registry_path().read_text(encoding="utf-8")
         self.assertNotIn(_SECRET, registry_text)
-        self.assertEqual(json.loads(registry_text)["accounts"][0]["hint"], hint)
+        stored = json.loads(registry_text)["accounts"]
+        self.assertEqual(stored[0]["id"], "default")
+        self.assertEqual(stored[1]["hint"], hint)
 
     def test_store_failure_does_not_leak_secret(self):
         self.use_fake_tool()
