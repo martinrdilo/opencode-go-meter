@@ -148,6 +148,8 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
             payload = api.fetch_zen_status(token)
             data = api.to_cache_schema_zen(payload, now=now)
     except (creds.CredentialError, accounts.AccountError) as exc:
+        if account.id != accounts.DEFAULT_ACCOUNT_ID:
+            _record_refresh_failure(exc, now, path)
         return False, str(exc)
     except api.ApiError as exc:
         _record_refresh_failure(exc, now, path)
@@ -389,10 +391,17 @@ def cmd_account_remove(args: argparse.Namespace) -> int:
     if account_id == accounts.DEFAULT_ACCOUNT_ID:
         return _fail("the default account cannot be removed")
     try:
-        cache.remove_account_cache(account_id)
         accounts.remove_account(account_id)
-    except (accounts.AccountError, OSError) as exc:
+    except accounts.AccountError as exc:
         return _fail(exc)
+    try:
+        cache.remove_account_cache(account_id)
+    except (accounts.AccountError, OSError) as exc:
+        print(
+            f"ocgo: removed account '{account_id}' but could not clean its "
+            f"cache: {exc}",
+            file=sys.stderr,
+        )
     print(f"Removed account '{account_id}'")
     return 0
 

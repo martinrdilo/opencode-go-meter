@@ -553,6 +553,19 @@ class AccountAddTests(AccountCliTestCase):
         self.assertIsNone(accounts.load_registry())
         self.assertFalse(accounts.has_secret("work"))
 
+    def test_add_file_replaces_an_orphan_keyring_entry(self):
+        self._isolate()
+        accounts.store_secret("work", _ZEN_KEY)  # orphan entry, no registry row
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_OTHER_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+        ):
+            code, _out, _err = run_cli(["account", "add", "work", "--store", "file"])
+        self.assertEqual(code, 0)
+        self.assertEqual(accounts.read_secret("work"), _OTHER_KEY)
+        self.assertFalse((self.secrets / "items" / "work").exists())
+        self.assertTrue(accounts.secret_file_path("work").is_file())
+
 
 class AccountSetKeyTests(AccountCliTestCase):
     def test_set_key_replaces_hint_and_secret(self):
@@ -600,6 +613,26 @@ class AccountSetKeyTests(AccountCliTestCase):
         self.assertEqual(code, 0)
         self.assertIn("no active OpenCode Go subscription", err)
         self.assertEqual(accounts.read_secret("work"), _OTHER_KEY)
+
+    def test_set_key_file_rotates_keyring_backed_account_for_real(self):
+        self._isolate()
+        self._seed_account("work")
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_OTHER_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+        ):
+            code, _out, _err = run_cli(
+                ["account", "set-key", "work", "--store", "file"]
+            )
+        self.assertEqual(code, 0)
+        self.assertFalse((self.secrets / "items" / "work").exists())
+        self.assertEqual(accounts.read_secret("work"), _OTHER_KEY)
+        with mock.patch.object(
+            cli.api, "fetch_zen_status", return_value=zen_payload()
+        ) as fetch:
+            code, _out, _err = run_cli(["refresh", "--account", "work"])
+        self.assertEqual(code, 0)
+        fetch.assert_called_once_with(_OTHER_KEY)
 
     def test_set_key_refuses_default(self):
         self._isolate()
@@ -745,6 +778,27 @@ class AccountUseRemoveTests(AccountCliTestCase):
         self.assertEqual(code, 1)
         self.assertIn("does not exist", err)
 
+    def test_remove_failure_leaves_the_cache_untouched(self):
+        self._isolate()
+        cache.save(good_cache_data(), cache.cache_path("ghost"))
+        code, _out, err = run_cli(["account", "remove", "ghost"])
+        self.assertEqual(code, 1)
+        self.assertIn("does not exist", err)
+        self.assertTrue(cache.cache_path("ghost").exists())
+
+    def test_remove_succeeds_when_cache_cleanup_fails(self):
+        self._isolate()
+        self._seed_account("work")
+        with mock.patch.object(
+            cli.cache, "remove_account_cache", side_effect=OSError("boom")
+        ):
+            code, out, err = run_cli(["account", "remove", "work"])
+        self.assertEqual(code, 0)
+        self.assertIn("Removed account 'work'", out)
+        self.assertIn("could not clean its cache", err)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["default"])
+
 
 class RefreshAccountTests(AccountCliTestCase):
     def _credential(self):
@@ -807,6 +861,20 @@ class RefreshAccountTests(AccountCliTestCase):
         self.assertIn("ocgo account set-key work", err)
         self.assertIsNone(cache.load(cache.cache_path("work")))
 
+    def test_refresh_named_resolution_failure_records_last_error(self):
+        self._isolate()
+        accounts.add_account("work", "Work")  # no stored secret
+        good = good_cache_data()
+        cache.save(good, cache.cache_path("work"))
+        code, _out, err = run_cli(["refresh", "--account", "work"])
+        self.assertEqual(code, 1)
+        self.assertIn("no secret found", err)
+        data = cache.load(cache.cache_path("work"))
+        self.assertIsNotNone(data)
+        self.assertEqual(data["windows"], good["windows"])
+        self.assertIn("no secret found", data["last_error"])
+        self.assertIsNotNone(fmt.parse_iso(data["last_error_at"]))
+
     def test_refresh_account_and_all_are_exclusive(self):
         self._isolate()
         self.assertEqual(run_cli(["refresh", "--account", "work", "--all"])[0], 2)
@@ -822,14 +890,15 @@ class RefreshAccountTests(AccountCliTestCase):
         self._isolate()
         self._seed_account("work")
         accounts.set_active("work")
-        cache.save(good_cache_data(), cache.cache_path("work"))
+        good = good_cache_data()
+        cache.save(good, cache.cache_path("work"))
         error = api.ApiError("network error contacting opencode.ai: boom")
         with mock.patch.object(cli.api, "fetch_zen_status", side_effect=error):
             code, _out, err = run_cli(["refresh"])
         self.assertEqual(code, 1)
         self.assertIn("boom", err)
         data = cache.load(cache.cache_path("work"))
-        self.assertEqual(data["windows"], good_cache_data()["windows"])
+        self.assertEqual(data["windows"], good["windows"])
         self.assertEqual(data["last_error"], str(error))
         self.assertIsNotNone(fmt.parse_iso(data["last_error_at"]))
 

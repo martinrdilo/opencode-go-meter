@@ -518,6 +518,32 @@ class FileSecretTests(AccountsTestCase):
         self.assertTrue(accounts.has_secret("work"))
 
 
+class SecretMoveTests(AccountsTestCase):
+    def test_file_store_clears_the_keyring_shadow(self):
+        self.use_fake_tool()
+        accounts.store_secret("work", "keyring-secret-value")
+        accounts.store_secret("work", "file-secret-value", backend="file")
+        self.assertEqual(accounts.read_secret("work"), "file-secret-value")
+        self.assertFalse((self.secrets / "items" / "work").exists())
+        self.assertTrue(accounts.secret_file_path("work").is_file())
+
+    def test_keyring_store_removes_the_file_shadow(self):
+        self.use_fake_tool()
+        accounts.store_secret("work", "file-secret-value", backend="file")
+        accounts.store_secret("work", "keyring-secret-value", backend="keyring")
+        self.assertEqual(accounts.read_secret("work"), "keyring-secret-value")
+        self.assertFalse(accounts.secret_file_path("work").exists())
+
+    def test_failed_keyring_write_leaves_no_shadow(self):
+        self.use_fake_tool()
+        accounts.store_secret("work", "file-secret-value", backend="file")
+        with mock.patch.dict(os.environ, {"FAKE_SECRET_TOOL_FAIL": "store"}):
+            with self.assertRaises(accounts.AccountError):
+                accounts.store_secret("work", "new-secret-value", backend="keyring")
+        self.assertFalse(accounts.secret_file_path("work").exists())
+        self.assertFalse(accounts.has_secret("work"))
+
+
 class AtomicWriteTests(AccountsTestCase):
     def test_fchmod_failure_closes_fd_and_cleans_up(self):
         target = self.tmp / "output.json"

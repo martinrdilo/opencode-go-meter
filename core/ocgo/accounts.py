@@ -239,9 +239,12 @@ def secret_available() -> bool:
 def store_secret(account_id: str, secret: str, *, backend: str = "auto") -> str:
     """Store a secret and return its masked hint.
 
-    The caller registers the account first; this function only touches secret
-    storage. Backends: ``auto`` (keyring, error when unavailable), ``keyring``
-    and ``file`` (0600 file under ``keys_dir()``).
+    The selected backend becomes authoritative: the other backend's copy is
+    removed before writing ("move" semantics), so rotating a key can never
+    leave an older, shadowing copy in place. The caller registers the account
+    first; this function only touches secret storage. Backends: ``auto``
+    (keyring, error when unavailable), ``keyring`` and ``file`` (0600 file
+    under ``keys_dir()``).
     """
     _require_valid_id(account_id)
     if not isinstance(secret, str) or not secret.strip():
@@ -254,8 +257,10 @@ def store_secret(account_id: str, secret: str, *, backend: str = "auto") -> str:
     if backend == "keyring":
         if not secret_available():
             raise AccountError(_NO_SECRET_TOOL_MESSAGE)
+        _remove_secret_file(account_id)
         _keyring_store(account_id, secret)
     elif backend == "file":
+        _clear_keyring_secret(account_id)
         _write_secret_file(account_id, secret)
     else:
         raise AccountError(
@@ -286,8 +291,18 @@ def read_secret(account_id: str) -> str:
 def delete_secret(account_id: str) -> None:
     """Clear the keyring and file backends; absence is not an error."""
     _require_valid_id(account_id)
+    _clear_keyring_secret(account_id)
+    _remove_secret_file(account_id)
+
+
+def _clear_keyring_secret(account_id: str) -> None:
+    """Best-effort keyring clear; absence and failure are indistinguishable."""
     if secret_available():
         _keyring_clear(account_id)
+
+
+def _remove_secret_file(account_id: str) -> None:
+    """Delete the file-backend secret; missing is fine, real errors raise."""
     path = secret_file_path(account_id)
     try:
         path.unlink()
