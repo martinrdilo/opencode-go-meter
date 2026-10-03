@@ -1,6 +1,6 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
-**Status**: In progress — T1–T3 done (2026-10-02); T4 next
+**Status**: In progress — T1–T4 done (2026-10-02); T5 next
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
@@ -61,7 +61,7 @@ Out (not now):
 - [x] **T3 — GNOME: account-aware cache + popup switcher** *(route: delegated writer)* — done: `747d646` + switch-race fix `661c29f` (validated with before/after harness); static gates green. Accepted minor: rapid consecutive switches may skip the final immediate refresh (UI reconciles; timer covers it).
   `gnome/extension.js` (+ stylesheet if needed); `gnome/scripts/check_collisions.py` must stay green.
   Read accounts/active via `ocgo account list --json`; per-account cache path + monitor re-target on switch; submenu with radio entries → `ocgo account use <id>` + refresh; header shows account label; no-subscription/error states via the existing warning row.
-- [ ] **T4 — GNOME: prefs account management** *(route: delegated writer — same session as T3)*
+- [x] **T4 — GNOME: prefs account management** *(route: delegated writer — same session as T3)* — done: `5cb9d78` + guards/newest-wins fix `c8c4374` (validated PASS, no residual); static gates green.
   `gnome/prefs.js`: Accounts group — active-account combo (from `account list --json`), add/replace form (id, label, `PasswordEntry`) spawning `ocgo account add|set-key` with the key on **stdin**, remove action, feedback label; nothing secret persists in GSettings.
 - [ ] **T5 — Docs** *(route: same writer as T3/T4)*
   `README.md` accounts section + security notes; update this doc.
@@ -90,7 +90,8 @@ Out (not now):
 - 2026-10-02 — T1 closed: `core/ocgo/accounts.py` (registry + secret-tool/file/env secret storage) with 54 tests (`f17d69f`); hardening `edb87ea` (int-only version check, unreadable-file errors, fd-leak fix, secret deleted before registry on remove); full suite 140 green; independent verifier PASS-WITH-FINDINGS (6 minor: 4 fixed + 2 documented; keyring-clear stays best-effort by design).
 - 2026-10-02 — T2 closed: zen adapter (`fetch_zen_status`, `to_cache_schema_zen`; 401/403-entitlement/error mapping) + account CLI (`account add|set-key|list|use|remove`, `refresh/status/auth show --account|--all`, per-account cache paths) in `e732126`+`0d2ded3`; independent verification PASS-WITH-FINDINGS (1 major: silent key-store shadowing on `set-key --store file`; 2 minors) → fixed in `d7005f1`, validated with before/after repro; residual best-effort keyring-clear path hardened in `a4a60fa`; suite 225 green; no-registry behavior byte-compatible (verified against the pre-T2 tree).
 - 2026-10-02 — T3 closed: `gnome/extension.js` account discovery (`account list --json`, fallback to default), per-account cache path + monitor re-target, popup account submenu (radio, hidden for single default), switch via `account use` + immediate refresh, named-account header; `747d646` (metadata v4); switch↔load race fixed in `661c29f` (newest-wins generation, before/after harness proof). Independent verification PASS-WITH-FINDINGS (2 minors fixed, validated; 1 accepted minor: rapid double-switch may skip the final immediate refresh).
+- 2026-10-02 — T4 closed: prefs Accounts group (active combo, add/replace key via stdin, remove with confirmation, feedback) in `5cb9d78` (metadata v5); verifier PASS-WITH-FINDINGS (2 minors: double-submit guard, loads without newest-wins) → `c8c4374` validated PASS (no residual).
 
 ## Next step
 
-Start T4 (GNOME prefs account management).
+Start T5 (README accounts + security docs).
