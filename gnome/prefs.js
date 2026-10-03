@@ -6,13 +6,10 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 
-const ACCOUNTS_SCHEMA = 1;
-const DEFAULT_ACCOUNT_ID = 'default';
+const ACCOUNTS_SCHEMA = 2;
+const KIND_OPENCODE_DB = 'opencode-db';
+const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-
-function implicitDefaultAccount() {
-    return {id: DEFAULT_ACCOUNT_ID, label: 'Default', kind: 'opencode-db', hint: null};
-}
 
 function resolveOcgoPath(settings) {
     try {
@@ -67,27 +64,27 @@ function parseAccountsJson(text) {
             hint: typeof entry.hint === 'string' ? entry.hint : null,
         });
     }
-    if (!seen.has(DEFAULT_ACCOUNT_ID))
-        accounts.unshift(implicitDefaultAccount());
-
-    const ids = new Set(accounts.map(account => account.id));
-    const requested = typeof payload.active === 'string'
-        ? payload.active
-        : DEFAULT_ACCOUNT_ID;
-    const active = ids.has(requested) ? requested : DEFAULT_ACCOUNT_ID;
+    const requested = typeof payload.active === 'string' ? payload.active : null;
+    const active = requested !== null && seen.has(requested) ? requested : null;
     for (const account of accounts)
         account.active = account.id === active;
     return {accounts, active};
 }
 
-function accountFormError(accountId, key) {
+function accountFormError(accountId, key, fromDb = false) {
     if (!accountId)
         return 'Enter an account id.';
     if (!ACCOUNT_ID_RE.test(accountId))
         return 'Invalid account id: use a-z, 0-9, dot, underscore, or dash (max 64).';
-    if (!key)
+    if (!fromDb && !key)
         return 'Enter an API key.';
     return null;
+}
+
+function removeConfirmBody(kind) {
+    return kind === KIND_OPENCODE_DB
+        ? 'Your OpenCode login itself is not affected.'
+        : 'Its stored key will be deleted.';
 }
 
 function accountCommandFor(accountId, accounts) {
@@ -99,8 +96,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         const settings = this.getSettings();
         this._settings = settings;
         this._window = window;
-        this._accounts = [implicitDefaultAccount()];
-        this._activeId = DEFAULT_ACCOUNT_ID;
+        this._accounts = [];
+        this._activeId = null;
         this._updatingActive = false;
         this._accountsLoading = false;
         this._accountsGeneration = 0;
@@ -191,6 +188,10 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._labelRow = new Adw.EntryRow({title: 'Label (optional)'});
         group.add(this._labelRow);
 
+        this._fromDbRow = new Adw.SwitchRow({title: 'OpenCode login (no API key)'});
+        this._fromDbRow.connect('notify::active', () => this._updateFormState());
+        group.add(this._fromDbRow);
+
         this._keyRow = new Adw.PasswordEntryRow({title: 'API key'});
         group.add(this._keyRow);
 
@@ -220,17 +221,25 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     }
 
     _selectedAccount() {
-        return this._accounts[this._activeRow.selected] ?? null;
+        const index = this._activeRow.selected;
+        if (!Number.isInteger(index) || index < 0 || index >= this._accounts.length)
+            return null;
+        return this._accounts[index];
     }
 
     _renderAccounts() {
-        const labels = this._accounts.map(account => account.label);
         this._updatingActive = true;
         try {
-            this._activeRow.model = Gtk.StringList.new(labels);
-            const index = this._accounts.findIndex(
-                account => account.id === this._activeId);
-            this._activeRow.selected = index >= 0 ? index : 0;
+            if (this._accounts.length === 0) {
+                this._activeRow.model = Gtk.StringList.new(['No accounts']);
+                this._activeRow.selected = 0; // placeholder; no account selected
+            } else {
+                const labels = this._accounts.map(account => account.label);
+                this._activeRow.model = Gtk.StringList.new(labels);
+                const index = this._accounts.findIndex(
+                    account => account.id === this._activeId);
+                this._activeRow.selected = index >= 0 ? index : 0;
+            }
         } finally {
             this._updatingActive = false;
         }
@@ -241,8 +250,14 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         const busy = this._accountActionInProgress;
         this._applyRow.sensitive = !busy;
         const selected = this._selectedAccount();
-        this._removeRow.sensitive = !busy && !!selected &&
-            selected.id !== DEFAULT_ACCOUNT_ID;
+        this._removeRow.sensitive = !busy && !!selected;
+    }
+
+    _updateFormState() {
+        const fromDb = this._fromDbRow.active;
+        this._keyRow.sensitive = !fromDb;
+        if (fromDb)
+            this._keyRow.text = '';
     }
 
     _beginAccountAction() {
@@ -265,8 +280,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
             this._accounts = parsed.accounts;
             this._activeId = parsed.active;
         } else {
-            this._accounts = [implicitDefaultAccount()];
-            this._activeId = DEFAULT_ACCOUNT_ID;
+            this._accounts = [];
+            this._activeId = null;
         }
         this._renderAccounts();
     }
@@ -362,19 +377,27 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     _applyAccountForm() {
         const accountId = this._idRow.text.trim();
         const label = this._labelRow.text.trim();
+        const fromDb = this._fromDbRow.active;
         const key = this._keyRow.text;
-        const error = accountFormError(accountId, key);
+        const error = accountFormError(accountId, key, fromDb);
         if (error) {
             this._setFeedback(error);
             return;
         }
         if (!this._beginAccountAction())
             return;
-        const command = accountCommandFor(accountId, this._accounts);
-        const args = ['account', command, accountId, '--store', 'auto'];
-        if (command === 'add' && label)
-            args.push('--label', label);
-        this._runAccountCommand(args, key, (ok, stdout, stderr) => {
+        let args;
+        if (fromDb) {
+            args = ['account', 'add', accountId, '--from-db'];
+            if (label)
+                args.push('--label', label);
+        } else {
+            const command = accountCommandFor(accountId, this._accounts);
+            args = ['account', command, accountId, '--store', 'auto'];
+            if (command === 'add' && label)
+                args.push('--label', label);
+        }
+        this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
             this._keyRow.text = '';
             if (ok) {
                 const summary = [stdout.trim(), stderr.trim()]
@@ -393,7 +416,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
 
     _confirmRemove() {
         const account = this._selectedAccount();
-        if (!account || account.id === DEFAULT_ACCOUNT_ID)
+        if (!account)
             return;
         if (this._accountActionInProgress || this._removeDialogOpen)
             return;
@@ -406,7 +429,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         const dialog = new Adw.MessageDialog({
             transient_for: this._window,
             heading: `Remove account '${account.label}'?`,
-            body: 'Its stored key will be deleted.',
+            body: removeConfirmBody(account.kind),
         });
         dialog.add_response('cancel', 'Cancel');
         dialog.add_response('remove', 'Remove');

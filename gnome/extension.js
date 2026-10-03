@@ -19,7 +19,7 @@ const AMBER_AT = 50;
 const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
 
-const ACCOUNTS_SCHEMA = 1;
+const ACCOUNTS_SCHEMA = 2;
 const DEFAULT_ACCOUNT_ID = 'default';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -115,10 +115,6 @@ function windowsOf(cache) {
     return windows;
 }
 
-function implicitDefaultAccount() {
-    return {id: DEFAULT_ACCOUNT_ID, label: 'Default', kind: 'opencode-db', hint: null};
-}
-
 function parseAccountList(text) {
     if (typeof text !== 'string' || text.trim() === '')
         return null;
@@ -151,14 +147,8 @@ function parseAccountList(text) {
             hint: typeof entry.hint === 'string' ? entry.hint : null,
         });
     }
-    if (!seen.has(DEFAULT_ACCOUNT_ID))
-        accounts.unshift(implicitDefaultAccount());
-
-    const ids = new Set(accounts.map(account => account.id));
-    const requested = typeof payload.active === 'string'
-        ? payload.active
-        : DEFAULT_ACCOUNT_ID;
-    const active = ids.has(requested) ? requested : DEFAULT_ACCOUNT_ID;
+    const requested = typeof payload.active === 'string' ? payload.active : null;
+    const active = requested !== null && seen.has(requested) ? requested : null;
     for (const account of accounts)
         account.active = account.id === active;
     return {accounts, active};
@@ -190,8 +180,9 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._panelBoxId = 0;
             this._panelPositionId = 0;
             this._menuOpenId = 0;
-            this._accounts = [implicitDefaultAccount()];
-            this._activeAccountId = DEFAULT_ACCOUNT_ID;
+            this._accounts = [];
+            this._activeAccountId = null;
+            this._accountsLoaded = false;
             this._accountsLoading = false;
             this._accountsErrorLogged = false;
             this._accountsGeneration = 0;
@@ -262,8 +253,9 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._refreshItem = null;
         this._accountSubMenuItem = null;
         this._accountMenuSignature = null;
-        this._accounts = null;
-        this._activeAccountId = DEFAULT_ACCOUNT_ID;
+        this._accounts = [];
+        this._activeAccountId = null;
+        this._accountsLoaded = false;
         this._accountsLoading = false;
         this._accountsErrorLogged = false;
         this._accountsGeneration = 0;
@@ -420,7 +412,6 @@ export default class OpenCodeGoMeterExtension extends Extension {
         }
 
         this._accountSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Account');
-        this._accountSubMenuItem.visible = false;
         menu.addMenuItem(this._accountSubMenuItem);
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -444,7 +435,9 @@ export default class OpenCodeGoMeterExtension extends Extension {
 
     _renderMenu(cache, windows, now) {
         const renewal = cache ? formatRenewal(cache.renewal_ends_at) : null;
-        if (this._activeAccountId === DEFAULT_ACCOUNT_ID) {
+        if (!this._activeAccountId) {
+            this._headerItem.label.text = 'OpenCode Go';
+        } else if (this._activeAccountId === DEFAULT_ACCOUNT_ID) {
             this._headerItem.label.text = renewal
                 ? `OpenCode Go — Renews ${renewal}`
                 : 'OpenCode Go';
@@ -486,8 +479,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
     // -- cache ---------------------------------------------------------------
 
     _cachePath() {
+        if (!this._activeAccountId)
+            return null;
         const parts = [GLib.get_user_cache_dir(), CACHE_DIR];
-        if (this._activeAccountId && this._activeAccountId !== DEFAULT_ACCOUNT_ID)
+        if (this._activeAccountId !== DEFAULT_ACCOUNT_ID)
             parts.push(ACCOUNTS_DIR, this._activeAccountId, CACHE_FILE);
         else
             parts.push(CACHE_FILE);
@@ -495,8 +490,11 @@ export default class OpenCodeGoMeterExtension extends Extension {
     }
 
     _readCache() {
+        const path = this._cachePath();
+        if (!path)
+            return null;
         try {
-            const file = Gio.File.new_for_path(this._cachePath());
+            const file = Gio.File.new_for_path(path);
             const [ok, contents] = file.load_contents(null);
             if (!ok)
                 return null;
@@ -522,8 +520,15 @@ export default class OpenCodeGoMeterExtension extends Extension {
     }
 
     _startMonitor() {
+        const path = this._cachePath();
+        if (!path) {
+            this._monitor = null;
+            this._monitorId = 0;
+            this._monitorAccountId = this._activeAccountId;
+            return;
+        }
         try {
-            const file = Gio.File.new_for_path(this._cachePath());
+            const file = Gio.File.new_for_path(path);
             this._monitor = file.monitor_file(Gio.FileMonitorFlags.NONE, null);
             this._monitorAccountId = this._activeAccountId;
             this._monitorId = this._monitor.connect('changed', () => {
@@ -629,10 +634,13 @@ export default class OpenCodeGoMeterExtension extends Extension {
             if (parsed) {
                 this._accounts = parsed.accounts;
                 this._activeAccountId = parsed.active;
+                this._accountsLoaded = true;
                 this._accountsErrorLogged = false;
             } else {
-                this._accounts = [implicitDefaultAccount()];
-                this._activeAccountId = DEFAULT_ACCOUNT_ID;
+                if (!this._accountsLoaded) {
+                    this._accounts = [];
+                    this._activeAccountId = null;
+                }
                 if (!this._accountsErrorLogged) {
                     this._accountsErrorLogged = true;
                     logError(errorMessage, error);
@@ -655,9 +663,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
     _renderAccountMenu() {
         if (!this._accountSubMenuItem)
             return;
-        const accounts = this._accounts || [implicitDefaultAccount()];
-        const hasNamed = accounts.some(account => account.id !== DEFAULT_ACCOUNT_ID);
-        this._accountSubMenuItem.visible = hasNamed;
+        const accounts = this._accounts || [];
         const signature = `${this._activeAccountId}|${accounts.map(
             account => `${account.id}\u0000${account.label}`).join('\u0001')}`;
         if (signature === this._accountMenuSignature)
@@ -665,18 +671,23 @@ export default class OpenCodeGoMeterExtension extends Extension {
         if (this._accountSubMenuItem.menu.isOpen)
             return; // never destroy items while the submenu is open
         this._accountMenuSignature = signature;
-        if (!hasNamed)
-            return;
 
         const submenu = this._accountSubMenuItem.menu;
         submenu.removeAll();
-        for (const account of accounts) {
-            const item = new PopupMenu.PopupMenuItem(account.label);
-            item.setOrnament(account.id === this._activeAccountId
-                ? PopupMenu.Ornament.DOT
-                : PopupMenu.Ornament.NONE);
-            item.connect('activate', () => this._switchAccount(account.id));
-            submenu.addMenuItem(item);
+        if (accounts.length === 0) {
+            submenu.addMenuItem(new PopupMenu.PopupMenuItem('No accounts configured', {
+                reactive: false,
+                can_focus: false,
+            }));
+        } else {
+            for (const account of accounts) {
+                const item = new PopupMenu.PopupMenuItem(account.label);
+                item.setOrnament(account.id === this._activeAccountId
+                    ? PopupMenu.Ornament.DOT
+                    : PopupMenu.Ornament.NONE);
+                item.connect('activate', () => this._switchAccount(account.id));
+                submenu.addMenuItem(item);
+            }
         }
         submenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const manageItem = new PopupMenu.PopupMenuItem('Manage accounts…');
@@ -685,7 +696,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
     }
 
     _switchAccount(accountId) {
-        if (accountId === this._activeAccountId)
+        if (!accountId || accountId === this._activeAccountId)
             return;
         const binary = this._ocgoPath();
         if (!binary) {
@@ -776,6 +787,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
     _triggerRefresh() {
         if (this._refreshInProgress)
             return;
+        if (!this._activeAccountId)
+            return; // nothing shown: there is no account to refresh
         try {
             const binary = this._ocgoPath();
             if (!binary) {
