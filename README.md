@@ -29,18 +29,21 @@ Monthly usage   58%   Resets in 9d 3h
 
 ## Multiple accounts
 
-`default` is your OpenCode app login, read **read-only** from its local database — nothing to configure. Named accounts use `oc_sk_…` API keys from the OpenCode console (workspace → API Keys); each keeps its own usage cache.
+The account list is fully yours: add, switch, and remove any account — including the seeded `default` (your OpenCode app login, read **read-only** from its local database). API-key accounts use `oc_sk_…` keys from the OpenCode console (workspace → API Keys); each account keeps its own usage cache.
 
 ```bash
 ocgo account add work --label "Work"   # key prompted hidden, validated against the API
+ocgo account add login --from-db       # register the local OpenCode login (no key)
 ocgo account list
-ocgo account use work
+ocgo account use work                  # any account can be the shown one
 ocgo account set-key work              # replace / rotate a key
-ocgo account remove work
+ocgo account remove default            # the seeded default is removable too
 ocgo refresh --all                     # refresh every account
 ```
 
-In GNOME, the popup has an **Account** submenu (radio) to switch accounts; the panel always shows the active one. Preferences → **Accounts** manages the list, adds or replaces keys (typed in prefs, sent to the CLI over stdin), and removes accounts. Accounts without an active Go subscription can be registered — the popup shows the "no active OpenCode Go subscription" warning instead of breaking. Adding an account does not switch the active one.
+A fresh install seeds `default` automatically; once `~/.config/ocgo/accounts.json` exists it is authoritative. Remove every account and the meter shows an empty state — a dash in the panel and "No accounts configured" in the popup; nothing is invented. Adding the first account to an empty list makes it active automatically; otherwise adding does not switch the active one.
+
+In GNOME, the popup's **Account** submenu (radio) switches accounts and stays available in the empty state; the panel always shows the active one. Preferences → **Accounts** manages the list, adds or replaces API keys (typed in prefs, sent to the CLI over stdin), registers the OpenCode login (no key), and removes any account. Accounts without an active Go subscription can be registered — the popup shows the "no active OpenCode Go subscription" warning instead of breaking.
 
 ## Layout
 
@@ -51,22 +54,23 @@ In GNOME, the popup has an **Account** submenu (radio) to switch accounts; the p
 ## Architecture
 
 - `core/ocgo` owns credentials, the HTTP call, and the cache (`~/.cache/ocgo/status.json`, schema v1). Frontends read that cache and spawn `ocgo refresh`; they never touch credentials.
-- The accounts registry is `~/.config/ocgo/accounts.json` (single source of truth for the list and the active account): metadata only — id, label, kind, masked hint, active.
-- Cache paths: the default account keeps `~/.cache/ocgo/status.json` (no migration); named accounts use `~/.cache/ocgo/accounts/<id>/status.json`.
+- The accounts registry is `~/.config/ocgo/accounts.json` (schema v2, authoritative once it exists): the list and the active account (`active` may be `null`) — metadata only: id, label, kind, masked hint, active. A fresh install seeds `default`; removing it is permanent.
+- `ocgo account list --json` emits schema 2; an empty list and a `null` active account are valid.
+- Cache paths: the `default` id keeps `~/.cache/ocgo/status.json` (no migration); every other id uses `~/.cache/ocgo/accounts/<id>/status.json`.
 - `gnome/` is the first frontend. Cinnamon (applet vs tray) is planned and not implemented yet.
 
 ## Security
 
-- The default credential is read **read-only** from the local OpenCode store; it is never logged, never cached, and only ever sent to `opencode.ai`.
-- Named-account API keys live in the OS keyring (Secret Service via `secret-tool`) — never in dconf/GSettings, never in argv, never in the usage cache, never logged. Only masked hints (`oc_sk_…1b2c`) appear in `ocgo account list` and `ocgo auth show`.
+- OpenCode login credentials are read **read-only** from the local OpenCode store; they are never logged, never cached, and only ever sent to `opencode.ai`.
+- API-key accounts store their key in the OS keyring (Secret Service via `secret-tool`) — never in dconf/GSettings, never in argv, never in the usage cache, never logged. Only masked hints (`oc_sk_…1b2c`) appear in `ocgo account list` and `ocgo auth show`.
 - Fallback (only when no keyring is available): `--store file` keeps a key in a 0600 file under `~/.config/ocgo/keys/`; `OCGO_TOKEN_<ID>` overrides a stored key for testing or headless use.
 - The cache file contains usage numbers only.
 - The extension never reads credentials: it reads the cache and runs `ocgo refresh`; account switching runs `ocgo account use`.
 
 ## Data source
 
-- `default` (OAuth): `GET https://opencode.ai/console/api/go/status` — the same endpoint that feeds the OpenCode console overview (product `go`).
-- Named accounts (API key): `GET https://opencode.ai/zen/go/v1/usage` with `Authorization: Bearer oc_sk_…`.
+- OpenCode login accounts (OAuth): `GET https://opencode.ai/console/api/go/status` — the same endpoint that feeds the OpenCode console overview (product `go`).
+- API-key accounts: `GET https://opencode.ai/zen/go/v1/usage` with `Authorization: Bearer oc_sk_…`.
 
 Colors: green < 50%, amber 50–84%, red ≥ 85%.
 
