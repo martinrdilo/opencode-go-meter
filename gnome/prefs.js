@@ -102,6 +102,12 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._accounts = [implicitDefaultAccount()];
         this._activeId = DEFAULT_ACCOUNT_ID;
         this._updatingActive = false;
+        this._accountsLoading = false;
+        this._accountsGeneration = 0;
+        this._accountsPending = null;
+        this._accountActionInProgress = false;
+        this._accountActionAwaitingLoad = false;
+        this._removeDialogOpen = false;
 
         const page = new Adw.PreferencesPage();
         const group = new Adw.PreferencesGroup({
@@ -188,10 +194,10 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._keyRow = new Adw.PasswordEntryRow({title: 'API key'});
         group.add(this._keyRow);
 
-        const applyRow = new Adw.ButtonRow({title: 'Add / replace key'});
-        applyRow.add_css_class('suggested-action');
-        applyRow.connect('activated', () => this._applyAccountForm());
-        group.add(applyRow);
+        this._applyRow = new Adw.ButtonRow({title: 'Add / replace key'});
+        this._applyRow.add_css_class('suggested-action');
+        this._applyRow.connect('activated', () => this._applyAccountForm());
+        group.add(this._applyRow);
 
         this._removeRow = new Adw.ButtonRow({title: 'Remove account'});
         this._removeRow.add_css_class('destructive-action');
@@ -228,12 +234,30 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         } finally {
             this._updatingActive = false;
         }
-        this._updateRemoveSensitivity();
+        this._updateActionSensitivity();
     }
 
-    _updateRemoveSensitivity() {
+    _updateActionSensitivity() {
+        const busy = this._accountActionInProgress;
+        this._applyRow.sensitive = !busy;
         const selected = this._selectedAccount();
-        this._removeRow.sensitive = !!selected && selected.id !== DEFAULT_ACCOUNT_ID;
+        this._removeRow.sensitive = !busy && !!selected &&
+            selected.id !== DEFAULT_ACCOUNT_ID;
+    }
+
+    _beginAccountAction() {
+        if (this._accountActionInProgress)
+            return false;
+        this._accountActionInProgress = true;
+        this._accountActionAwaitingLoad = false;
+        this._updateActionSensitivity();
+        return true;
+    }
+
+    _endAccountAction() {
+        this._accountActionInProgress = false;
+        this._accountActionAwaitingLoad = false;
+        this._updateActionSensitivity();
     }
 
     _applyAccounts(parsed) {
@@ -248,40 +272,69 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     }
 
     _loadAccounts() {
-        const binary = resolveOcgoPath(this._settings);
-        if (!binary) {
-            this._applyAccounts(null);
-            this._setFeedback('ocgo not found; set the path above');
+        const generation = ++this._accountsGeneration;
+        if (this._accountsLoading) {
+            this._accountsPending = {generation};
             return;
         }
+        this._startAccountLoad(generation);
+    }
+
+    _startAccountLoad(generation) {
+        const binary = resolveOcgoPath(this._settings);
+        if (!binary) {
+            this._finishAccountLoad(
+                generation, null, 'ocgo not found; set the path above');
+            return;
+        }
+        this._accountsLoading = true;
         try {
             const subprocess = Gio.Subprocess.new(
                 [binary, 'account', 'list', '--json'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
             subprocess.communicate_utf8_async(null, null, (process, result) => {
+                this._accountsLoading = false;
                 let stdout = '';
                 try {
                     const [, out] = process.communicate_utf8_finish(result);
                     stdout = out ?? '';
                 } catch (error) {
-                    this._applyAccounts(null);
-                    this._setFeedback('could not read accounts');
+                    this._finishAccountLoad(generation, null, 'could not read accounts');
                     return;
                 }
                 const parsed = process.get_successful()
                     ? parseAccountsJson(stdout)
                     : null;
                 if (!parsed) {
-                    this._applyAccounts(null);
-                    this._setFeedback('could not read accounts');
+                    this._finishAccountLoad(generation, null, 'could not read accounts');
                     return;
                 }
-                this._applyAccounts(parsed);
+                this._finishAccountLoad(generation, parsed, null);
             });
         } catch (error) {
-            this._applyAccounts(null);
-            this._setFeedback(`could not read accounts: ${error.message ?? error}`);
+            this._accountsLoading = false;
+            this._finishAccountLoad(
+                generation, null, `could not read accounts: ${error.message ?? error}`);
         }
+    }
+
+    _finishAccountLoad(generation, parsed, errorMessage) {
+        if (generation === this._accountsGeneration) {
+            if (parsed) {
+                this._applyAccounts(parsed);
+            } else {
+                this._applyAccounts(null);
+                this._setFeedback(errorMessage);
+            }
+            if (this._accountActionAwaitingLoad)
+                this._endAccountAction();
+        }
+        // Stale results are discarded, never applied; a coalesced newer
+        // request (one in-flight + one pending max) starts after this one.
+        const pending = this._accountsPending;
+        this._accountsPending = null;
+        if (pending)
+            this._startAccountLoad(pending.generation);
     }
 
     _onActiveChanged() {
@@ -289,10 +342,10 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
             return;
         const account = this._selectedAccount();
         if (!account || account.id === this._activeId) {
-            this._updateRemoveSensitivity();
+            this._updateActionSensitivity();
             return;
         }
-        this._updateRemoveSensitivity();
+        this._updateActionSensitivity();
         this._runAccountCommand(
             ['account', 'use', account.id], null, (ok, stdout, stderr) => {
                 if (ok) {
@@ -315,6 +368,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
             this._setFeedback(error);
             return;
         }
+        if (!this._beginAccountAction())
+            return;
         const command = accountCommandFor(accountId, this._accounts);
         const args = ['account', command, accountId, '--store', 'auto'];
         if (command === 'add' && label)
@@ -326,10 +381,12 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                     .filter(Boolean)
                     .join(' ');
                 this._setFeedback(summary || `Account '${accountId}' updated.`);
+                this._accountActionAwaitingLoad = true;
                 this._loadAccounts();
             } else {
                 this._setFeedback(this._failureMessage(
                     'could not update the account', stderr, stdout));
+                this._endAccountAction();
             }
         });
     }
@@ -338,6 +395,14 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         const account = this._selectedAccount();
         if (!account || account.id === DEFAULT_ACCOUNT_ID)
             return;
+        if (this._accountActionInProgress || this._removeDialogOpen)
+            return;
+        this._removeDialogOpen = true;
+        this._removeRow.sensitive = false;
+        this._presentRemoveDialog(account);
+    }
+
+    _presentRemoveDialog(account) {
         const dialog = new Adw.MessageDialog({
             transient_for: this._window,
             heading: `Remove account '${account.label}'?`,
@@ -349,22 +414,32 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         dialog.set_default_response('cancel');
         dialog.set_close_response('cancel');
         dialog.connect('response', (_dialog, response) => {
-            if (response === 'remove')
-                this._removeAccount(account);
+            this._onRemoveDialogResponse(account, response);
         });
         dialog.present();
     }
 
+    _onRemoveDialogResponse(account, response) {
+        this._removeDialogOpen = false;
+        this._updateActionSensitivity();
+        if (response === 'remove')
+            this._removeAccount(account);
+    }
+
     _removeAccount(account) {
+        if (!this._beginAccountAction())
+            return;
         this._runAccountCommand(
             ['account', 'remove', account.id], null, (ok, stdout, stderr) => {
                 if (ok) {
                     this._setFeedback(
                         stdout.trim() || `Removed account '${account.id}'.`);
+                    this._accountActionAwaitingLoad = true;
                     this._loadAccounts();
                 } else {
                     this._setFeedback(this._failureMessage(
                         'could not remove the account', stderr, stdout));
+                    this._endAccountAction();
                 }
             });
     }
