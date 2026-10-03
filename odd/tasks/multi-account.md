@@ -134,4 +134,4 @@ User decision: remove the no-api-key add path. Every new account is added with i
 
 ## Next step
 
-Feature complete. Optional: merge `feat/multi-account` (user's call); Cinnamon frontend (base feature T8); notifications; popup mini-bars.
+Feature merged to `main` (fast-forward, 2026-10-03). Optional: delete `feat/*` branches; Cinnamon frontend (base feature T8); notifications; popup mini-bars.
