@@ -1,6 +1,6 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
-**Status**: Change request in progress (2026-10-03) — T7–T9 planned: full account-list ownership (T1–T6 done)
+**Status**: Change request complete (2026-10-03) — T7–T9 done; user relogin test (v6) pending
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
@@ -86,9 +86,9 @@ Model (registry v2):
   `make test`; `make check-gnome`; live smoke (switch default↔named, `refresh --all`, no-subscription account state, `set-key` rotation); isolated `gnome-shell --devkit` session for popup/prefs; secret hygiene spot check (argv/logs/cache/dconf).
 - [x] **T7 — Core: full account-list ownership (registry v2, remove default, empty state, `--from-db`)** *(route: delegated writer — same session)* — done: `da46ad7` + fix `5ae8e9c` (legacy-cache cleanup on default removal, refresh failure labels; validated PASS); suite 259 green.
   `core/ocgo/accounts.py`, `cli.py`, tests. Registry v2 + migration (absent/v1 → materialized seeded default); any account removable; nullable active + first-account auto-active; `account add --from-db`; no-accounts CLI errors; `account list --json` schema 2; update the old refusal tests.
-- [ ] **T8 — GNOME: ownership UI (empty state, remove any account, DB account from prefs, schema 2)** *(route: delegated writer — same session)*
+- [x] **T8 — GNOME: ownership UI (empty state, remove any account, DB account from prefs, schema 2)** *(route: delegated writer — same session)* — done: `1d2a2bb` (metadata v6) + startup-refresh fix `32e06cc` (validated PASS with real-enable harness); prefs harness 11/11.
   `gnome/extension.js` (parser schema 2, no synthesis, dash + "No accounts configured", refresh skipped when no active), `gnome/prefs.js` (remove for any account with kind-aware confirm; "OpenCode login (no API key)" add option), `metadata.json` v6.
-- [ ] **T9 — Docs + verification** *(route: same writer + parent live)*
+- [x] **T9 — Docs + verification** *(route: same writer + parent live)* — done: README ownership docs `de5551b`; parent live: 259 tests, `make check-gnome`, CLI smoke (no-registry seeded default; `refresh --all` real 12/81/66), devkit **v6 Enabled/ACTIVE**, no errors. Pending: user relogin test.
   README (ownership model, empty state, `--from-db`), task doc; parent live checks (CLI smoke incl. remove default + re-add, devkit v6); user relogin test.
 
 ## Acceptance criteria
@@ -117,7 +117,9 @@ Model (registry v2):
 - 2026-10-02 — T5 closed: README multi-account + security + architecture notes (`b96f90f`).
 - 2026-10-02 — T6 (parent, live): `make test` 225 green; `make check-gnome`; CLI smoke OK (fake-key add → 401, nothing stored; refresh default real 9/75/63; status; auth show masked); isolated `gnome-shell --devkit`: extension v5 Enabled / State ACTIVE, no errors. Pending: user relogin test.
 - 2026-10-03 — T7 closed (change request): registry v2 (explicit list, nullable active, seeded default materialized only for absent/v1 registries; any account removable; first-account auto-active), `account add --from-db`, kind-based CLI branching, empty-state errors, `account list --json` schema 2; `da46ad7` + fix `5ae8e9c` (validated PASS); suite 259 green.
+- 2026-10-03 — T8 closed: GNOME ownership UI (schema 2, no synthesis, empty state + always-present Account submenu, remove any account with kind-aware confirm, `--from-db` option in prefs; metadata v6) in `1d2a2bb`; verifier found 1 major (startup refresh skipped) + 1 minor (logs) → fixed in `32e06cc`, validated PASS (real-enable harness 17/17; prefs 11/11).
+- 2026-10-03 — T9 closed: README ownership docs (`de5551b`); parent live: 259 tests, check-gnome, CLI smoke (seeded default with no registry; `refresh --all` 12/81/66), devkit v6 Enabled/ACTIVE, no errors. Pending: user relogin test.
 
 ## Next step
 
-Start T8 (GNOME ownership UI: schema 2, empty state, remove any account, `--from-db` in prefs).
+User relogin test for extension v6: log out/in, then (1) remove the default account and confirm the empty state (dash + "No accounts configured"); (2) re-add it with `ocgo account add default --from-db` (or any id); (3) add a second account and switch either as the shown one. Optional follow-ups: Cinnamon frontend (base feature T8), notifications, popup mini-bars.
