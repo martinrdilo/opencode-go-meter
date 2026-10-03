@@ -1,6 +1,6 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
-**Status**: Change request complete (2026-10-03) — T7–T9 done; user relogin test (v6) pending
+**Status**: Change request 2 in progress (2026-10-03) — T10: api-key-only adds; T1–T9 done
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
@@ -67,6 +67,14 @@ Model (registry v2):
 - CLI with no accounts: `refresh`/`status`/`auth show` fail with `no accounts configured — run 'ocgo account add <id>'`.
 - GNOME: panel shows the existing dash (`Go —`) when there is no active account; the popup Account submenu is always available (empty state: "No accounts configured" + Manage accounts…); prefs remove works for every account, and the add form gains an "OpenCode login (no API key)" option.
 
+## Change request 2 (2026-10-03) — api-key-only adds (scope A, user-chosen)
+
+User decision: remove the no-api-key add path. Every new account is added with its api-key; deletion stays permanent (re-adding an account means loading its key again). Scope A: the seeded `default` (OpenCode login, kind `opencode-db`) remains as-is — seeded on fresh installs, removable, and not recoverable once removed (that account is re-added with its console api-key).
+
+- Remove the prefs "OpenCode login (no API key)" switch and the `ocgo account add --from-db` flag.
+- Keep `opencode-db` kind support for the seeded default (refresh/status/auth branching); shrink any code that becomes dead.
+- Update tests, README; metadata version v7.
+
 ## Tasks
 
 - [x] **T1 — Core: accounts module + tests** *(route: delegated writer — new module + tests, 2+ non-trivial files)* — done: commits `f17d69f` + hardening `edb87ea`; suite 140 green; independent verification PASS-WITH-FINDINGS (all minor, fixed).
@@ -89,6 +97,8 @@ Model (registry v2):
 - [x] **T8 — GNOME: ownership UI (empty state, remove any account, DB account from prefs, schema 2)** *(route: delegated writer — same session)* — done: `1d2a2bb` (metadata v6) + startup-refresh fix `32e06cc` (validated PASS with real-enable harness); prefs harness 11/11.
   `gnome/extension.js` (parser schema 2, no synthesis, dash + "No accounts configured", refresh skipped when no active), `gnome/prefs.js` (remove for any account with kind-aware confirm; "OpenCode login (no API key)" add option), `metadata.json` v6.
 - [x] **T9 — Docs + verification** *(route: same writer + parent live)* — done: README ownership docs `de5551b`; parent live: 259 tests, `make check-gnome`, CLI smoke (no-registry seeded default; `refresh --all` real 12/81/66), devkit **v6 Enabled/ACTIVE**, no errors. Pending: user relogin test.
+- [ ] **T10 — api-key-only adds (remove `--from-db` + prefs switch)** *(route: delegated writer — same session)*
+  `core/ocgo/cli.py`, `core/tests/test_cli.py`, `gnome/prefs.js` (metadata v7), `README.md`. Remove the no-key add path; keep the seeded `opencode-db` default working; update tests/docs.
   README (ownership model, empty state, `--from-db`), task doc; parent live checks (CLI smoke incl. remove default + re-add, devkit v6); user relogin test.
 
 ## Acceptance criteria
@@ -122,4 +132,4 @@ Model (registry v2):
 
 ## Next step
 
-User relogin test for extension v6: log out/in, then (1) remove the default account and confirm the empty state (dash + "No accounts configured"); (2) re-add it with `ocgo account add default --from-db` (or any id); (3) add a second account and switch either as the shown one. Optional follow-ups: Cinnamon frontend (base feature T8), notifications, popup mini-bars.
+Start T10 (api-key-only adds). After T10: user relogin test for extension v7 (remove default, empty state, two api-key accounts, switch). Optional follow-ups: Cinnamon frontend (base feature T8), notifications, popup mini-bars.
