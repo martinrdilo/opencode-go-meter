@@ -84,7 +84,7 @@ Model (registry v2):
   `README.md` accounts section + security notes; update this doc.
 - [x] **T6 — Verification** *(route: parent, live)* — done (parent): 225 tests; `make check-gnome`; CLI smoke (list default-only; fake-key add rejected 401 with nothing stored; refresh default real 9%/75%/63%; status; masked `auth show`); isolated `gnome-shell --devkit` session: extension v5 Enabled / State ACTIVE, no `[opencode-go-meter]` errors. Pending: user relogin test (real accounts, switch, prefs).
   `make test`; `make check-gnome`; live smoke (switch default↔named, `refresh --all`, no-subscription account state, `set-key` rotation); isolated `gnome-shell --devkit` session for popup/prefs; secret hygiene spot check (argv/logs/cache/dconf).
-- [ ] **T7 — Core: full account-list ownership (registry v2, remove default, empty state, `--from-db`)** *(route: delegated writer — same session)*
+- [x] **T7 — Core: full account-list ownership (registry v2, remove default, empty state, `--from-db`)** *(route: delegated writer — same session)* — done: `da46ad7` + fix `5ae8e9c` (legacy-cache cleanup on default removal, refresh failure labels; validated PASS); suite 259 green.
   `core/ocgo/accounts.py`, `cli.py`, tests. Registry v2 + migration (absent/v1 → materialized seeded default); any account removable; nullable active + first-account auto-active; `account add --from-db`; no-accounts CLI errors; `account list --json` schema 2; update the old refusal tests.
 - [ ] **T8 — GNOME: ownership UI (empty state, remove any account, DB account from prefs, schema 2)** *(route: delegated writer — same session)*
   `gnome/extension.js` (parser schema 2, no synthesis, dash + "No accounts configured", refresh skipped when no active), `gnome/prefs.js` (remove for any account with kind-aware confirm; "OpenCode login (no API key)" add option), `metadata.json` v6.
@@ -116,7 +116,8 @@ Model (registry v2):
 - 2026-10-02 — T4 closed: prefs Accounts group (active combo, add/replace key via stdin, remove with confirmation, feedback) in `5cb9d78` (metadata v5); verifier PASS-WITH-FINDINGS (2 minors: double-submit guard, loads without newest-wins) → `c8c4374` validated PASS (no residual).
 - 2026-10-02 — T5 closed: README multi-account + security + architecture notes (`b96f90f`).
 - 2026-10-02 — T6 (parent, live): `make test` 225 green; `make check-gnome`; CLI smoke OK (fake-key add → 401, nothing stored; refresh default real 9/75/63; status; auth show masked); isolated `gnome-shell --devkit`: extension v5 Enabled / State ACTIVE, no errors. Pending: user relogin test.
+- 2026-10-03 — T7 closed (change request): registry v2 (explicit list, nullable active, seeded default materialized only for absent/v1 registries; any account removable; first-account auto-active), `account add --from-db`, kind-based CLI branching, empty-state errors, `account list --json` schema 2; `da46ad7` + fix `5ae8e9c` (validated PASS); suite 259 green.
 
 ## Next step
 
-Start T7 (core ownership). After T9: user relogin test for extension v6 (remove default, empty state, `--from-db`, two accounts with either as the shown one). Optional follow-ups: Cinnamon frontend (base feature T8), notifications, popup mini-bars.
+Start T8 (GNOME ownership UI: schema 2, empty state, remove any account, `--from-db` in prefs).
