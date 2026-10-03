@@ -1,6 +1,6 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
-**Status**: In progress — T1 done (2026-10-02); T2 next
+**Status**: In progress — T1+T2 done (2026-10-02); T3 next
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
@@ -55,7 +55,7 @@ Out (not now):
 - [x] **T1 — Core: accounts module + tests** *(route: delegated writer — new module + tests, 2+ non-trivial files)* — done: commits `f17d69f` + hardening `edb87ea`; suite 140 green; independent verification PASS-WITH-FINDINGS (all minor, fixed).
   `core/ocgo/accounts.py`, `core/tests/test_accounts.py`.
   Registry at `~/.config/ocgo/accounts.json` (`$XDG_CONFIG_HOME` fallback): id/label/kind/hint/active; atomic writes, 0600; id validation (`[a-z0-9][a-z0-9._-]*`, reserved `default`); secret-tool store/lookup/delete via subprocess; masked hint; opt-in 0600 file store; `OCGO_TOKEN_<ID>` override; unit tests with a fake `secret-tool` on PATH and temp XDG dirs.
-- [ ] **T2 — Core: zen adapter + account-aware CLI/cache + tests** *(route: delegated writer — same writer session for coherence)*
+- [x] **T2 — Core: zen adapter + account-aware CLI/cache + tests** *(route: delegated writer — same writer session for coherence)* — done: `e732126` (zen adapter) + `0d2ded3` (account CLI); correction `d7005f1` (major key-store shadowing fixed, validated with before/after repro) + hardening `a4a60fa`; suite 225 green.
   `core/ocgo/api.py`, `cli.py`, `cache.py`, tests.
   `fetch_zen_status` + zen→cache mapping; tri-state validation; `cache_path(account_id)`; `account` subcommands; `refresh [--account|--all]`; `status`/`auth show --account`; behavior with no registry identical to today.
 - [ ] **T3 — GNOME: account-aware cache + popup switcher** *(route: delegated writer)*
@@ -88,7 +88,8 @@ Out (not now):
 
 - 2026-10-02 — Feasibility verified live (zen 401/403/200; console rejects api-keys); route source reviewed; plan written. Baseline `make test`: 86 green. Branch `feat/multi-account` created.
 - 2026-10-02 — T1 closed: `core/ocgo/accounts.py` (registry + secret-tool/file/env secret storage) with 54 tests (`f17d69f`); hardening `edb87ea` (int-only version check, unreadable-file errors, fd-leak fix, secret deleted before registry on remove); full suite 140 green; independent verifier PASS-WITH-FINDINGS (6 minor: 4 fixed + 2 documented; keyring-clear stays best-effort by design).
+- 2026-10-02 — T2 closed: zen adapter (`fetch_zen_status`, `to_cache_schema_zen`; 401/403-entitlement/error mapping) + account CLI (`account add|set-key|list|use|remove`, `refresh/status/auth show --account|--all`, per-account cache paths) in `e732126`+`0d2ded3`; independent verification PASS-WITH-FINDINGS (1 major: silent key-store shadowing on `set-key --store file`; 2 minors) → fixed in `d7005f1`, validated with before/after repro; residual best-effort keyring-clear path hardened in `a4a60fa`; suite 225 green; no-registry behavior byte-compatible (verified against the pre-T2 tree).
 
 ## Next step
 
-Start T2 (zen adapter + account-aware CLI/cache).
+Start T3 (GNOME account-aware cache + popup switcher).
