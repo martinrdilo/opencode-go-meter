@@ -584,7 +584,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
         if (!binary) {
             this._finishAccountLoad(
                 generation, onComplete, null,
-                'ocgo not found; using the default account');
+                'ocgo not found; keeping the current account list');
             return;
         }
         this._accountsLoading = true;
@@ -605,21 +605,21 @@ export default class OpenCodeGoMeterExtension extends Extension {
                     const [, out] = process.communicate_utf8_finish(result);
                     stdout = out || '';
                 } catch (caught) {
-                    errorMessage = 'could not list accounts; using the default account';
+                    errorMessage = 'could not list accounts; keeping the current account list';
                     error = caught;
                 }
                 if (!errorMessage && !process.get_successful())
-                    errorMessage = 'ocgo account list failed; using the default account';
+                    errorMessage = 'ocgo account list failed; keeping the current account list';
                 const parsed = errorMessage ? null : parseAccountList(stdout);
                 if (!errorMessage && !parsed)
-                    errorMessage = 'unexpected account list output; using the default account';
+                    errorMessage = 'unexpected account list output; keeping the current account list';
                 this._finishAccountLoad(generation, onComplete, parsed, errorMessage, error);
             });
         } catch (error) {
             this._accountsLoading = false;
             this._finishAccountLoad(
                 generation, onComplete, null,
-                'could not start the account list; using the default account', error);
+                'could not start the account list; keeping the current account list', error);
         }
     }
 
@@ -641,6 +641,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
                     this._accounts = [];
                     this._activeAccountId = null;
                 }
+                this._accountsLoaded = true;
                 if (!this._accountsErrorLogged) {
                     this._accountsErrorLogged = true;
                     logError(errorMessage, error);
@@ -720,8 +721,11 @@ export default class OpenCodeGoMeterExtension extends Extension {
                     logError(`could not switch to account '${accountId}'`);
                     return;
                 }
-                // The CLI active account is already switched: refresh now and
-                // reconcile the UI with a fresh (newest-wins) account list.
+                // The CLI active account is already switched: reflect it now,
+                // retarget the monitor, refresh, then reconcile the UI with a
+                // fresh (newest-wins) account list.
+                this._activeAccountId = accountId;
+                this._retargetMonitor();
                 this._triggerRefresh();
                 this._loadAccounts();
             });
@@ -787,8 +791,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
     _triggerRefresh() {
         if (this._refreshInProgress)
             return;
-        if (!this._activeAccountId)
-            return; // nothing shown: there is no account to refresh
+        if (this._accountsLoaded && !this._activeAccountId)
+            return; // known-empty list: there is no account to refresh
         try {
             const binary = this._ocgoPath();
             if (!binary) {
