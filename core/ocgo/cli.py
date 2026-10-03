@@ -131,7 +131,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
             continue
         failures += 1
         label = ""
-        if args.all or account.kind != accounts.KIND_OPENCODE_DB:
+        if registry is not None:
             label = f"account '{account.id}': "
         print(f"ocgo: {label}{message}", file=sys.stderr)
     return 1 if failures else 0
@@ -432,6 +432,17 @@ def cmd_account_remove(args: argparse.Namespace) -> int:
             f"cache: {exc}",
             file=sys.stderr,
         )
+    if account_id == accounts.DEFAULT_ACCOUNT_ID:
+        # remove_account_cache never touches the legacy path (locked), so the
+        # seeded default's cache is cleaned here, best-effort.
+        try:
+            cache.cache_path("default").unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                f"ocgo: removed account '{account_id}' but could not clean its "
+                f"cache: {exc}",
+                file=sys.stderr,
+            )
     print(f"Removed account '{account_id}'")
     return 0
 

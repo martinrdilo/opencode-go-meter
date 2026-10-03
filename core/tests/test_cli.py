@@ -815,6 +815,43 @@ class AccountUseRemoveTests(AccountCliTestCase):
         entries, _active = accounts.list_accounts()
         self.assertEqual([account.id for account in entries], ["default"])
 
+    def test_remove_default_deletes_the_legacy_cache(self):
+        self._isolate()
+        cache.save(good_cache_data())
+        self.assertTrue(cache.cache_path().exists())
+        code, _out, _err = run_cli(["account", "remove", "default"])
+        self.assertEqual(code, 0)
+        self.assertFalse(cache.cache_path().exists())
+
+    def test_remove_default_warns_when_legacy_cache_unlink_fails(self):
+        self._isolate()
+        cache.save(good_cache_data())
+        with mock.patch.object(Path, "unlink", side_effect=OSError("boom")):
+            code, out, err = run_cli(["account", "remove", "default"])
+        self.assertEqual(code, 0)
+        self.assertIn("Removed account 'default'", out)
+        self.assertIn("could not clean its cache", err)
+        self.assertIn("boom", err)
+        self.assertTrue(cache.cache_path().exists())
+
+    def test_remove_named_account_keeps_the_legacy_cache(self):
+        self._isolate()
+        self._seed_account("work")
+        cache.save(good_cache_data())
+        code, _out, _err = run_cli(["account", "remove", "work"])
+        self.assertEqual(code, 0)
+        self.assertTrue(cache.cache_path().exists())
+
+    def test_readd_default_after_removal_starts_clean(self):
+        self._isolate()
+        cache.save(good_cache_data())
+        code, _out, _err = run_cli(["account", "remove", "default"])
+        self.assertEqual(code, 0)
+        accounts.add_account("default", "Again")
+        code, _out, err = run_cli(["status", "--json"])
+        self.assertEqual(code, 1)
+        self.assertIn("no cache", err)
+
 
 class RefreshAccountTests(AccountCliTestCase):
     def _credential(self):
@@ -874,8 +911,34 @@ class RefreshAccountTests(AccountCliTestCase):
         code, _out, err = run_cli(["refresh", "--account", "work"])
         self.assertEqual(code, 1)
         self.assertIn("no secret found", err)
+        self.assertIn("account 'work':", err)
         self.assertIn("ocgo account set-key work", err)
         self.assertIsNone(cache.load(cache.cache_path("work")))
+
+    def test_refresh_failure_on_named_db_account_is_labeled(self):
+        self._isolate()
+        accounts.remove_account("default")
+        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        with mock.patch.object(
+            cli.creds,
+            "resolve_credential",
+            side_effect=creds.CredentialError("No OpenCode credential found."),
+        ):
+            code, _out, err = run_cli(["refresh", "--account", "login"])
+        self.assertEqual(code, 1)
+        self.assertIn("account 'login':", err)
+        self.assertIn("No OpenCode credential found.", err)
+
+    def test_refresh_failure_without_registry_is_unlabeled(self):
+        self._isolate()
+        with mock.patch.object(
+            cli.creds,
+            "resolve_credential",
+            side_effect=creds.CredentialError("No OpenCode credential found."),
+        ):
+            code, _out, err = run_cli(["refresh"])
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "ocgo: No OpenCode credential found.\n")
 
     def test_refresh_named_resolution_failure_records_last_error(self):
         self._isolate()
