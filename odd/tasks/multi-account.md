@@ -1,6 +1,6 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
-**Status**: Implementation complete (2026-10-02) — T1–T6 done; user live test (relogin) pending
+**Status**: Change request in progress (2026-10-03) — T7–T9 planned: full account-list ownership (T1–T6 done)
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
@@ -41,7 +41,7 @@ Out (not now):
 
 - Python stdlib only at runtime; keyring via the `secret-tool` CLI (present on this machine; GNOME/libsecret, also on Cinnamon). `python3-gi` is NOT available here → no `gi.Secret`. Fallbacks: `OCGO_TOKEN_<ID>` env, opt-in 0600 file store (`--store file`).
 - Secrets never in dconf/GSettings, argv, logs, or the usage cache. `auth show` stays masked.
-- The registry is the single source of truth for the account list and the active account (no dconf key for it).
+- The registry is the single source of truth for the account list and the active account (no dconf key for it). Since 2026-10-03 (registry v2) it is fully user-owned: any account is removable, the list may be empty, and `active` may be null.
 - Cache: `default` → legacy `~/.cache/ocgo/status.json` (zero migration); named accounts → `~/.cache/ocgo/accounts/<id>/status.json`.
 - zen cache mapping: `windows.<rolling|weekly|monthly>` ← `percent` + `resetsAt`; `used_usd`/`limit_usd` = `null`; `renewal_ends_at` ← `monthly.resetsAt`; schema stays v1 (nullable USD documented).
 - Add/set-key tri-state: `401` → rejected; `403 EntitlementError` → stored with "no subscription" state; `200` → active.
@@ -49,6 +49,23 @@ Out (not now):
 - RDD: off (global) → ordinary repository policy; work-unit commits.
 - Delivery: no remote/PR gate in this repo; work-unit commits on `feat/multi-account`. The ~400-line heuristic is advisory here (no reviewer run); keep commits reviewable.
 - Artifacts in English.
+
+- Change 2026-10-03: registry v2 — explicit account list (may be empty), nullable `active`; the seeded `opencode-db` default is materialized only for absent/v1 registries; `account list --json` schema 2.
+
+## Change request (2026-10-03) — full account-list ownership
+
+User request: the seeded `default` account must be removable; an empty account list must render as an empty state (dash, no invented account); any configured account must be selectable as the shown ("default") one; and the local OpenCode login must be re-addable under any id.
+
+Model (registry v2):
+
+- The registry is authoritative once it exists: `accounts` may be empty; `active` may be `null` (nothing shown).
+- Absent registry or v1 registry (old format): the seeded `opencode-db` account (`id: default`, label "Default") is materialized in memory; the next mutation writes v2 materializing the current effective list (minus removals).
+- Every account, of any kind, is removable. Removing the active account falls back to the first remaining account, or `null` when none remain.
+- Adding the first account makes it active.
+- `ocgo account add <id> --from-db` registers the local OpenCode login as an explicit account (no API key; validated against the local DB).
+- `ocgo account list --json` schema 2: `{"schema":2,"active":<id|null>,"accounts":[...]}`; empty list and null active are valid.
+- CLI with no accounts: `refresh`/`status`/`auth show` fail with `no accounts configured — run 'ocgo account add <id>'`.
+- GNOME: panel shows the existing dash (`Go —`) when there is no active account; the popup Account submenu is always available (empty state: "No accounts configured" + Manage accounts…); prefs remove works for every account, and the add form gains an "OpenCode login (no API key)" option.
 
 ## Tasks
 
@@ -67,6 +84,12 @@ Out (not now):
   `README.md` accounts section + security notes; update this doc.
 - [x] **T6 — Verification** *(route: parent, live)* — done (parent): 225 tests; `make check-gnome`; CLI smoke (list default-only; fake-key add rejected 401 with nothing stored; refresh default real 9%/75%/63%; status; masked `auth show`); isolated `gnome-shell --devkit` session: extension v5 Enabled / State ACTIVE, no `[opencode-go-meter]` errors. Pending: user relogin test (real accounts, switch, prefs).
   `make test`; `make check-gnome`; live smoke (switch default↔named, `refresh --all`, no-subscription account state, `set-key` rotation); isolated `gnome-shell --devkit` session for popup/prefs; secret hygiene spot check (argv/logs/cache/dconf).
+- [ ] **T7 — Core: full account-list ownership (registry v2, remove default, empty state, `--from-db`)** *(route: delegated writer — same session)*
+  `core/ocgo/accounts.py`, `cli.py`, tests. Registry v2 + migration (absent/v1 → materialized seeded default); any account removable; nullable active + first-account auto-active; `account add --from-db`; no-accounts CLI errors; `account list --json` schema 2; update the old refusal tests.
+- [ ] **T8 — GNOME: ownership UI (empty state, remove any account, DB account from prefs, schema 2)** *(route: delegated writer — same session)*
+  `gnome/extension.js` (parser schema 2, no synthesis, dash + "No accounts configured", refresh skipped when no active), `gnome/prefs.js` (remove for any account with kind-aware confirm; "OpenCode login (no API key)" add option), `metadata.json` v6.
+- [ ] **T9 — Docs + verification** *(route: same writer + parent live)*
+  README (ownership model, empty state, `--from-db`), task doc; parent live checks (CLI smoke incl. remove default + re-add, devkit v6); user relogin test.
 
 ## Acceptance criteria
 
@@ -96,4 +119,4 @@ Out (not now):
 
 ## Next step
 
-User relogin test: log out/in to load extension v5, then add accounts (`ocgo account add …` or Preferences → Accounts), switch in the popup, and compare against the console. Optional follow-ups: Cinnamon frontend (base feature T8), notifications, popup mini-bars.
+Start T7 (core ownership). After T9: user relogin test for extension v6 (remove default, empty state, `--from-db`, two accounts with either as the shown one). Optional follow-ups: Cinnamon frontend (base feature T8), notifications, popup mini-bars.
