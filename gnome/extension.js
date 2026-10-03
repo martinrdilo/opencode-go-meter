@@ -12,11 +12,16 @@ import St from 'gi://St';
 
 const CACHE_DIR = 'ocgo';
 const CACHE_FILE = 'status.json';
+const ACCOUNTS_DIR = 'accounts';
 const TICK_SECONDS = 30;
 const DEFAULT_REFRESH_SECONDS = 300;
 const AMBER_AT = 50;
 const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
+
+const ACCOUNTS_SCHEMA = 1;
+const DEFAULT_ACCOUNT_ID = 'default';
+const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const WINDOWS = [
     {key: 'rolling', label: 'Rolling usage', short: '5h'},
@@ -110,6 +115,55 @@ function windowsOf(cache) {
     return windows;
 }
 
+function implicitDefaultAccount() {
+    return {id: DEFAULT_ACCOUNT_ID, label: 'Default', kind: 'opencode-db', hint: null};
+}
+
+function parseAccountList(text) {
+    if (typeof text !== 'string' || text.trim() === '')
+        return null;
+    let payload = null;
+    try {
+        payload = JSON.parse(text);
+    } catch (error) {
+        return null;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+        return null;
+    if (payload.schema !== ACCOUNTS_SCHEMA || !Array.isArray(payload.accounts))
+        return null;
+
+    const accounts = [];
+    const seen = new Set();
+    for (const entry of payload.accounts) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+            return null;
+        const id = entry.id;
+        if (typeof id !== 'string' || !ACCOUNT_ID_RE.test(id) || seen.has(id))
+            return null;
+        seen.add(id);
+        accounts.push({
+            id,
+            label: typeof entry.label === 'string' && entry.label.trim() !== ''
+                ? entry.label
+                : id,
+            kind: typeof entry.kind === 'string' ? entry.kind : '',
+            hint: typeof entry.hint === 'string' ? entry.hint : null,
+        });
+    }
+    if (!seen.has(DEFAULT_ACCOUNT_ID))
+        accounts.unshift(implicitDefaultAccount());
+
+    const ids = new Set(accounts.map(account => account.id));
+    const requested = typeof payload.active === 'string'
+        ? payload.active
+        : DEFAULT_ACCOUNT_ID;
+    const active = ids.has(requested) ? requested : DEFAULT_ACCOUNT_ID;
+    for (const account of accounts)
+        account.active = account.id === active;
+    return {accounts, active};
+}
+
 function windowOf(windows, key) {
     const window = windows[key];
     return window && typeof window === 'object' && !Array.isArray(window) ? window : {};
@@ -130,10 +184,19 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._refreshInProgress = false;
             this._monitor = null;
             this._monitorId = 0;
+            this._monitorAccountId = null;
             this._refreshTimerId = 0;
             this._tickTimerId = 0;
             this._panelBoxId = 0;
             this._panelPositionId = 0;
+            this._menuOpenId = 0;
+            this._accounts = [implicitDefaultAccount()];
+            this._activeAccountId = DEFAULT_ACCOUNT_ID;
+            this._accountsLoading = false;
+            this._accountsErrorLogged = false;
+            this._accountsCallback = null;
+            this._accountMenuSignature = null;
+            this._accountSubMenuItem = null;
 
             this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
             this._buildPanel();
@@ -148,6 +211,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._updateDisplay();
             this._startTimers();
             this._startMonitor();
+            this._loadAccounts();
             this._triggerRefresh();
         } catch (error) {
             logError('could not enable the extension', error);
@@ -171,18 +235,15 @@ export default class OpenCodeGoMeterExtension extends Extension {
             GLib.source_remove(this._tickTimerId);
             this._tickTimerId = 0;
         }
-        if (this._monitor) {
-            try {
-                if (this._monitorId)
-                    this._monitor.disconnect(this._monitorId);
-                this._monitor.cancel();
-            } catch (error) {
-                logError('could not stop the cache monitor', error);
-            }
-            this._monitor = null;
-            this._monitorId = 0;
-        }
+        this._stopMonitor();
         if (this._indicator) {
+            try {
+                if (this._menuOpenId)
+                    this._indicator.menu.disconnect(this._menuOpenId);
+            } catch (error) {
+                logError('could not disconnect the menu', error);
+            }
+            this._menuOpenId = 0;
             try {
                 this._indicator.destroy();
             } catch (error) {
@@ -198,6 +259,13 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._warningItem = null;
         this._updatedItem = null;
         this._refreshItem = null;
+        this._accountSubMenuItem = null;
+        this._accountMenuSignature = null;
+        this._accounts = null;
+        this._activeAccountId = DEFAULT_ACCOUNT_ID;
+        this._accountsLoading = false;
+        this._accountsErrorLogged = false;
+        this._accountsCallback = null;
     }
 
     // -- panel ---------------------------------------------------------------
@@ -349,6 +417,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._menuRows.set(window.key, {percent, countdown});
         }
 
+        this._accountSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Account');
+        this._accountSubMenuItem.visible = false;
+        menu.addMenuItem(this._accountSubMenuItem);
+
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this._updatedItem = new PopupMenu.PopupMenuItem('Updated —', {
@@ -361,13 +433,25 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._refreshItem = new PopupMenu.PopupMenuItem('Refresh');
         this._refreshItem.connect('activate', () => this._triggerRefresh());
         menu.addMenuItem(this._refreshItem);
+
+        this._menuOpenId = menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._loadAccounts();
+        });
     }
 
     _renderMenu(cache, windows, now) {
         const renewal = cache ? formatRenewal(cache.renewal_ends_at) : null;
-        this._headerItem.label.text = renewal
-            ? `OpenCode Go — Renews ${renewal}`
-            : 'OpenCode Go';
+        if (this._activeAccountId === DEFAULT_ACCOUNT_ID) {
+            this._headerItem.label.text = renewal
+                ? `OpenCode Go — Renews ${renewal}`
+                : 'OpenCode Go';
+        } else {
+            const label = this._activeAccountLabel();
+            this._headerItem.label.text = renewal
+                ? `OpenCode Go · ${label} — Renews ${renewal}`
+                : `OpenCode Go · ${label}`;
+        }
 
         const lastError = cache && typeof cache.last_error === 'string'
             ? cache.last_error.trim()
@@ -400,7 +484,12 @@ export default class OpenCodeGoMeterExtension extends Extension {
     // -- cache ---------------------------------------------------------------
 
     _cachePath() {
-        return GLib.build_filenamev([GLib.get_user_cache_dir(), CACHE_DIR, CACHE_FILE]);
+        const parts = [GLib.get_user_cache_dir(), CACHE_DIR];
+        if (this._activeAccountId && this._activeAccountId !== DEFAULT_ACCOUNT_ID)
+            parts.push(ACCOUNTS_DIR, this._activeAccountId, CACHE_FILE);
+        else
+            parts.push(CACHE_FILE);
+        return GLib.build_filenamev(parts);
     }
 
     _readCache() {
@@ -434,6 +523,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
         try {
             const file = Gio.File.new_for_path(this._cachePath());
             this._monitor = file.monitor_file(Gio.FileMonitorFlags.NONE, null);
+            this._monitorAccountId = this._activeAccountId;
             this._monitorId = this._monitor.connect('changed', () => {
                 try {
                     this._updateDisplay();
@@ -445,7 +535,176 @@ export default class OpenCodeGoMeterExtension extends Extension {
             logError('cache monitor unavailable; using the timer only', error);
             this._monitor = null;
             this._monitorId = 0;
+            this._monitorAccountId = null;
         }
+    }
+
+    _stopMonitor() {
+        if (!this._monitor)
+            return;
+        try {
+            if (this._monitorId)
+                this._monitor.disconnect(this._monitorId);
+            this._monitor.cancel();
+        } catch (error) {
+            logError('could not stop the cache monitor', error);
+        }
+        this._monitor = null;
+        this._monitorId = 0;
+        this._monitorAccountId = null;
+    }
+
+    _retargetMonitor() {
+        if (this._monitor && this._monitorAccountId === this._activeAccountId)
+            return;
+        this._stopMonitor();
+        this._startMonitor();
+    }
+
+    // -- accounts ------------------------------------------------------------
+
+    _loadAccounts(onComplete = null) {
+        if (this._accountsLoading) {
+            if (onComplete)
+                this._accountsCallback = onComplete;
+            return;
+        }
+        const binary = this._ocgoPath();
+        if (!binary) {
+            this._applyAccountFallback('ocgo not found; using the default account');
+            return;
+        }
+        this._accountsLoading = true;
+        try {
+            const subprocess = Gio.Subprocess.new(
+                [binary, 'account', 'list', '--json'],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
+            subprocess.communicate_utf8_async(null, null, (process, result) => {
+                this._accountsLoading = false;
+                if (!this._indicator)
+                    return;
+                const queued = this._accountsCallback;
+                this._accountsCallback = null;
+                let stdout = '';
+                try {
+                    const [, out] = process.communicate_utf8_finish(result);
+                    stdout = out || '';
+                } catch (error) {
+                    this._applyAccountFallback(
+                        'could not list accounts; using the default account', error);
+                    return;
+                }
+                if (!process.get_successful()) {
+                    this._applyAccountFallback(
+                        'ocgo account list failed; using the default account');
+                    return;
+                }
+                const parsed = parseAccountList(stdout);
+                if (!parsed) {
+                    this._applyAccountFallback(
+                        'unexpected account list output; using the default account');
+                    return;
+                }
+                this._accounts = parsed.accounts;
+                this._activeAccountId = parsed.active;
+                this._accountsErrorLogged = false;
+                this._renderAccountMenu();
+                this._updateDisplay();
+                if (onComplete)
+                    onComplete();
+                if (queued)
+                    queued();
+                this._retargetMonitor();
+            });
+        } catch (error) {
+            this._accountsLoading = false;
+            this._applyAccountFallback(
+                'could not start the account list; using the default account', error);
+        }
+    }
+
+    _applyAccountFallback(message, error = null) {
+        if (!this._indicator)
+            return;
+        this._accounts = [implicitDefaultAccount()];
+        this._activeAccountId = DEFAULT_ACCOUNT_ID;
+        if (!this._accountsErrorLogged) {
+            this._accountsErrorLogged = true;
+            logError(message, error);
+        }
+        this._renderAccountMenu();
+        this._updateDisplay();
+        this._retargetMonitor();
+    }
+
+    _renderAccountMenu() {
+        if (!this._accountSubMenuItem)
+            return;
+        const accounts = this._accounts || [implicitDefaultAccount()];
+        const hasNamed = accounts.some(account => account.id !== DEFAULT_ACCOUNT_ID);
+        this._accountSubMenuItem.visible = hasNamed;
+        const signature = `${this._activeAccountId}|${accounts.map(
+            account => `${account.id}\u0000${account.label}`).join('\u0001')}`;
+        if (signature === this._accountMenuSignature)
+            return;
+        if (this._accountSubMenuItem.menu.isOpen)
+            return; // never destroy items while the submenu is open
+        this._accountMenuSignature = signature;
+        if (!hasNamed)
+            return;
+
+        const submenu = this._accountSubMenuItem.menu;
+        submenu.removeAll();
+        for (const account of accounts) {
+            const item = new PopupMenu.PopupMenuItem(account.label);
+            item.setOrnament(account.id === this._activeAccountId
+                ? PopupMenu.Ornament.DOT
+                : PopupMenu.Ornament.NONE);
+            item.connect('activate', () => this._switchAccount(account.id));
+            submenu.addMenuItem(item);
+        }
+        submenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        const manageItem = new PopupMenu.PopupMenuItem('Manage accounts…');
+        manageItem.connect('activate', () => this.openPreferences());
+        submenu.addMenuItem(manageItem);
+    }
+
+    _switchAccount(accountId) {
+        if (accountId === this._activeAccountId)
+            return;
+        const binary = this._ocgoPath();
+        if (!binary) {
+            logError('ocgo not found; cannot switch accounts');
+            return;
+        }
+        try {
+            const subprocess = Gio.Subprocess.new(
+                [binary, 'account', 'use', accountId],
+                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+            subprocess.wait_async(null, (process, result) => {
+                if (!this._indicator)
+                    return;
+                try {
+                    process.wait_finish(result);
+                } catch (error) {
+                    logError(`could not switch to account '${accountId}'`, error);
+                    return;
+                }
+                if (!process.get_successful()) {
+                    logError(`could not switch to account '${accountId}'`);
+                    return;
+                }
+                this._loadAccounts(() => this._triggerRefresh());
+            });
+        } catch (error) {
+            logError(`could not start the account switch to '${accountId}'`, error);
+        }
+    }
+
+    _activeAccountLabel() {
+        const account = (this._accounts || []).find(
+            entry => entry.id === this._activeAccountId);
+        return account ? account.label : this._activeAccountId;
     }
 
     // -- refresh -------------------------------------------------------------
