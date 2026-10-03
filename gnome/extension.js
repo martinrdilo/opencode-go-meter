@@ -194,7 +194,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._activeAccountId = DEFAULT_ACCOUNT_ID;
             this._accountsLoading = false;
             this._accountsErrorLogged = false;
-            this._accountsCallback = null;
+            this._accountsGeneration = 0;
+            this._accountsPending = null;
             this._accountMenuSignature = null;
             this._accountSubMenuItem = null;
 
@@ -265,7 +266,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._activeAccountId = DEFAULT_ACCOUNT_ID;
         this._accountsLoading = false;
         this._accountsErrorLogged = false;
-        this._accountsCallback = null;
+        this._accountsGeneration = 0;
+        this._accountsPending = null;
     }
 
     // -- panel ---------------------------------------------------------------
@@ -564,14 +566,20 @@ export default class OpenCodeGoMeterExtension extends Extension {
     // -- accounts ------------------------------------------------------------
 
     _loadAccounts(onComplete = null) {
+        const generation = ++this._accountsGeneration;
         if (this._accountsLoading) {
-            if (onComplete)
-                this._accountsCallback = onComplete;
+            this._accountsPending = {generation, onComplete};
             return;
         }
+        this._startAccountLoad(generation, onComplete);
+    }
+
+    _startAccountLoad(generation, onComplete) {
         const binary = this._ocgoPath();
         if (!binary) {
-            this._applyAccountFallback('ocgo not found; using the default account');
+            this._finishAccountLoad(
+                generation, onComplete, null,
+                'ocgo not found; using the default account');
             return;
         }
         this._accountsLoading = true;
@@ -581,60 +589,67 @@ export default class OpenCodeGoMeterExtension extends Extension {
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
             subprocess.communicate_utf8_async(null, null, (process, result) => {
                 this._accountsLoading = false;
-                if (!this._indicator)
+                if (!this._indicator) {
+                    this._accountsPending = null;
                     return;
-                const queued = this._accountsCallback;
-                this._accountsCallback = null;
+                }
                 let stdout = '';
+                let errorMessage = null;
+                let error = null;
                 try {
                     const [, out] = process.communicate_utf8_finish(result);
                     stdout = out || '';
-                } catch (error) {
-                    this._applyAccountFallback(
-                        'could not list accounts; using the default account', error);
-                    return;
+                } catch (caught) {
+                    errorMessage = 'could not list accounts; using the default account';
+                    error = caught;
                 }
-                if (!process.get_successful()) {
-                    this._applyAccountFallback(
-                        'ocgo account list failed; using the default account');
-                    return;
-                }
-                const parsed = parseAccountList(stdout);
-                if (!parsed) {
-                    this._applyAccountFallback(
-                        'unexpected account list output; using the default account');
-                    return;
-                }
-                this._accounts = parsed.accounts;
-                this._activeAccountId = parsed.active;
-                this._accountsErrorLogged = false;
-                this._renderAccountMenu();
-                this._updateDisplay();
-                if (onComplete)
-                    onComplete();
-                if (queued)
-                    queued();
-                this._retargetMonitor();
+                if (!errorMessage && !process.get_successful())
+                    errorMessage = 'ocgo account list failed; using the default account';
+                const parsed = errorMessage ? null : parseAccountList(stdout);
+                if (!errorMessage && !parsed)
+                    errorMessage = 'unexpected account list output; using the default account';
+                this._finishAccountLoad(generation, onComplete, parsed, errorMessage, error);
             });
         } catch (error) {
             this._accountsLoading = false;
-            this._applyAccountFallback(
+            this._finishAccountLoad(
+                generation, onComplete, null,
                 'could not start the account list; using the default account', error);
         }
     }
 
-    _applyAccountFallback(message, error = null) {
-        if (!this._indicator)
+    _finishAccountLoad(generation, onComplete, parsed, errorMessage, error = null) {
+        if (!this._indicator) {
+            this._accountsPending = null;
             return;
-        this._accounts = [implicitDefaultAccount()];
-        this._activeAccountId = DEFAULT_ACCOUNT_ID;
-        if (!this._accountsErrorLogged) {
-            this._accountsErrorLogged = true;
-            logError(message, error);
         }
-        this._renderAccountMenu();
-        this._updateDisplay();
-        this._retargetMonitor();
+        if (generation === this._accountsGeneration) {
+            // Newest request: apply the result (or the fallback) and run its
+            // callback on both paths, so a queued action is never dropped.
+            if (parsed) {
+                this._accounts = parsed.accounts;
+                this._activeAccountId = parsed.active;
+                this._accountsErrorLogged = false;
+            } else {
+                this._accounts = [implicitDefaultAccount()];
+                this._activeAccountId = DEFAULT_ACCOUNT_ID;
+                if (!this._accountsErrorLogged) {
+                    this._accountsErrorLogged = true;
+                    logError(errorMessage, error);
+                }
+            }
+            this._renderAccountMenu();
+            this._updateDisplay();
+            this._retargetMonitor();
+            if (onComplete)
+                onComplete();
+        }
+        // A stale result is discarded, never applied; if a newer request was
+        // coalesced while this one was in flight, start it now.
+        const pending = this._accountsPending;
+        this._accountsPending = null;
+        if (pending)
+            this._startAccountLoad(pending.generation, pending.onComplete);
     }
 
     _renderAccountMenu() {
@@ -694,7 +709,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
                     logError(`could not switch to account '${accountId}'`);
                     return;
                 }
-                this._loadAccounts(() => this._triggerRefresh());
+                // The CLI active account is already switched: refresh now and
+                // reconcile the UI with a fresh (newest-wins) account list.
+                this._triggerRefresh();
+                this._loadAccounts();
             });
         } catch (error) {
             logError(`could not start the account switch to '${accountId}'`, error);
