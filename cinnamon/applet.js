@@ -3,6 +3,7 @@
 
 const Applet = imports.ui.applet;
 const PopupMenu = imports.ui.popupMenu;
+const Settings = imports.ui.settings;
 const Mainloop = imports.mainloop;
 const Util = imports.misc.util;
 const Clutter = imports.gi.Clutter;
@@ -15,7 +16,8 @@ const CACHE_FILE = 'status.json';
 const ACCOUNTS_DIR = 'accounts';
 const CONFIG_DIR = 'ocgo';
 const REGISTRY_FILE = 'accounts.json';
-const REFRESH_SECONDS = 300;
+const DEFAULT_REFRESH_SECONDS = 300;
+const MIN_REFRESH_SECONDS = 30;
 const TICK_SECONDS = 30;
 const AMBER_AT = 50;
 const RED_AT = 85;
@@ -97,6 +99,22 @@ function truncate(text, max) {
 
 function escapeMarkup(text) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function expandHome(path) {
+    if (path === '~')
+        return GLib.get_home_dir();
+    if (path.startsWith('~/'))
+        return GLib.build_filenamev([GLib.get_home_dir(), path.slice(2)]);
+    return path;
+}
+
+function resolveExecutable(path) {
+    if (!path)
+        return null;
+    if (!path.includes('/'))
+        return GLib.find_program_in_path(path);
+    return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
 }
 
 function percentText(percent) {
@@ -228,6 +246,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._accountsPending = null;
         this._accountMenuSignature = null;
 
+        this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
+        this.settings.bind('refresh-interval', 'refresh_interval', () => this._onRefreshIntervalChanged());
+        this.settings.bind('ocgo-path', 'ocgo_path', null);
+
         this.menuManager = new PopupMenu.PopupMenuManager(this);
         this.menu = new Applet.AppletPopupMenu(this, orientation);
         this.menuManager.addMenu(this.menu);
@@ -245,6 +267,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     on_applet_removed_from_panel(deleteConfig) {
         this._removed = true;
+        if (this.settings) {
+            this.settings.finalize();
+            this.settings = null;
+        }
         if (this._refreshTimerId) {
             Mainloop.source_remove(this._refreshTimerId);
             this._refreshTimerId = 0;
@@ -591,24 +617,38 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     // -- refresh -------------------------------------------------------------
 
-    // Default resolution mirrors the GNOME extension; T4 adds the settings
-    // override (checked before this fallback there).
+    // The configured path is authoritative: an unresolvable explicit path is an
+    // error, never a silent fallback. An empty setting falls back to
+    // ~/.local/bin/ocgo and then PATH, mirroring the GNOME extension.
     _ocgoPath() {
+        const configured = typeof this.ocgo_path === 'string' ? this.ocgo_path.trim() : '';
+        if (configured)
+            return resolveExecutable(expandHome(configured));
         const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'ocgo']);
         if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
             return local;
         return GLib.find_program_in_path('ocgo');
     }
 
+    _refreshSeconds() {
+        try {
+            const value = this.refresh_interval;
+            if (Number.isInteger(value) && value >= MIN_REFRESH_SECONDS)
+                return value;
+        } catch (error) {
+            logError('could not read refresh-interval; using the default', error);
+        }
+        return DEFAULT_REFRESH_SECONDS;
+    }
+
+    _onRefreshIntervalChanged() {
+        if (this._removed)
+            return;
+        this._restartRefreshTimer();
+    }
+
     _startTimers() {
-        this._refreshTimerId = Mainloop.timeout_add_seconds(REFRESH_SECONDS, () => {
-            try {
-                this._triggerRefresh();
-            } catch (error) {
-                logError('scheduled refresh failed', error);
-            }
-            return true;
-        });
+        this._startRefreshTimer();
         this._tickTimerId = Mainloop.timeout_add_seconds(TICK_SECONDS, () => {
             try {
                 this._updateDisplay();
@@ -617,6 +657,25 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }
             return true;
         });
+    }
+
+    _startRefreshTimer() {
+        this._refreshTimerId = Mainloop.timeout_add_seconds(this._refreshSeconds(), () => {
+            try {
+                this._triggerRefresh();
+            } catch (error) {
+                logError('scheduled refresh failed', error);
+            }
+            return true;
+        });
+    }
+
+    _restartRefreshTimer() {
+        if (this._refreshTimerId) {
+            Mainloop.source_remove(this._refreshTimerId);
+            this._refreshTimerId = 0;
+        }
+        this._startRefreshTimer();
     }
 
     _triggerRefresh() {
