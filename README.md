@@ -1,8 +1,10 @@
 # opencode-go-meter
 
-Always-visible OpenCode Go subscription usage (rolling 5h / weekly / monthly) on Linux desktops — starting with a GNOME Shell top-bar indicator, with the data layer kept portable for a future Cinnamon frontend (Linux Mint).
+Always-visible OpenCode Go subscription usage (rolling 5h / weekly / monthly) on Linux desktops — a GNOME Shell top-bar indicator and a Cinnamon panel applet (Linux Mint), both reading the same portable data layer.
 
 ## Quickstart
+
+### GNOME Shell
 
 ```bash
 make install
@@ -18,6 +20,22 @@ ocgo status
 | GNOME extension | `~/.local/share/gnome-shell/extensions/opencode-go-meter@martin.local` → `gnome/` |
 
 The top bar then shows `5h 3% · 7d 64% · 30d 58%`; click it for countdowns, the renewal date, and a manual refresh. Pick the panel zone (left / center / right) and the order within it in the extension preferences. On Wayland, log out and back in if the indicator does not appear after enabling. `make uninstall` removes only links that point into this repo.
+
+### Cinnamon
+
+```bash
+make install-cinnamon
+ocgo status
+```
+
+`make install-cinnamon` is idempotent, needs no sudo, and only creates symlinks:
+
+| What | Where |
+|------|-------|
+| `ocgo` CLI | `~/.local/bin/ocgo` → `core/bin/ocgo` |
+| Cinnamon applet | `~/.local/share/cinnamon/applets/opencode-go-meter@martin.local` → `cinnamon/` |
+
+Then add the applet: right-click the panel → **Add applets to the panel**, or open **Cinnamon Settings → Applets**, and pick "OpenCode Go Meter". Cinnamon lets you drag the applet to position it in the panel. The panel then shows `5h 3% · 7d 64% · 30d 58%`; click it for countdowns, the renewal date, account switching, and a manual refresh. The applet gear (Cinnamon Settings → Applets, or Configure in its context menu) sets the refresh interval and the `ocgo` command path. `make uninstall-cinnamon` removes only links that point into this repo.
 
 `ocgo status` sample:
 
@@ -48,6 +66,7 @@ In GNOME, the popup's **Account** submenu (radio) switches accounts and stays av
 
 - `core/` — `ocgo`, the portable poller + CLI (Python 3, stdlib only): resolves the active account's credential, fetches usage, and caches it as JSON.
 - `gnome/` — GNOME Shell extension: top-bar indicator + popup with the three meters.
+- `cinnamon/` — Cinnamon applet: panel label + popup (countdowns, renewal date, account switching) and its settings schema.
 - `odd/tasks/opencode-go-meter.md` — living plan, decisions, and verification evidence.
 
 ## Architecture
@@ -56,7 +75,7 @@ In GNOME, the popup's **Account** submenu (radio) switches accounts and stays av
 - The accounts registry is `~/.config/ocgo/accounts.json` (schema v2, authoritative once it exists): the list and the active account (`active` may be `null`) — metadata only: id, label, kind, masked hint, active. A fresh install seeds `default`; removing it is permanent.
 - `ocgo account list --json` emits schema 2; an empty list and a `null` active account are valid.
 - Cache paths: the `default` id keeps `~/.cache/ocgo/status.json` (no migration); every other id uses `~/.cache/ocgo/accounts/<id>/status.json`.
-- `gnome/` is the first frontend. Cinnamon (applet vs tray) is planned and not implemented yet.
+- `gnome/` and `cinnamon/` are the two shipped frontends (GNOME Shell extension and Cinnamon applet); both only read the cache and run the CLI.
 
 ## Security
 
