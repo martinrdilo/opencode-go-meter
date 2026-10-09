@@ -198,6 +198,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._accountsErrorLogged = false;
         this._accountsGeneration = 0;
         this._accountsPending = null;
+        this._initialRefreshPending = false;
         this._accountMenuSignature = null;
 
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
@@ -211,10 +212,13 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         this._updateDisplay();
         this._startTimers();
-        // Resolve the account through the CLI first: the panel and the refresh
-        // must follow the same active account the CLI uses, even when the
-        // registry file does not exist yet (a fresh install seeds 'default').
-        this._loadAccounts(() => this._triggerRefresh());
+        // Resolve the account through the CLI first (the panel and the refresh
+        // must follow the CLI's active account, even without a registry file).
+        // The flag is consumed by the first completed account resolution, so a
+        // superseding load (for example the menu opening) cannot drop the
+        // initial refresh.
+        this._initialRefreshPending = true;
+        this._loadAccounts();
     }
 
     on_applet_clicked(event) {
@@ -488,6 +492,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }
             this._renderAccountMenu();
             this._updateDisplay();
+            if (this._initialRefreshPending) {
+                this._initialRefreshPending = false;
+                this._triggerRefresh();
+            }
             if (onComplete)
                 onComplete();
         }
