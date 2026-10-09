@@ -2,10 +2,13 @@
 // Reads the ocgo cache written by the core CLI; it never touches credentials.
 
 const Applet = imports.ui.applet;
+const PopupMenu = imports.ui.popupMenu;
 const Mainloop = imports.mainloop;
 const Util = imports.misc.util;
+const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const St = imports.gi.St;
 
 const CACHE_DIR = 'ocgo';
 const CACHE_FILE = 'status.json';
@@ -23,9 +26,9 @@ const DEFAULT_ACCOUNT_ID = 'default';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const WINDOWS = [
-    {key: 'rolling', short: '5h'},
-    {key: 'weekly', short: '7d'},
-    {key: 'monthly', short: '30d'},
+    {key: 'rolling', label: 'Rolling usage', short: '5h'},
+    {key: 'weekly', label: 'Weekly usage', short: '7d'},
+    {key: 'monthly', label: 'Monthly usage', short: '30d'},
 ];
 
 // Adwaita palette variants chosen for the dark Cinnamon panel.
@@ -61,12 +64,49 @@ function formatAgo(value, now) {
     return `${Math.floor(hours / 24)}d ago`;
 }
 
+function formatCountdown(target, now) {
+    const date = parseDate(target);
+    if (!date)
+        return '—';
+    const seconds = Math.max(0, Math.floor((date.getTime() - now.getTime()) / 1000));
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (days > 0)
+        return `${days}d ${hours}h`;
+    if (hours > 0)
+        return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+}
+
+function formatRenewal(value) {
+    const date = parseDate(value);
+    if (!date)
+        return null;
+    try {
+        return date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+    } catch (error) {
+        logError('could not format the renewal date', error);
+        return null;
+    }
+}
+
 function truncate(text, max) {
     return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+function escapeMarkup(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function percentText(percent) {
     return Number.isFinite(percent) ? `${Math.round(percent)}%` : '—';
+}
+
+function percentMarkup(percent) {
+    if (!Number.isFinite(percent))
+        return percentText(percent);
+    return `<span foreground="${colorFor(percent)}">${percentText(percent)}</span>`;
 }
 
 function colorFor(percent) {
@@ -133,6 +173,44 @@ function parseRegistry(text) {
     };
 }
 
+function parseAccountList(text) {
+    if (typeof text !== 'string' || text.trim() === '')
+        return null;
+    let payload = null;
+    try {
+        payload = JSON.parse(text);
+    } catch (error) {
+        return null;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+        return null;
+    if (payload.schema !== ACCOUNTS_SCHEMA || !Array.isArray(payload.accounts))
+        return null;
+
+    const accounts = [];
+    const seen = new Set();
+    for (const entry of payload.accounts) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+            return null;
+        const id = entry.id;
+        if (typeof id !== 'string' || !ACCOUNT_ID_RE.test(id) || seen.has(id))
+            return null;
+        seen.add(id);
+        accounts.push({
+            id,
+            label: typeof entry.label === 'string' && entry.label.trim() !== ''
+                ? entry.label
+                : id,
+            active: false,
+        });
+    }
+    const requested = typeof payload.active === 'string' ? payload.active : null;
+    const active = requested !== null && seen.has(requested) ? requested : null;
+    for (const account of accounts)
+        account.active = account.id === active;
+    return {accounts, active};
+}
+
 class OpenCodeGoMeterApplet extends Applet.TextApplet {
     constructor(metadata, orientation, panel_height, instance_id) {
         super(orientation, panel_height, instance_id);
@@ -142,14 +220,27 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._tickTimerId = 0;
         this._activeAccountId = null;
         this._activeAccountLabel = null;
+        this._accounts = [];
+        this._accountsLoaded = false;
+        this._accountsLoading = false;
+        this._accountsErrorLogged = false;
+        this._accountsGeneration = 0;
+        this._accountsPending = null;
+        this._accountMenuSignature = null;
+
+        this.menuManager = new PopupMenu.PopupMenuManager(this);
+        this.menu = new Applet.AppletPopupMenu(this, orientation);
+        this.menuManager.addMenu(this.menu);
+        this._buildMenu();
 
         this._updateDisplay();
         this._startTimers();
+        this._loadAccounts();
         this._triggerRefresh();
     }
 
     on_applet_clicked(event) {
-        this._triggerRefresh();
+        this.menu.toggle();
     }
 
     on_applet_removed_from_panel(deleteConfig) {
@@ -162,6 +253,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             Mainloop.source_remove(this._tickTimerId);
             this._tickTimerId = 0;
         }
+        if (this.menu) {
+            this.menu.destroy();
+            this.menu = null;
+        }
+        this.menuManager = null;
     }
 
     // -- rendering -----------------------------------------------------------
@@ -174,7 +270,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             this._activeAccountId = registry ? registry.active : null;
             this._activeAccountLabel = registry ? registry.activeLabel : null;
             const cache = this._readCache();
-            this._renderLabel(this._activeAccountId !== null, windowsOf(cache));
+            const windows = windowsOf(cache);
+            this._renderLabel(this._activeAccountId !== null, windows);
+            this._renderMenu(cache, windows);
             this._renderTooltip(cache);
         } catch (error) {
             logError('could not render the usage cache', error);
@@ -188,9 +286,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         }
         const parts = WINDOWS.map(window => {
             const percent = windowOf(windows, window.key).percent;
-            if (!Number.isFinite(percent))
-                return `${window.short} ${percentText(percent)}`;
-            return `${window.short} <span foreground="${colorFor(percent)}">${percentText(percent)}</span>`;
+            return `${window.short} ${percentMarkup(percent)}`;
         });
         this._applet_label.clutter_text.set_markup(parts.join(' · '));
     }
@@ -216,6 +312,234 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }
         }
         this.set_applet_tooltip(lines.join('\n'));
+    }
+
+    // -- popup menu ----------------------------------------------------------
+
+    _buildMenu() {
+        this._headerItem = new PopupMenu.PopupMenuItem('OpenCode Go', {reactive: false});
+        this.menu.addMenuItem(this._headerItem);
+
+        this._warningItem = new PopupMenu.PopupMenuItem('', {reactive: false});
+        this._warningItem.actor.visible = false;
+        this.menu.addMenuItem(this._warningItem);
+
+        this._menuRows = new Map();
+        for (const window of WINDOWS) {
+            const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            const name = new St.Label({
+                text: window.label,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const percent = new St.Label({
+                text: '—',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const countdown = new St.Label({
+                text: 'Resets in —',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            item.addActor(name, {expand: true});
+            item.addActor(percent);
+            item.addActor(countdown);
+            this.menu.addMenuItem(item);
+            this._menuRows.set(window.key, {percent, countdown});
+        }
+
+        this._accountSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Account');
+        this.menu.addMenuItem(this._accountSubMenuItem);
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        this._refreshItem = new PopupMenu.PopupMenuItem('Updated — · Refresh');
+        this._refreshItem.connect('activate', () => this._triggerRefresh());
+        this.menu.addMenuItem(this._refreshItem);
+
+        this.menu.connect('open-state-changed', (menu, isOpen) => {
+            if (isOpen)
+                this._loadAccounts();
+        });
+    }
+
+    _renderMenu(cache, windows) {
+        const now = new Date();
+        const renewal = cache ? formatRenewal(cache.renewal_ends_at) : null;
+
+        let header;
+        if (!this._activeAccountId) {
+            header = 'OpenCode Go';
+        } else if (this._activeAccountId === DEFAULT_ACCOUNT_ID) {
+            header = renewal ? `OpenCode Go — Renews ${renewal}` : 'OpenCode Go';
+        } else {
+            const label = this._activeAccountLabel || this._activeAccountId;
+            header = renewal
+                ? `OpenCode Go · ${label} — Renews ${renewal}`
+                : `OpenCode Go · ${label}`;
+        }
+        this._headerItem.label.clutter_text.set_markup(`<b>${escapeMarkup(header)}</b>`);
+
+        const lastError = cache && typeof cache.last_error === 'string'
+            ? cache.last_error.trim()
+            : '';
+        if (lastError) {
+            const ago = formatAgo(cache.fetched_at, now);
+            const suffix = ago ? ` · data from ${ago}` : '';
+            const warning = `Last refresh failed: ${truncate(lastError, MAX_WARNING_CHARS)}${suffix}`;
+            this._warningItem.label.clutter_text.set_markup(
+                `<span foreground="${COLORS.amber}">${escapeMarkup(warning)}</span>`);
+            this._warningItem.actor.visible = true;
+        } else {
+            this._warningItem.actor.visible = false;
+        }
+
+        for (const window of WINDOWS) {
+            const row = this._menuRows.get(window.key);
+            const data = windowOf(windows, window.key);
+            row.percent.clutter_text.set_markup(percentMarkup(data.percent));
+            // The month meter has no resetsAt; the console counts down to renewal.
+            const target = window.key === 'monthly'
+                ? (cache ? cache.renewal_ends_at : null)
+                : data.resets_at;
+            row.countdown.set_text(`Resets in ${formatCountdown(target, now)}`);
+        }
+
+        const updated = cache ? formatAgo(cache.fetched_at, now) : null;
+        this._refreshItem.label.set_text(`Updated ${updated || '—'} · Refresh`);
+    }
+
+    _renderAccountMenu() {
+        if (!this._accountSubMenuItem)
+            return;
+        const accounts = this._accounts || [];
+        const signature = accounts.map(account =>
+            `${account.id}\u0000${account.label}\u0000${account.active ? 1 : 0}`).join('\u0001');
+        if (signature === this._accountMenuSignature)
+            return;
+        if (this._accountSubMenuItem.menu.isOpen)
+            return; // never destroy items while the submenu is open
+        this._accountMenuSignature = signature;
+
+        const submenu = this._accountSubMenuItem.menu;
+        submenu.removeAll();
+        if (accounts.length === 0) {
+            submenu.addMenuItem(new PopupMenu.PopupMenuItem('No accounts configured', {
+                reactive: false,
+            }));
+        } else {
+            for (const account of accounts) {
+                const item = new PopupMenu.PopupMenuItem(account.label);
+                item.setOrnament(PopupMenu.OrnamentType.DOT, account.active);
+                item.connect('activate', () => this._switchAccount(account.id));
+                submenu.addMenuItem(item);
+            }
+        }
+    }
+
+    // -- accounts ------------------------------------------------------------
+
+    _loadAccounts(onComplete = null) {
+        const generation = ++this._accountsGeneration;
+        if (this._accountsLoading) {
+            this._accountsPending = {generation, onComplete};
+            return;
+        }
+        this._startAccountLoad(generation, onComplete);
+    }
+
+    _startAccountLoad(generation, onComplete) {
+        const binary = this._ocgoPath();
+        if (!binary) {
+            this._finishAccountLoad(
+                generation, onComplete, null,
+                'ocgo not found; keeping the current account list');
+            return;
+        }
+        this._accountsLoading = true;
+        try {
+            Util.spawnCommandLineAsyncIO(null, (stdout, stderr, exitCode) => {
+                this._accountsLoading = false;
+                if (this._removed) {
+                    this._accountsPending = null;
+                    return;
+                }
+                let errorMessage = null;
+                let error = null;
+                if (exitCode !== 0) {
+                    errorMessage = 'ocgo account list failed; keeping the current account list';
+                    error = typeof stderr === 'string' ? stderr.trim() : null;
+                }
+                const parsed = errorMessage ? null : parseAccountList(stdout);
+                if (!errorMessage && !parsed)
+                    errorMessage = 'unexpected account list output; keeping the current account list';
+                this._finishAccountLoad(generation, onComplete, parsed, errorMessage, error);
+            }, {argv: [binary, 'account', 'list', '--json']});
+        } catch (error) {
+            this._accountsLoading = false;
+            this._finishAccountLoad(
+                generation, onComplete, null,
+                'could not start the account list; keeping the current account list', error);
+        }
+    }
+
+    _finishAccountLoad(generation, onComplete, parsed, errorMessage, error = null) {
+        if (this._removed) {
+            this._accountsPending = null;
+            return;
+        }
+        if (generation === this._accountsGeneration) {
+            // Newest request: apply the result (or the fallback) and run its
+            // callback on both paths, so a queued action is never dropped.
+            if (parsed) {
+                this._accounts = parsed.accounts;
+                this._accountsLoaded = true;
+                this._accountsErrorLogged = false;
+            } else {
+                if (!this._accountsLoaded)
+                    this._accounts = [];
+                this._accountsLoaded = true;
+                if (!this._accountsErrorLogged) {
+                    this._accountsErrorLogged = true;
+                    logError(errorMessage, error);
+                }
+            }
+            this._renderAccountMenu();
+            if (onComplete)
+                onComplete();
+        }
+        // A stale result is discarded, never applied; if a newer request was
+        // coalesced while this one was in flight, start it now.
+        const pending = this._accountsPending;
+        this._accountsPending = null;
+        if (pending)
+            this._startAccountLoad(pending.generation, pending.onComplete);
+    }
+
+    _switchAccount(accountId) {
+        if (!accountId || accountId === this._activeAccountId)
+            return;
+        const binary = this._ocgoPath();
+        if (!binary) {
+            logError('ocgo not found; cannot switch accounts');
+            return;
+        }
+        try {
+            Util.spawnCommandLineAsyncIO(null, (stdout, stderr, exitCode) => {
+                if (this._removed)
+                    return;
+                if (exitCode !== 0) {
+                    const detail = typeof stderr === 'string' ? stderr.trim() : '';
+                    logError(`could not switch to account '${accountId}'`, detail || null);
+                    return;
+                }
+                // The CLI already switched the registry: reflect it now,
+                // refresh, then reconcile the submenu from the CLI.
+                this._updateDisplay();
+                this._triggerRefresh();
+                this._loadAccounts();
+            }, {argv: [binary, 'account', 'use', accountId]});
+        } catch (error) {
+            logError(`could not start the account switch to '${accountId}'`, error);
+        }
     }
 
     // -- cache ---------------------------------------------------------------
