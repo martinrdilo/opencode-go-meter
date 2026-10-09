@@ -14,8 +14,6 @@ const St = imports.gi.St;
 const CACHE_DIR = 'ocgo';
 const CACHE_FILE = 'status.json';
 const ACCOUNTS_DIR = 'accounts';
-const CONFIG_DIR = 'ocgo';
-const REGISTRY_FILE = 'accounts.json';
 const DEFAULT_REFRESH_SECONDS = 300;
 const MIN_REFRESH_SECONDS = 30;
 const TICK_SECONDS = 30;
@@ -147,50 +145,6 @@ function windowOf(windows, key) {
     return window && typeof window === 'object' && !Array.isArray(window) ? window : {};
 }
 
-function parseRegistry(text) {
-    if (typeof text !== 'string' || text.trim() === '')
-        return null;
-    let payload = null;
-    try {
-        payload = JSON.parse(text);
-    } catch (error) {
-        return null;
-    }
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-        return null;
-    if (payload.version !== ACCOUNTS_SCHEMA || !Array.isArray(payload.accounts))
-        return null;
-
-    const accounts = [];
-    const seen = new Set();
-    for (const entry of payload.accounts) {
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
-            return null;
-        const id = entry.id;
-        if (typeof id !== 'string' || !ACCOUNT_ID_RE.test(id) || seen.has(id))
-            return null;
-        seen.add(id);
-        accounts.push({
-            id,
-            label: typeof entry.label === 'string' && entry.label.trim() !== ''
-                ? entry.label
-                : id,
-        });
-    }
-
-    // Same effective-active rule as the core: the stored id when listed,
-    // otherwise the first account; no accounts means no active account.
-    const requested = typeof payload.active === 'string' ? payload.active : null;
-    let active = requested !== null && seen.has(requested) ? requested : null;
-    if (active === null && accounts.length > 0)
-        active = accounts[0].id;
-    const activeAccount = accounts.find(account => account.id === active) || null;
-    return {
-        active,
-        activeLabel: activeAccount ? activeAccount.label : null,
-    };
-}
-
 function parseAccountList(text) {
     if (typeof text !== 'string' || text.trim() === '')
         return null;
@@ -237,10 +191,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._refreshTimerId = 0;
         this._tickTimerId = 0;
         this._activeAccountId = null;
-        this._activeAccountLabel = null;
         this._accounts = [];
         this._accountsLoaded = false;
         this._accountsLoading = false;
+        this._accountsError = null;
         this._accountsErrorLogged = false;
         this._accountsGeneration = 0;
         this._accountsPending = null;
@@ -257,8 +211,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         this._updateDisplay();
         this._startTimers();
-        this._loadAccounts();
-        this._triggerRefresh();
+        // Resolve the account through the CLI first: the panel and the refresh
+        // must follow the same active account the CLI uses, even when the
+        // registry file does not exist yet (a fresh install seeds 'default').
+        this._loadAccounts(() => this._triggerRefresh());
     }
 
     on_applet_clicked(event) {
@@ -292,9 +248,6 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (this._removed)
             return;
         try {
-            const registry = this._readRegistry();
-            this._activeAccountId = registry ? registry.active : null;
-            this._activeAccountLabel = registry ? registry.activeLabel : null;
             const cache = this._readCache();
             const windows = windowsOf(cache);
             this._renderLabel(this._activeAccountId !== null, windows);
@@ -322,11 +275,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         const lines = [];
         if (!this._activeAccountId) {
             lines.push('OpenCode Go');
-            lines.push('No accounts configured');
+            if (this._accountsError)
+                lines.push(`Accounts unavailable: ${truncate(this._accountsError, MAX_WARNING_CHARS)}`);
+            else
+                lines.push('No accounts configured');
         } else {
-            lines.push(this._activeAccountId === DEFAULT_ACCOUNT_ID
-                ? 'OpenCode Go'
-                : `OpenCode Go · ${this._activeAccountLabel || this._activeAccountId}`);
+            lines.push(`OpenCode Go · ${this._activeAccountLabel()}`);
             const updated = cache ? formatAgo(cache.fetched_at, now) : null;
             lines.push(updated ? `Updated ${updated}` : 'Updated —');
             const lastError = cache && typeof cache.last_error === 'string'
@@ -397,7 +351,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         } else if (this._activeAccountId === DEFAULT_ACCOUNT_ID) {
             header = renewal ? `OpenCode Go — Renews ${renewal}` : 'OpenCode Go';
         } else {
-            const label = this._activeAccountLabel || this._activeAccountId;
+            const label = this._activeAccountLabel();
             header = renewal
                 ? `OpenCode Go · ${label} — Renews ${renewal}`
                 : `OpenCode Go · ${label}`;
@@ -437,7 +391,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (!this._accountSubMenuItem)
             return;
         const accounts = this._accounts || [];
-        const signature = accounts.map(account =>
+        const signature = `${this._accountsError || ''}\u0002` + accounts.map(account =>
             `${account.id}\u0000${account.label}\u0000${account.active ? 1 : 0}`).join('\u0001');
         if (signature === this._accountMenuSignature)
             return;
@@ -448,9 +402,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         const submenu = this._accountSubMenuItem.menu;
         submenu.removeAll();
         if (accounts.length === 0) {
-            submenu.addMenuItem(new PopupMenu.PopupMenuItem('No accounts configured', {
-                reactive: false,
-            }));
+            const text = this._accountsError ? 'Accounts unavailable' : 'No accounts configured';
+            submenu.addMenuItem(new PopupMenu.PopupMenuItem(text, {reactive: false}));
         } else {
             for (const account of accounts) {
                 const item = new PopupMenu.PopupMenuItem(account.label);
@@ -472,12 +425,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._startAccountLoad(generation, onComplete);
     }
 
+    _activeAccountLabel() {
+        const account = (this._accounts || []).find(
+            entry => entry.id === this._activeAccountId);
+        return account ? account.label : this._activeAccountId;
+    }
+
     _startAccountLoad(generation, onComplete) {
         const binary = this._ocgoPath();
         if (!binary) {
-            this._finishAccountLoad(
-                generation, onComplete, null,
-                'ocgo not found; keeping the current account list');
+            this._finishAccountLoad(generation, onComplete, null, 'ocgo not found');
             return;
         }
         this._accountsLoading = true;
@@ -489,21 +446,17 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     return;
                 }
                 let errorMessage = null;
-                let error = null;
-                if (exitCode !== 0) {
-                    errorMessage = 'ocgo account list failed; keeping the current account list';
-                    error = typeof stderr === 'string' ? stderr.trim() : null;
-                }
+                if (exitCode !== 0)
+                    errorMessage = `ocgo account list failed (exit ${exitCode})`;
                 const parsed = errorMessage ? null : parseAccountList(stdout);
                 if (!errorMessage && !parsed)
-                    errorMessage = 'unexpected account list output; keeping the current account list';
-                this._finishAccountLoad(generation, onComplete, parsed, errorMessage, error);
+                    errorMessage = 'unexpected ocgo account list output';
+                this._finishAccountLoad(generation, onComplete, parsed, errorMessage);
             }, {argv: [binary, 'account', 'list', '--json']});
         } catch (error) {
             this._accountsLoading = false;
             this._finishAccountLoad(
-                generation, onComplete, null,
-                'could not start the account list; keeping the current account list', error);
+                generation, onComplete, null, 'could not start ocgo account list', error);
         }
     }
 
@@ -518,17 +471,23 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             if (parsed) {
                 this._accounts = parsed.accounts;
                 this._accountsLoaded = true;
+                this._accountsError = null;
                 this._accountsErrorLogged = false;
+                this._activeAccountId = parsed.active;
             } else {
-                if (!this._accountsLoaded)
+                if (!this._accountsLoaded) {
                     this._accounts = [];
+                    this._activeAccountId = null;
+                }
                 this._accountsLoaded = true;
+                this._accountsError = errorMessage;
                 if (!this._accountsErrorLogged) {
                     this._accountsErrorLogged = true;
-                    logError(errorMessage, error);
+                    logError(`${errorMessage}; keeping the current account list`, error);
                 }
             }
             this._renderAccountMenu();
+            this._updateDisplay();
             if (onComplete)
                 onComplete();
         }
@@ -553,12 +512,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 if (this._removed)
                     return;
                 if (exitCode !== 0) {
-                    const detail = typeof stderr === 'string' ? stderr.trim() : '';
-                    logError(`could not switch to account '${accountId}'`, detail || null);
+                    logError(`could not switch to account '${accountId}' (exit ${exitCode})`);
                     return;
                 }
-                // The CLI already switched the registry: reflect it now,
-                // refresh, then reconcile the submenu from the CLI.
+                // The CLI already switched the active account: reflect it
+                // optimistically, refresh, then reconcile from the CLI.
+                this._activeAccountId = accountId;
                 this._updateDisplay();
                 this._triggerRefresh();
                 this._loadAccounts();
@@ -569,22 +528,6 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     // -- cache ---------------------------------------------------------------
-
-    _registryPath() {
-        return GLib.build_filenamev([GLib.get_user_config_dir(), CONFIG_DIR, REGISTRY_FILE]);
-    }
-
-    _readRegistry() {
-        try {
-            const file = Gio.File.new_for_path(this._registryPath());
-            const [ok, contents] = file.load_contents(null);
-            if (!ok)
-                return null;
-            return parseRegistry(new TextDecoder().decode(contents));
-        } catch (error) {
-            return null; // missing or unreadable registry: show the empty state
-        }
-    }
 
     _cachePath() {
         if (!this._activeAccountId)
@@ -681,8 +624,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     _triggerRefresh() {
         if (this._removed || this._refreshInProgress)
             return;
-        if (!this._activeAccountId)
-            return; // empty registry: there is no account to refresh
+        if (this._accountsLoaded && !this._activeAccountId)
+            return; // known-empty list: there is no account to refresh
         const binary = this._ocgoPath();
         if (!binary) {
             logError('ocgo not found; keeping the current values');
@@ -695,10 +638,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 this._refreshInProgress = false;
                 if (this._removed)
                     return;
-                if (exitCode !== 0) {
-                    const detail = typeof stderr === 'string' ? stderr.trim() : '';
-                    logError(`refresh exited with status ${exitCode}`, detail || null);
-                }
+                if (exitCode !== 0)
+                    logError(`refresh exited with status ${exitCode}`);
                 // Re-read the cache either way: on failure the CLI keeps the
                 // last good values (plus last_error), so nothing is invented.
                 this._updateDisplay();

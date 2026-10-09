@@ -22,7 +22,10 @@ SCHEMA = APPLET_DIR / "settings-schema.json"
 APPLET_JS = APPLET_DIR / "applet.js"
 
 UUID_RE = re.compile(r"^UUID\s*:=\s*(\S+)\s*$", re.MULTILINE)
-MAIN_RE = re.compile(r"\bfunction\s+main\s*\(", re.MULTILINE)
+MAIN_RE = re.compile(
+    r"^\s*(?:function\s+main\s*\(|(?:var|let|const)\s+main\s*=)",
+    re.MULTILINE,
+)
 
 
 def fail(message: str) -> int:
