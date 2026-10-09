@@ -1,0 +1,7 @@
+{
+  "uuid": "opencode-go-meter@martin.local",
+  "name": "OpenCode Go Meter",
+  "description": "Shows OpenCode Go usage (rolling 5h, weekly, monthly) from the ocgo cache.",
+  "icon": "utilities-system-monitor",
+  "max-instances": 1
+}
