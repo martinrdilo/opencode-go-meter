@@ -95,3 +95,7 @@ Colors: green < 50%, amber 50–84%, red ≥ 85%.
 ## Status
 
 Work in progress. See the task document for the plan and progress.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
