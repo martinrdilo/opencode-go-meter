@@ -575,8 +575,23 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (this._accounts.length === 0) {
             options['No accounts'] = '';
         } else {
+            // Combobox keys must be unique: duplicate labels collapse into one
+            // option, hiding accounts. Labels stay bare when unique; colliding
+            // ones get a deterministic '(id)' suffix. The option value is
+            // always the account id.
+            const counts = new Map();
             for (const account of this._accounts)
-                options[account.label] = account.id;
+                counts.set(account.label, (counts.get(account.label) || 0) + 1);
+            const used = new Set();
+            for (const account of this._accounts) {
+                let key = counts.get(account.label) === 1
+                    ? account.label
+                    : `${account.label} (${account.id})`;
+                while (used.has(key))
+                    key += ` (${account.id})`;
+                used.add(key);
+                options[key] = account.id;
+            }
         }
         const signature = JSON.stringify(options);
         if (signature !== this._activeOptionsSignature) {
