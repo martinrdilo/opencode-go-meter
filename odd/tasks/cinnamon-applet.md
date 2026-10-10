@@ -1,6 +1,6 @@
 # Feature: cinnamon-applet — OpenCode Go meter in the Cinnamon panel
 
-**Status**: Complete — T1–T8 done (2026-10-08/10); local merge pending (user's call)
+**Status**: Complete — T1–T8 done; merged to `main` (fast-forward, 2026-10-10)
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/cinnamon-applet` (from `main` @ `aea2c03`)
 **Created**: 2026-10-03
@@ -118,6 +118,7 @@ Paths abbreviate `/usr/share/cinnamon`: `A`=js/ui/applet.js, `P`=js/ui/popupMenu
 - 2026-10-08 — T7 closed: doc final + Engram mirror. Feature complete pending the user's local merge; sandbox harness at `/tmp/opencode/cinnamon-test` left running for inspection.
 - 2026-10-10 — T8 opened (user request after live review of both frontends): port GNOME's Accounts management to the Cinnamon preferences with transient inputs — key via stdin only, never persisted. Sandbox rebuilt (system tmp cleanup wiped it) and verified live again; user is inspecting it.
 - 2026-10-10 — T8 closed (`e8db106` + `d297754`): GNOME-parity Accounts management in the Cinnamon preferences (active switch, add/replace with stdin-only key, remove with kind-specific confirm); live-verified incl. the no-persistence assertion; independent review passed with one MINOR fixed. Feature complete again; local merge still the user's call.
+- 2026-10-10 — Merged to `main` (fast-forward `f9c58a1`, user-authorized). Sandbox `/tmp/opencode/cinnamon-test` still running for inspection; branch `feat/cinnamon-applet` kept (optional cleanup).
 
 ---
 
