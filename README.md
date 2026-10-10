@@ -7,6 +7,8 @@ OpenCode Go subscription usage in your panel — rolling 5-hour, weekly, and mon
 - **GNOME Shell** — top-bar indicator with popup (countdowns, renewal date, account switching).
 - **Cinnamon** — panel applet with the same popup and a settings page.
 
+![OpenCode Go meters in the GNOME top bar and popup](docs/screenshots/gnome-popup.png)
+
 ## Install
 
 ### GNOME Shell
@@ -50,6 +52,8 @@ ocgo refresh --all                     # refresh every account
 ```
 
 With no accounts configured the panel shows a dash and the popup explains — nothing is invented.
+
+![Managing accounts in the GNOME extension preferences](docs/screenshots/gnome-preferences.png)
 
 ## Security
 
