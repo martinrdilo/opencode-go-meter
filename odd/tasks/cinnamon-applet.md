@@ -1,6 +1,6 @@
 # Feature: cinnamon-applet — OpenCode Go meter in the Cinnamon panel
 
-**Status**: Complete (2026-10-08) — T1–T7 done; local merge pending (user's call)
+**Status**: In progress — T1–T7 done (2026-10-08); T8 (accounts management in preferences, user-requested 2026-10-10) open
 **Repo**: `/home/martin/workspace/opencode-go-meter`
 **Branch**: `feat/cinnamon-applet` (from `main` @ `aea2c03`)
 **Created**: 2026-10-03
@@ -89,6 +89,11 @@ Paths abbreviate `/usr/share/cinnamon`: `A`=js/ui/applet.js, `P`=js/ui/popupMenu
 - [x] **T5 — Install/uninstall + docs** *(route: delegated writer)*. DONE 2026-10-08, commit `211b632` (+148/−3). Verified: `make check-cinnamon` passes (negative tests: corrupt JSON, uuid mismatch, missing `main`, node syntax errors → exit 1); fake-HOME install idempotent + uninstall removes only repo links (foreign links kept; the shared `ocgo` link is silent-guarded); `make -n install` byte-identical (GNOME target untouched); `make test` 253 OK. Note: `check_applet.py` compares `metadata.uuid` against the Makefile `UUID` (the checked-in dir is `cinnamon/`, not the uuid); in an installed copy it compares the real dir name.
 - [x] **T6 — Verification** *(route: parent + independent verifier)*. DONE 2026-10-08. Independent verification (fresh read-only session) over `aea2c03..HEAD`: gates green (`make test` 253, `make check-cinnamon`, `node --check`, both JSONs); security OK (no credential access; argv spawns; no injection); parity/lifecycle OK. Findings fixed: **MAJOR** — fresh-install registry gating (dead `—` panel, false "No accounts configured", refresh disabled) → `def2eee` CLI-only resolution (live-verified: seeded `Default`, refresh landed with real values); **MINOR** — `check_applet.py` main false-negative → anchored regex + negative test; **NIT** — CLI stderr logged → silenced; **MINOR** — initial-refresh startup race → `bc5cc83` pending-flag fix (deterministic slow-path race test; parent reviewed the diff). Scoped re-verification confirmed the fixes. Parent live pass: label/popup match `ocgo status` (screenshots `t6-panel.png`, `t6-popup.png`); true-empty, fail-closed, and seeded-default paths verified. Tier trail: per-task medium/under_budget; full-branch and correction diffs `high` (process_boundary) with RDD off → independent verification, no review start.
 - [x] **T7 — Close** *(route: parent)*. DONE 2026-10-08: feature doc final state + Engram mirror; sandbox harness left running for inspection; local merge is the user's call (repo has no remote).
+- [ ] **T8 — Accounts management in preferences (GNOME parity)** *(route: delegated writer; user-requested 2026-10-10)*. The applet's Cinnamon settings page gains the same account management GNOME has, with transient inputs (no secret persistence):
+  - `settings-schema.json`: `section` "Accounts"; `combobox` `active-account` (dynamic options via `Settings.setOptions`; value = account id; selecting runs `ocgo account use <id>` — mirror `gnome/prefs.js:344-364`); `button` "Add / replace key…" (callback → applet; mirror `prefs.js:366-396`: id validation `^[a-z0-9._-]{1,64}$` with GNOME's exact messages; `set-key` when the id already exists else `add`; `--store auto`; `--label` for add; key sent via **stdin only**); `button` "Remove account…" (mirror `prefs.js:398-449`: target = selected combo account; confirm dialog with kind-specific body; `account remove <id>`).
+  - `applet.js`: `_runAccountCommand(args, stdinText, cb)` (argv array only; stdin for the key; exit/stdout/stderr; never log stderr contents); `ModalDialog` forms (add/replace: id + label + key with password char; remove: confirm); on success refresh accounts, label, and combo options (guarded against callback loops via an `_updatingActive` flag); on failure show the reason in the dialog; the settings JSON must never contain the key.
+  - README: Cinnamon paragraph updated (account management via the applet gear).
+  - Verify live in the sandbox: settings page renders; add/replace/remove driven via dialogs; no keyring in the sandbox → `--store auto` falls back to file store; assert the key appears in NO settings/cache file; `make test` + `make check-cinnamon` + `node --check` green.
 
 ## Acceptance criteria
 
@@ -115,6 +120,7 @@ Paths abbreviate `/usr/share/cinnamon`: `A`=js/ui/applet.js, `P`=js/ui/popupMenu
 - 2026-10-08 — T5 closed (`211b632`): Makefile `install-cinnamon`/`uninstall-cinnamon`/`check-cinnamon`, `check_applet.py` (with negative tests), README Cinnamon quickstart. `make test` + `make check-cinnamon` green; fake-HOME install/uninstall verified. Full-branch assess: **high** (process_boundary on `check_applet.py`) — RDD off, so independent verification in T6 (no review start). Next: T6.
 - 2026-10-08 — T6 closed: independent verification + two bounded corrections (`def2eee`, `bc5cc83`) + scoped re-verification; live end-to-end pass green (label/popup = CLI values, fresh-install, true-empty, fail-closed). Accepted deviations documented in Decisions.
 - 2026-10-08 — T7 closed: doc final + Engram mirror. Feature complete pending the user's local merge; sandbox harness at `/tmp/opencode/cinnamon-test` left running for inspection.
+- 2026-10-10 — T8 opened (user request after live review of both frontends): port GNOME's Accounts management to the Cinnamon preferences with transient inputs — key via stdin only, never persisted. Sandbox rebuilt (system tmp cleanup wiped it) and verified live again; user is inspecting it.
 
 ---
 
