@@ -35,7 +35,7 @@ ocgo status
 | `ocgo` CLI | `~/.local/bin/ocgo` → `core/bin/ocgo` |
 | Cinnamon applet | `~/.local/share/cinnamon/applets/opencode-go-meter@martin.local` → `cinnamon/` |
 
-Then add the applet: right-click the panel → **Add applets to the panel**, or open **Cinnamon Settings → Applets**, and pick "OpenCode Go Meter". Cinnamon lets you drag the applet to position it in the panel. The panel then shows `5h 3% · 7d 64% · 30d 58%`; click it for countdowns, the renewal date, account switching, and a manual refresh. The applet gear (Cinnamon Settings → Applets, or Configure in its context menu) sets the refresh interval and the `ocgo` command path. `make uninstall-cinnamon` removes only links that point into this repo.
+Then add the applet: right-click the panel → **Add applets to the panel**, or open **Cinnamon Settings → Applets**, and pick "OpenCode Go Meter". Cinnamon lets you drag the applet to position it in the panel. The panel then shows `5h 3% · 7d 64% · 30d 58%`; click it for countdowns, the renewal date, account switching, and a manual refresh. The applet gear (Cinnamon Settings → Applets, or Configure in its context menu) sets the refresh interval, the `ocgo` command path, and the accounts: pick the active one, add or replace an API key, or remove an account. As in GNOME, the key goes straight to the `ocgo` CLI over its stdin and is never stored by the applet. `make uninstall-cinnamon` removes only links that point into this repo.
 
 `ocgo status` sample:
 

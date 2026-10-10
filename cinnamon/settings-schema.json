@@ -18,5 +18,30 @@
         "default": "~/.local/bin/ocgo",
         "description": "ocgo command",
         "tooltip": "Path to the ocgo executable. Leave empty to use ~/.local/bin/ocgo or the ocgo found in PATH."
+    },
+    "section2": {
+        "type": "section",
+        "description": "Accounts"
+    },
+    "active-account": {
+        "type": "combobox",
+        "default": "",
+        "options": {
+            "No accounts": ""
+        },
+        "description": "Active account",
+        "tooltip": "The account the meter shows; selecting one runs 'ocgo account use'."
+    },
+    "accounts-apply-button": {
+        "type": "button",
+        "description": "Add / replace key…",
+        "callback": "on_accounts_apply",
+        "tooltip": "Add an API-key account, or replace the key of an existing one. The key is validated by the ocgo CLI and never stored in the applet settings."
+    },
+    "accounts-remove-button": {
+        "type": "button",
+        "description": "Remove account…",
+        "callback": "on_accounts_remove",
+        "tooltip": "Remove the account selected above. Removing an API-key account also deletes its stored key."
     }
 }

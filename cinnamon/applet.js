@@ -2,6 +2,8 @@
 // Reads the ocgo cache written by the core CLI; it never touches credentials.
 
 const Applet = imports.ui.applet;
+const Dialog = imports.ui.dialog;
+const ModalDialog = imports.ui.modalDialog;
 const PopupMenu = imports.ui.popupMenu;
 const Settings = imports.ui.settings;
 const Mainloop = imports.mainloop;
@@ -23,6 +25,7 @@ const MAX_WARNING_CHARS = 70;
 
 const ACCOUNTS_SCHEMA = 2;
 const DEFAULT_ACCOUNT_ID = 'default';
+const KIND_OPENCODE_DB = 'opencode-db';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const WINDOWS = [
@@ -173,6 +176,7 @@ function parseAccountList(text) {
             label: typeof entry.label === 'string' && entry.label.trim() !== ''
                 ? entry.label
                 : id,
+            kind: typeof entry.kind === 'string' ? entry.kind : '',
             active: false,
         });
     }
@@ -181,6 +185,26 @@ function parseAccountList(text) {
     for (const account of accounts)
         account.active = account.id === active;
     return {accounts, active};
+}
+
+function accountFormError(accountId, key) {
+    if (!accountId)
+        return 'Enter an account id.';
+    if (!ACCOUNT_ID_RE.test(accountId))
+        return 'Invalid account id: use a-z, 0-9, dot, underscore, or dash (max 64).';
+    if (!key)
+        return 'Enter an API key.';
+    return null;
+}
+
+function removeConfirmBody(kind) {
+    return kind === KIND_OPENCODE_DB
+        ? 'Your OpenCode login itself is not affected.'
+        : 'Its stored key will be deleted.';
+}
+
+function accountCommandFor(accountId, accounts) {
+    return accounts.some(account => account.id === accountId) ? 'set-key' : 'add';
 }
 
 class OpenCodeGoMeterApplet extends Applet.TextApplet {
@@ -200,10 +224,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._accountsPending = null;
         this._initialRefreshPending = false;
         this._accountMenuSignature = null;
+        this._updatingActive = false;
+        this._activeOptionsSignature = null;
+        this._accountsDialog = null;
 
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
         this.settings.bind('refresh-interval', 'refresh_interval', () => this._onRefreshIntervalChanged());
         this.settings.bind('ocgo-path', 'ocgo_path', null);
+        this.settings.bind('active-account', 'active_account', () => this._onActiveAccountChanged());
 
         this.menuManager = new PopupMenu.PopupMenuManager(this);
         this.menu = new Applet.AppletPopupMenu(this, orientation);
@@ -242,6 +270,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (this.menu) {
             this.menu.destroy();
             this.menu = null;
+        }
+        if (this._accountsDialog) {
+            this._accountsDialog.destroy();
+            this._accountsDialog = null;
         }
         this.menuManager = null;
     }
@@ -492,6 +524,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }
             this._renderAccountMenu();
             this._updateDisplay();
+            this._syncAccountsSettings();
             if (this._initialRefreshPending) {
                 this._initialRefreshPending = false;
                 this._triggerRefresh();
@@ -532,6 +565,259 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }, {argv: [binary, 'account', 'use', accountId]});
         } catch (error) {
             logError(`could not start the account switch to '${accountId}'`, error);
+        }
+    }
+
+    // -- account settings (preferences) --------------------------------------
+
+    _syncAccountsSettings() {
+        const options = {};
+        if (this._accounts.length === 0) {
+            options['No accounts'] = '';
+        } else {
+            for (const account of this._accounts)
+                options[account.label] = account.id;
+        }
+        const signature = JSON.stringify(options);
+        if (signature !== this._activeOptionsSignature) {
+            this._activeOptionsSignature = signature;
+            this.settings.setOptions('active-account', options);
+        }
+        // Reflect the real active account without triggering a switch.
+        this._updatingActive = true;
+        try {
+            this.active_account = this._activeAccountId || '';
+        } finally {
+            this._updatingActive = false;
+        }
+    }
+
+    _onActiveAccountChanged() {
+        if (this._updatingActive)
+            return;
+        const id = typeof this.active_account === 'string' ? this.active_account : '';
+        if (!id || id === this._activeAccountId)
+            return;
+        this._runAccountCommand(['account', 'use', id], null, (ok, stdout, stderr) => {
+            if (this._removed)
+                return;
+            if (ok) {
+                this._loadAccounts();
+            } else {
+                logError(`could not switch to account '${id}' from the settings`);
+                this._syncAccountsSettings(); // restore the real active account
+            }
+        });
+    }
+
+    _selectedComboAccount() {
+        const id = typeof this.active_account === 'string' ? this.active_account : '';
+        return (this._accounts || []).find(account => account.id === id) || null;
+    }
+
+    _openAccountsDialog() {
+        const dialog = new ModalDialog.ModalDialog();
+        this._accountsDialog = dialog;
+        dialog.connect('destroy', () => {
+            if (this._accountsDialog === dialog)
+                this._accountsDialog = null;
+        });
+        return dialog;
+    }
+
+    _setDialogButtonEnabled(button, enabled) {
+        if (!button)
+            return;
+        button.reactive = enabled;
+        if (enabled)
+            button.remove_style_pseudo_class('insensitive');
+        else
+            button.add_style_pseudo_class('insensitive');
+    }
+
+    _entryRow(text, entry) {
+        const row = new St.BoxLayout({vertical: true, x_expand: true});
+        row.add_child(new St.Label({text: text}));
+        entry.x_expand = true;
+        row.add_child(entry);
+        return row;
+    }
+
+    _statusLabel() {
+        const label = new St.Label({text: ''});
+        label.clutter_text.line_wrap = true;
+        return label;
+    }
+
+    on_accounts_apply() {
+        if (this._accountsDialog)
+            return;
+        const dialog = this._openAccountsDialog();
+        let closed = false;
+        dialog.connect('destroy', () => {
+            closed = true;
+        });
+
+        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+            title: 'Add / replace account key',
+            description: 'API-key accounts from the OpenCode console. The key is sent to '
+                + 'the ocgo CLI and is never stored by the applet.',
+        }));
+
+        const idEntry = new St.Entry({hint_text: 'e.g. work', x_expand: true});
+        const labelEntry = new St.Entry({hint_text: 'optional', x_expand: true});
+        const keyEntry = new St.Entry({hint_text: 'oc_sk_…', x_expand: true});
+        keyEntry.clutter_text.set_password_char('\u25cf');
+        dialog.contentLayout.add_child(this._entryRow('Account id', idEntry));
+        dialog.contentLayout.add_child(this._entryRow('Label (optional)', labelEntry));
+        dialog.contentLayout.add_child(this._entryRow('API key', keyEntry));
+
+        const status = this._statusLabel();
+        dialog.contentLayout.add_child(status);
+
+        let closeTimerId = 0;
+        dialog.connect('destroy', () => {
+            if (closeTimerId) {
+                Mainloop.source_remove(closeTimerId);
+                closeTimerId = 0;
+            }
+        });
+
+        const submit = () => {
+            const accountId = idEntry.get_text().trim();
+            const label = labelEntry.get_text().trim();
+            const key = keyEntry.get_text();
+            const error = accountFormError(accountId, key);
+            if (error) {
+                status.set_text(error);
+                return;
+            }
+            const command = accountCommandFor(accountId, this._accounts);
+            const args = ['account', command, accountId, '--store', 'auto'];
+            if (command === 'add' && label)
+                args.push('--label', label);
+            this._setDialogButtonEnabled(confirmInfo.button, false);
+            status.set_text(command === 'add'
+                ? `Adding account '${accountId}'…`
+                : `Replacing the key for '${accountId}'…`);
+            this._runAccountCommand(args, key, (ok, stdout, stderr) => {
+                if (this._removed)
+                    return;
+                if (ok)
+                    this._loadAccounts();
+                if (closed)
+                    return;
+                // The key never stays in the entry beyond the command.
+                keyEntry.set_text('');
+                if (ok) {
+                    const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join(' ');
+                    status.set_text(summary || `Account '${accountId}' updated.`);
+                    closeTimerId = Mainloop.timeout_add(1200, () => {
+                        closeTimerId = 0;
+                        if (this._accountsDialog === dialog)
+                            dialog.close();
+                        return false;
+                    });
+                } else {
+                    status.set_text(this._failureMessage(
+                        'could not update the account', stderr, stdout));
+                    this._setDialogButtonEnabled(confirmInfo.button, true);
+                }
+            });
+        };
+
+        const confirmInfo = {
+            label: 'Add / replace key',
+            action: submit,
+            default: true,
+        };
+        dialog.setButtons([
+            {
+                label: 'Cancel',
+                action: () => dialog.close(),
+                key: Clutter.KEY_Escape,
+            },
+            confirmInfo,
+        ]);
+        dialog.setInitialKeyFocus(idEntry);
+        dialog.open();
+    }
+
+    on_accounts_remove() {
+        if (this._accountsDialog)
+            return;
+        const account = this._selectedComboAccount();
+        if (!account)
+            return;
+        const dialog = this._openAccountsDialog();
+        let closed = false;
+        dialog.connect('destroy', () => {
+            closed = true;
+        });
+
+        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+            title: `Remove account '${account.label}'?`,
+            description: removeConfirmBody(account.kind),
+        }));
+
+        const status = this._statusLabel();
+        dialog.contentLayout.add_child(status);
+
+        const confirmInfo = {
+            label: 'Remove',
+            action: () => {
+                this._setDialogButtonEnabled(confirmInfo.button, false);
+                status.set_text('Removing…');
+                this._runAccountCommand(['account', 'remove', account.id], null, (ok, stdout, stderr) => {
+                    if (this._removed)
+                        return;
+                    if (ok) {
+                        this._loadAccounts();
+                        if (!closed)
+                            dialog.close();
+                        return;
+                    }
+                    if (closed)
+                        return;
+                    status.set_text(this._failureMessage(
+                        'could not remove the account', stderr, stdout));
+                    this._setDialogButtonEnabled(confirmInfo.button, true);
+                });
+            },
+            default: true,
+        };
+        dialog.setButtons([
+            {
+                label: 'Cancel',
+                action: () => dialog.close(),
+                key: Clutter.KEY_Escape,
+            },
+            confirmInfo,
+        ]);
+        dialog.open();
+    }
+
+    _failureMessage(fallback, stderr, stdout) {
+        return (stderr || stdout || '').trim() || fallback;
+    }
+
+    _runAccountCommand(args, stdinText, callback) {
+        const binary = this._ocgoPath();
+        if (!binary) {
+            callback(false, '', 'ocgo not found; set the path in the applet settings');
+            return;
+        }
+        try {
+            // argv array only; when stdinText is set it travels through the
+            // stdin pipe (opts.input), never through argv or the journal.
+            Util.spawnCommandLineAsyncIO(null, (stdout, stderr, exitCode) => {
+                callback(exitCode === 0, stdout || '', stderr || '');
+            }, {
+                argv: [binary, ...args],
+                input: stdinText === null ? null : `${stdinText}\n`,
+            });
+        } catch (error) {
+            callback(false, '', `could not start ocgo: ${error.message ?? error}`);
         }
     }
 
