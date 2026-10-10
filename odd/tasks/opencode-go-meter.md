@@ -1,7 +1,7 @@
 # Feature: opencode-go-meter — OpenCode Go usage meter (GNOME first, Cinnamon planned)
 
 **Status**: GNOME feature complete and live (2026-10-02); Cinnamon frontend deferred (T8)
-**Repo**: `/home/martin/workspace/opencode-go-meter`
+**Repo**: `opencode-go-meter`
 **Branch**: `feat/gnome-indicator` (implementation)
 **Created**: 2026-10-01
 

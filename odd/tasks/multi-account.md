@@ -1,7 +1,7 @@
 # Feature: multi-account — add, switch, and replace OpenCode Go accounts (one panel)
 
 **Status**: Complete and user-verified (2026-10-03) — T1–T10 done; live test OK in the user's session (v7 shows the active api-key account).
-**Repo**: `/home/martin/workspace/opencode-go-meter`
+**Repo**: `opencode-go-meter`
 **Branch**: `feat/multi-account` (branched from `feat/gnome-indicator`)
 **Created**: 2026-10-02
 **Related**: `odd/tasks/opencode-go-meter.md` (base feature, complete)

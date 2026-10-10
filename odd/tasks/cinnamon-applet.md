@@ -1,7 +1,7 @@
 # Feature: cinnamon-applet — OpenCode Go meter in the Cinnamon panel
 
 **Status**: Complete — T1–T8 done; merged to `main` (fast-forward, 2026-10-10)
-**Repo**: `/home/martin/workspace/opencode-go-meter`
+**Repo**: `opencode-go-meter`
 **Branch**: `feat/cinnamon-applet` (from `main` @ `aea2c03`)
 **Created**: 2026-10-03
 
