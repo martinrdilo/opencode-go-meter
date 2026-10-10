@@ -17,7 +17,7 @@ OpenCode Go subscription usage in your panel — rolling 5-hour, weekly, and mon
 git clone https://github.com/martinrdilo/opencode-go-meter
 cd opencode-go-meter
 make install
-gnome-extensions enable opencode-go-meter@martin.local
+gnome-extensions enable opencode-go-meter@martinrdilo
 ```
 
 The top bar shows `5h 3% · 7d 64% · 30d 58%`. Click it for countdowns, the renewal date, and a manual refresh. On Wayland, log out and back in if it doesn't appear.

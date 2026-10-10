@@ -1,5 +1,5 @@
 {
-  "uuid": "opencode-go-meter@martin.local",
+  "uuid": "opencode-go-meter@martinrdilo",
   "name": "OpenCode Go Meter",
   "description": "OpenCode Go subscription usage in the top bar",
   "shell-version": ["50"],

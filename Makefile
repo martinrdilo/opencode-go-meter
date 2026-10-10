@@ -1,5 +1,5 @@
 REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-UUID := opencode-go-meter@martin.local
+UUID := opencode-go-meter@martinrdilo
 BIN_LINK := $(HOME)/.local/bin/ocgo
 EXT_LINK := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 APPLET_LINK := $(HOME)/.local/share/cinnamon/applets/$(UUID)
