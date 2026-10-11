@@ -176,7 +176,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         page.add(group);
         page.add(panelGroup);
         page.add(popupGroup);
-        page.add(this._buildAccountsGroup());
+        for (const accountsGroup of this._buildAccountsGroups())
+            page.add(accountsGroup);
         window.add(page);
 
         this._updateTypeModel();
@@ -185,36 +186,15 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
 
     // -- accounts UI ---------------------------------------------------------
 
-    _buildAccountsGroup() {
+    _buildAccountsGroups() {
         const group = new Adw.PreferencesGroup({
             title: 'Accounts',
-            description: 'Manage OpenCode Go accounts. The default account uses the OpenCode login.',
+            description: 'The account shown in the panel and popup.',
         });
 
         this._activeRow = new Adw.ComboRow({title: 'Active account'});
         this._activeRow.connect('notify::selected', () => this._onActiveChanged());
         group.add(this._activeRow);
-
-        this._idRow = new Adw.EntryRow({title: 'Account id'});
-        const idDelegate = this._idRow.get_delegate();
-        if (idDelegate)
-            idDelegate.placeholder_text = 'work';
-        group.add(this._idRow);
-
-        this._labelRow = new Adw.EntryRow({title: 'Label (optional)'});
-        group.add(this._labelRow);
-
-        this._typeRow = new Adw.ComboRow({title: 'Type'});
-        this._typeRow.connect('notify::selected', () => this._updateFormState());
-        group.add(this._typeRow);
-
-        this._keyRow = new Adw.PasswordEntryRow({title: 'API key'});
-        group.add(this._keyRow);
-
-        this._applyRow = new Adw.ButtonRow({title: 'Add / replace key'});
-        this._applyRow.add_css_class('suggested-action');
-        this._applyRow.connect('activated', () => this._applyAccountForm());
-        group.add(this._applyRow);
 
         this._removeRow = new Adw.ButtonRow({title: 'Remove account'});
         this._removeRow.add_css_class('destructive-action');
@@ -222,12 +202,38 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._removeRow.connect('activated', () => this._confirmRemove());
         group.add(this._removeRow);
 
+        const formGroup = new Adw.PreferencesGroup({
+            title: 'Add or replace an account',
+            description: 'Adds a new account, or replaces the API key of an existing one.',
+        });
+
+        this._idRow = new Adw.EntryRow({title: 'Account id'});
+        const idDelegate = this._idRow.get_delegate();
+        if (idDelegate)
+            idDelegate.placeholder_text = 'work';
+        formGroup.add(this._idRow);
+
+        this._labelRow = new Adw.EntryRow({title: 'Label (optional)'});
+        formGroup.add(this._labelRow);
+
+        this._typeRow = new Adw.ComboRow({title: 'Type'});
+        this._typeRow.connect('notify::selected', () => this._updateFormState());
+        formGroup.add(this._typeRow);
+
+        this._keyRow = new Adw.PasswordEntryRow({title: 'API key'});
+        formGroup.add(this._keyRow);
+
+        this._applyRow = new Adw.ButtonRow({title: 'Add / replace key'});
+        this._applyRow.add_css_class('suggested-action');
+        this._applyRow.connect('activated', () => this._applyAccountForm());
+        formGroup.add(this._applyRow);
+
         this._feedbackRow = new Adw.ActionRow({title: 'Status'});
         this._feedbackRow.subtitle_lines = 0;
         this._feedbackRow.visible = false;
-        group.add(this._feedbackRow);
+        formGroup.add(this._feedbackRow);
 
-        return group;
+        return [group, formGroup];
     }
 
     _setFeedback(message) {
