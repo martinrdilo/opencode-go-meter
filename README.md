@@ -43,13 +43,14 @@ The installers only create symlinks (no sudo), are safe to re-run, and uninstall
 
 When the active account is the OpenCode login, the popup also mirrors the console's credits panel: the balance with its console state (`Running low` under $5, `No credits left` at zero), the extra-usage switch, and the auto-recharge state. `ocgo status` adds the same `Credits` row.
 
-API-key accounts show the meters only — the console API rejects API keys for billing (HTTP 403) and the zen endpoint has no credits data. To see credits, keep the login account active (`ocgo account use default`). Show or hide the section from the settings (GNOME: Preferences → Popup → Show credits; Cinnamon: applet settings → Show credits).
+API-key accounts show the meters only — the console API rejects API keys for billing (HTTP 403) and the zen endpoint has no credits data. To see credits, keep the OpenCode login active (`ocgo account use <login-id>`). Show or hide the section from the settings (GNOME: Preferences → Popup → Show credits; Cinnamon: applet settings → Show credits).
 
 ## Accounts
 
-A fresh install uses your local OpenCode login (read **read-only**). Add API-key accounts from the OpenCode console (`oc_sk_…`), switch between them, or replace keys:
+A fresh install uses your local OpenCode login (read **read-only**). The add flow offers both kinds — the OpenCode login (the default when none is registered; sign in with `opencode auth login` first if you are logged out) and API-key accounts from the OpenCode console (`oc_sk_…`). Switch between accounts or replace keys:
 
 ```bash
+ocgo account add personal --from-db    # register the local OpenCode login (no API key)
 ocgo account add work --label "Work"   # key prompted hidden, validated against the API
 ocgo account use work                  # switch the shown account
 ocgo account set-key work              # replace / rotate a key
