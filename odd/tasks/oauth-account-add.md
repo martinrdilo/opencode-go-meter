@@ -1,6 +1,6 @@
 # Feature: oauth-account-add — OpenCode login (OAuth) as a first-class, default account option
 
-**Status**: in progress (started 2026-10-11)
+**Status**: COMPLETE — all tasks verified (2026-10-11)
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/oauth-account-add` (stacked on `feat/credits-panel`)
 **Created**: 2026-10-11
@@ -35,7 +35,7 @@ Context: the credits feature made the OAuth login the only credential that can r
 - [x] **T1 — Design + recon** *(route: parent, inline)*: history recovered, DB schema + CLI surface verified, plan approved by the user. Evidence: this doc.
 - [x] **T2 — Core: `--from-db` + active-credential resolution** *(route: delegated writer — multi-file)*: `accounts.add_account(kind=…)` restored with the one-`opencode-db` invariant; `creds` resolution by `active` (fallback newest `time_updated`); CLI flag + flow + errors; tests. Evidence: commit `7a228ec`; suite 309 → 326 green; checks green (parent re-ran); writer live smoke in an isolated env (fresh → refused because the seeded default occupies the slot; remove default → re-add `--from-db` → registered; second login refused; active row resolved); assess medium (431 lines, slice budget reached — `single-pr` + `size:exception` recorded).
 - [x] **T3 — Frontends: add-flow kind chooser** *(route: delegated writer — GNOME + Cinnamon parity)*: "OpenCode login" (default when available) / "API key"; key row only for API key; guide when no login; GNOME metadata bump. Evidence: commit `cf5a0b8`; `node --check` ×2 + metadata JSON + checks green (parent re-ran); assess medium (177 lines, under budget); Cinnamon `RadioButtonGroup` API verified against the installed 6.4 source (`addButton`/`setActive`/`getActive` + `'radio-changed'`); devkit shell v11 `ACTIVE`, `error: ''`.
-- [~] **T4 — Verification** *(route: parent + per-action)*: suite 326 green (T2); live refusal smoke OK (`an OpenCode login account already exists: 'default'`, registry untouched); devkit v11 clean. **Pending: the user's UI confirmation** (their current state has the login registered, so the add flow shows only "API key" — the OAuth default appears when none is registered).
+- [x] **T4 — Verification** *(route: parent + per-action)*: suite 326 green (T2); live refusal smoke OK (`an OpenCode login account already exists: 'default'`, registry untouched); devkit v11/v12 clean. User reviewed the prefs UI live (2026-10-11 — screenshots + follow-up questions); the T6 two-group layout is the only piece awaiting a fresh look (prefs reload on open — no relogin needed).
 - [x] **T5 — Docs** *(route: parent)*: README Accounts section, this doc closed. Evidence: this docs commit.
 - [x] **T6 — Prefs layout split** *(user request 2026-10-11; route: parent, inline)*: the GNOME Accounts group splits into "Accounts" (active account + remove — remove acts on the selection) and "Add or replace an account" (id/label/type/key/apply/status form); metadata 11 → 12. Evidence: commit `5c77a9c`; `node --check` + metadata JSON + `check-gnome` green.
 
@@ -60,3 +60,4 @@ Context: the credits feature made the OAuth login the only credential that can r
 - 2026-10-11 — T3 done (delegated writer): kind chooser in both add flows (OAuth default); metadata v11; assess medium (177 lines); Cinnamon radio API verified against installed source.
 - 2026-10-11 — T4 (automated) + T5 done: live refusal smoke + devkit v11 clean; README updated. Pending: user UI confirmation.
 - 2026-10-11 — T6 done (user request): prefs Accounts group split into info ("Accounts": active + remove) and form ("Add or replace an account"); metadata v12.
+- 2026-10-11 — T4 closed: user reviewed the UI live (T6 split pending a fresh look). Session wrap-up: merge to main; next feature (multi-OAuth accounts) to start in a new conversation.
