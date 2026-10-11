@@ -1,6 +1,6 @@
 # Feature: oauth-account-add — OpenCode login (OAuth) as a first-class, default account option
 
-**Status**: COMPLETE — all tasks verified (2026-10-11)
+**Status**: COMPLETE — all tasks verified; merged to main (fast-forward, 2026-10-11)
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/oauth-account-add` (stacked on `feat/credits-panel`)
 **Created**: 2026-10-11

@@ -1,6 +1,6 @@
 # Feature: credits-panel — Credits balance, extra usage, and auto-recharge in the meter
 
-**Status**: COMPLETE — all tasks verified; user confirmed the popup visually (2026-10-11)
+**Status**: COMPLETE — all tasks verified; user confirmed the popup visually (2026-10-11); merged to main
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/credits-panel` (implementation)
 **Created**: 2026-10-10
