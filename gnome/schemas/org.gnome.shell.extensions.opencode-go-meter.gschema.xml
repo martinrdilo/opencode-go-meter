@@ -31,7 +31,7 @@
       <range min="-1" max="30"/>
     </key>
     <key name="show-credits" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show credits in the popup</summary>
       <description>
         Show the credits balance, the extra-usage switch, and the auto-recharge

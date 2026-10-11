@@ -576,8 +576,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
         try {
             return this._settings.get_boolean('show-credits');
         } catch (error) {
-            logError('could not read show-credits; showing the credits section', error);
-            return true;
+            logError('could not read show-credits; hiding the credits section', error);
+            return false;
         }
     }
 

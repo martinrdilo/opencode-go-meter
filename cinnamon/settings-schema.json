@@ -21,7 +21,7 @@
     },
     "show-credits": {
         "type": "checkbox",
-        "default": true,
+        "default": false,
         "description": "Show credits",
         "tooltip": "Show the credits balance, extra usage, and auto-recharge in the popup (OpenCode login accounts only)."
     },
