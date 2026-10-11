@@ -39,6 +39,12 @@ The installers only create symlinks (no sudo), are safe to re-run, and uninstall
 - Panel colors: green < 50%, amber 50–84%, red ≥ 85%.
 - Terminal: `ocgo status` for the same view, `ocgo refresh` to update now.
 
+## Credits
+
+When the active account is the OpenCode login, the popup also mirrors the console's credits panel: the balance with its console state (`Running low` under $5, `No credits left` at zero), the extra-usage switch, and the auto-recharge state. `ocgo status` adds the same `Credits` row.
+
+API-key accounts show the meters only — the console API rejects API keys for billing (HTTP 403) and the zen endpoint has no credits data. To see credits, keep the login account active (`ocgo account use default`).
+
 ## Accounts
 
 A fresh install uses your local OpenCode login (read **read-only**). Add API-key accounts from the OpenCode console (`oc_sk_…`), switch between them, or replace keys:
@@ -59,7 +65,7 @@ With no accounts configured the panel shows a dash and the popup explains — no
 
 - Credentials are handled only by `ocgo`: the OpenCode login is read from its local store in read-only mode; API keys live in the OS keyring (0600 file fallback) — never in logs, argv, or the usage cache.
 - The GNOME and Cinnamon frontends never touch credentials: they read the usage cache and run the CLI.
-- Requests go only to `opencode.ai`; the cache holds usage numbers only.
+- Requests go only to `opencode.ai`; the cache holds usage and credit numbers only.
 
 ## License
 
