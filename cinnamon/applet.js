@@ -672,9 +672,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             return null;
         const account = (this._accounts || []).find(
             entry => entry.id === this._activeAccountId);
-        if (!account || account.kind !== KIND_OPENCODE_DB || !account.credential_id)
-            return null;
-        return account;
+        return this._isPinnedLogin(account) ? account : null;
+    }
+
+    // A pinned OpenCode login: the only kind "Make active in OpenCode" applies
+    // to (auto logins follow OpenCode by definition; API keys are not logins).
+    _isPinnedLogin(account) {
+        return !!account && account.kind === KIND_OPENCODE_DB &&
+            !!account.credential_id;
     }
 
     // Display-only suffix marking a pinned login whose credential is the
@@ -1237,6 +1242,19 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             confirmInfo,
         ]);
         dialog.open();
+    }
+
+    // Settings-dialog entry point for "Make active in OpenCode…". Mirrors the
+    // Remove button's handling: one accounts dialog at a time, silent no-op
+    // when the selected account is not a pinned login, then the shared
+    // confirmation flow (same as the popup submenu item).
+    on_accounts_activate() {
+        if (this._accountsDialog)
+            return;
+        const account = this._selectedComboAccount();
+        if (!this._isPinnedLogin(account))
+            return;
+        this._confirmActivateInOpencode(account);
     }
 
     _confirmActivateInOpencode(account) {
