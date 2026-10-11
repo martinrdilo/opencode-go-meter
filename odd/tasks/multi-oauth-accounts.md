@@ -1,10 +1,10 @@
 # Feature: multi-oauth-accounts — multiple OpenCode Console (OAuth) logins as first-class accounts
 
-**Status**: IN PROGRESS — T1–T3 done (+ T4 automated, docs); pending user UI review to close T4
+**Status**: DELIVERED — T1–T3 + T5 complete; T4 automated green; PR #1 open; live UI review pending at the maintainer's convenience
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/multi-oauth-accounts`
 **Created**: 2026-10-11
-**Delivery**: `single-pr` + `size:exception` (repo precedent); work-unit commits; forecast ~600–800 authored lines
+**Delivery**: `single-pr` + `size:exception` (repo precedent); work-unit commits — delivered as [PR #1](https://github.com/martinrdilo/opencode-go-meter/pull/1) (`enhancement` label; branch `feat/multi-oauth-accounts` pushed to origin)
 
 ## Objective
 
@@ -54,7 +54,7 @@ Option A (chosen by the user 2026-10-11) beat option B (switch-only action) beca
 - [x] T1 — Design + recon *(route: parent, inline)*: facts live-verified, options A/B presented, user approved A (with the activate-in-opencode bonus). Evidence: this doc + Engram #1438. Pending (non-blocking): live probe of refresh-on-switch behavior (needs user OK) — affects UX copy only.
 - [x] T2 — Core *(route: delegated writer — multi-file core + tests)*: registry v3 + pinned binding + `creds` resolve-by-id + `list_db_credentials` + CLI (`--credential`, `discover`, `activate-in-opencode`) + tests. Evidence: commits `12f9fec` + `4f5afae`; suite 326 → 384 green; isolated smoke OK (3 synthetic credentials: discover/add-by-id/add-by-label/list/activate/dangling + `refresh --all` continuation); independent verifier **verified** (57/57 probes, 0 blockers, 0 minors); assess `unassessable/high` (OpenCode runtime not eligible for immutable receipt review — RDD off) → independent verifier path per the delegated gate; 3 nit findings closed in bounded correction `c7cdb92` (explicit-null tolerance, load-time cross-entry validation, 10s `opencode` subprocess timeout); parent spot check 390 green.
 - [x] T3 — Frontends *(route: delegated writer — GNOME + Cinnamon parity; one bounded correction round)*: credential picker, multi-login list, activate action, dangling feedback; metadata 13. Evidence: commits `473874d` (GNOME), `ab43bef` (Cinnamon), correction `2ca1c4a` (Cinnamon settings parity: the settings-dialog button requires `settings-schema.json`, which the original surfaces wrongly excluded; the popup submenu item was kept as an extra affordance); checks green (`node --check` ×2, metadata v13, `check-gnome`/`check-cinnamon`, suite 390); independent verifier **verified** (0 blockers, 0 minors; 116 harness checks + synthetic-DB CLI sandbox + byte-identical preservation proof of the guard/secret paths); assess `unassessable/high` (runtime ineligible) → verifier path. Accepted cosmetic nits (documented, not fixed): duplicated tooltip text when `ocgo` is missing (Cinnamon); generic discover-failure text without stderr; transient annotation loss on a failed discover (GNOME).
-- [ ] T4 — Verification *(route: parent + per-action)*: parent re-ran suite 390 + `check-gnome`/`check-cinnamon` green; isolated smoke done (T2/T3 verification rounds: synthetic `OCGO_DB` + fake `opencode`; real argv captured); devkit nested shell (`dbus-run-session` + `gnome-shell --devkit`): extension **v13.0, enabled, `state: 1` (ENABLED), `error: ''`**, no opencode-related log lines. Pending **user UI review** to close; optional real smoke once a 2nd account is logged in (`opencode auth login`, user action) + optional refresh-on-switch live probe (user OK).
+- [ ] T4 — Verification *(route: parent + per-action)*: parent re-ran suite 390 + `check-gnome`/`check-cinnamon` green; isolated smoke done (T2/T3 verification rounds: synthetic `OCGO_DB` + fake `opencode`; real argv captured); devkit nested shell (`dbus-run-session` + `gnome-shell --devkit`): extension **v13.0, enabled, `state: 1` (ENABLED), `error: ''`**, no opencode-related log lines. User authorized delivery without immediate live testing (2026-10-11); the live UI review stays open at the maintainer's convenience (optional real smoke + refresh-on-switch probe remain pending user OK/action).
 - [x] T5 — Docs *(route: parent)*: README Accounts section rewritten for auto/pinned logins + `discover` / `activate-in-opencode` / `--credential`; credits note aligned. Evidence: README commit `fd7934b`. Doc close pending T4 user review.
 
 ## Acceptance criteria
@@ -83,3 +83,4 @@ Option A (chosen by the user 2026-10-11) beat option B (switch-only action) beca
 - 2026-10-11 — T5 docs: README Accounts/credits sections updated (`fd7934b`). T4 automated: parent re-ran suite 390 + `check-gnome`/`check-cinnamon` green; devkit smoke + user UI review pending.
 - 2026-10-11 — T4 automated done: devkit nested shell (`dbus-run-session` + `gnome-shell --devkit`) → extension v13.0, enabled, `error: ''`, no opencode-related log lines. Pending user UI review to close T4.
 - 2026-10-11 — Branch size record: 12 files, +2482/−141 (main...HEAD; tests included) — `single-pr` + `size:exception` stands per repo precedent.
+- 2026-10-11 — Delivery: branch pushed (remote updated to the canonical `martinrdilo/opencode-go-meter`); PR #1 opened with summary + size note, `enhancement` label; no issue-first flow exists in this repo (documented in the PR body). User approved proceeding without live testing for now.
