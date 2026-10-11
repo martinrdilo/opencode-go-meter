@@ -43,20 +43,25 @@ The installers only create symlinks (no sudo), are safe to re-run, and uninstall
 
 When the active account is the OpenCode login, the popup also mirrors the console's credits panel: the balance with its console state (`Running low` under $5, `No credits left` at zero), the extra-usage switch, and the auto-recharge state. `ocgo status` adds the same `Credits` row.
 
-API-key accounts show the meters only — the console API rejects API keys for billing (HTTP 403) and the zen endpoint has no credits data. To see credits, keep the OpenCode login active (`ocgo account use <login-id>`). Show or hide the section from the settings (GNOME: Preferences → Popup → Show credits; Cinnamon: applet settings → Show credits).
+API-key accounts show the meters only — the console API rejects API keys for billing (HTTP 403) and the zen endpoint has no credits data. To see credits, keep an OpenCode login as the shown account (`ocgo account use <login-id>`). Show or hide the section from the settings (GNOME: Preferences → Popup → Show credits; Cinnamon: applet settings → Show credits).
 
 ## Accounts
 
-A fresh install uses your local OpenCode login (read **read-only**). The add flow offers both kinds — the OpenCode login (the default when none is registered; sign in with `opencode auth login` first if you are logged out) and API-key accounts from the OpenCode console (`oc_sk_…`). Switch between accounts or replace keys:
+A fresh install uses your local OpenCode login (read **read-only**). The add flow offers both kinds: OpenCode logins — one per credential stored by `opencode auth login` (`ocgo account discover` lists them) — and API-key accounts from the OpenCode console (`oc_sk_…`). A login is either **auto** (follows the credential OpenCode marks active via `opencode auth switch`) or **pinned** to one stored credential; every login shows its own meters and credits, independent of which credential OpenCode is using. Switch between accounts or replace keys:
 
 ```bash
-ocgo account add personal --from-db    # register the local OpenCode login (no API key)
-ocgo account add work --label "Work"   # key prompted hidden, validated against the API
-ocgo account use work                  # switch the shown account
-ocgo account set-key work              # replace / rotate a key
-ocgo account remove work               # remove an account
-ocgo refresh --all                     # refresh every account
+ocgo account discover                              # list the OpenCode logins stored locally
+ocgo account add personal --from-db                # register the auto login (follows opencode auth switch)
+ocgo account add work --from-db --credential Work  # pin a specific stored login
+ocgo account add temp --label "Temp"               # API key: prompted hidden, validated against the API
+ocgo account activate-in-opencode work             # make a pinned login OpenCode's active account
+ocgo account use work                              # switch the account shown by the app
+ocgo account set-key temp                          # replace / rotate a key
+ocgo account remove temp                           # remove an account
+ocgo refresh --all                                 # refresh every account
 ```
+
+Stored logins stay valid for about a month; one that OpenCode has not used for that long shows as expired until it is used again — make it active (`ocgo account activate-in-opencode`) and use OpenCode once. Token refresh stays OpenCode's job: the app never implements OAuth.
 
 With no accounts configured the panel shows a dash and the popup explains — nothing is invented.
 
