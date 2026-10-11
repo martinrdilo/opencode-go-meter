@@ -135,3 +135,4 @@ New optional keys; old frontends ignore them, new frontends tolerate their absen
 - 2026-10-10 — T6 requested by the user: make the credits section optional via settings (both frontends). Implementation started.
 - 2026-10-11 — T6 done (delegated writer): `show-credits` setting in both frontends (GNOME prefs switch + schema, Cinnamon checkbox), live-applied; devkit v9 ACTIVE clean; README updated.
 - 2026-10-11 — T6 follow-up (user request): `show-credits` now defaults to **off** in both frontends (opt-in); GNOME read-error fallback aligned (hide); metadata 9 → 10.
+- 2026-10-11 — User removed the API-key account (`martinrdilorenzo`) from the registry (user request; the CLI cleaned the keyring entry and its cache). Single credential now: `default` (opencode-db), active. Subscription renewed meanwhile: meters reset (4% / 2% / 1%), credits `$2.59`.
