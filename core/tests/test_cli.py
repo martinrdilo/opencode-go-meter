@@ -947,7 +947,7 @@ class AccountUseRemoveTests(AccountCliTestCase):
         self.assertEqual(entries, [])
         self.assertIsNone(active)
         registry = accounts.load_registry()
-        self.assertEqual(registry["version"], 2)
+        self.assertEqual(registry["version"], 3)
         self.assertIsNone(registry["active"])
         self.assertEqual(registry["accounts"], [])
 

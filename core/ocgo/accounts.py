@@ -3,9 +3,15 @@
 The registry (``$XDG_CONFIG_HOME/ocgo/accounts.json``) is the single source of
 truth for the account list and the active account. It is fully user-owned: the
 list may be empty, ``active`` may be ``null``, and every account — of kind
-``api-key`` or ``opencode-db`` — can be added and removed. Absent or v1
-registries materialize the seeded ``default`` (``opencode-db``) account in
-memory; the next mutation writes v2 with the effective list.
+``api-key`` or ``opencode-db`` — can be added and removed. Absent, v1, and v2
+registries materialize their effective v3 view in memory (absent and v1
+materialize the seeded ``default`` account); the next mutation writes version 3
+with the effective list.
+
+``opencode-db`` accounts either follow the database's active credential
+("auto", at most one) or pin one database credential id (``credential_id``,
+many pins allowed, duplicates refused); ``api-key`` accounts never carry a
+``credential_id``.
 
 Secrets are resolved in this order: the ``OCGO_TOKEN_<ID>`` environment
 variable, the GNOME keyring through the ``secret-tool`` CLI, and finally an
@@ -34,7 +40,7 @@ DEFAULT_ACCOUNT_ID = "default"
 DEFAULT_LABEL = "Default"
 KIND_OPENCODE_DB = "opencode-db"
 KIND_API_KEY = "api-key"
-REGISTRY_VERSION = 2
+REGISTRY_VERSION = 3
 
 _SECRET_TOOL = "secret-tool"
 _SECRET_TIMEOUT = 10
@@ -55,12 +61,18 @@ class AccountError(Exception):
 
 @dataclass(frozen=True)
 class Account:
-    """A registered account; ``hint`` is always a masked value or ``None``."""
+    """A registered account; ``hint`` is always a masked value or ``None``.
+
+    ``credential_id`` is only set on pinned ``opencode-db`` accounts; ``None``
+    means an ``api-key`` account or an ``opencode-db`` account that follows the
+    database's active credential.
+    """
 
     id: str
     label: str
     kind: str
     hint: str | None = None
+    credential_id: str | None = None
 
 
 def config_dir() -> Path:
@@ -126,7 +138,11 @@ def _seeded_default_entry() -> dict:
 
 
 def _effective_registry() -> dict:
-    """Return a v2 view: absent and v1 registries materialize the seeded default."""
+    """Return a v3 view: absent, v1, and v2 registries are upgraded in memory.
+
+    v1 and v2 files are read as-is (entries never carry ``credential_id``
+    there); the first mutation writes the whole effective list as version 3.
+    """
     registry = load_registry()
     if registry is None:
         return {
@@ -140,11 +156,23 @@ def _effective_registry() -> dict:
             "active": registry["active"],
             "accounts": [_seeded_default_entry(), *registry["accounts"]],
         }
+    if registry["version"] == 2:
+        return {
+            "version": REGISTRY_VERSION,
+            "active": registry["active"],
+            "accounts": list(registry["accounts"]),
+        }
     return registry
 
 
 def _account_from_entry(entry: dict) -> Account:
-    return Account(entry["id"], entry["label"], entry["kind"], entry.get("hint"))
+    return Account(
+        entry["id"],
+        entry["label"],
+        entry["kind"],
+        entry.get("hint"),
+        entry.get("credential_id"),
+    )
 
 
 def _effective_active(entries: list[dict], stored: str | None) -> str | None:
@@ -175,14 +203,18 @@ def add_account(
     *,
     kind: str = KIND_API_KEY,
     hint: str | None = None,
+    credential_id: str | None = None,
 ) -> Account:
     """Register an account (``api-key`` or ``opencode-db``) and return it.
 
     When the current effective list is empty the added account becomes active.
     ``api-key`` accounts may carry a masked ``hint``; ``opencode-db`` accounts
-    never do. The OpenCode login is singular: at most one ``opencode-db``
-    account may exist, so adding one is refused while another is listed (the
-    seeded default already occupies the slot on absent or v1 registries).
+    never do. An ``opencode-db`` account without ``credential_id`` follows the
+    database's active credential ("auto") and is singular: adding one is
+    refused while another auto login is listed (the seeded default already
+    occupies the slot on absent, v1, and v2 registries). With ``credential_id``
+    the account is pinned to that database credential; many pins may coexist,
+    but pinning the same credential id twice is refused.
     """
     _require_valid_id(account_id)
     if kind not in (KIND_API_KEY, KIND_OPENCODE_DB):
@@ -191,24 +223,19 @@ def add_account(
         raise AccountError("the account label must be a non-empty string")
     if hint is not None and not isinstance(hint, str):
         raise AccountError("the account hint must be a string or None")
+    if credential_id is not None and (
+        not isinstance(credential_id, str) or not credential_id.strip()
+    ):
+        raise AccountError("the credential id must be a non-empty string")
     if kind == KIND_OPENCODE_DB and hint is not None:
         raise AccountError("opencode-db accounts cannot have a hint")
+    if kind == KIND_API_KEY and credential_id is not None:
+        raise AccountError("api-key accounts cannot pin a database credential")
     registry = _effective_registry()
     if any(entry["id"] == account_id for entry in registry["accounts"]):
         raise AccountError(f"account '{account_id}' already exists")
     if kind == KIND_OPENCODE_DB:
-        existing = next(
-            (
-                entry
-                for entry in registry["accounts"]
-                if entry["kind"] == KIND_OPENCODE_DB
-            ),
-            None,
-        )
-        if existing is not None:
-            raise AccountError(
-                f"an OpenCode login account already exists: '{existing['id']}'"
-            )
+        _check_login_slot(registry["accounts"], credential_id)
     current_active = _effective_active(registry["accounts"], registry["active"])
     entry = {
         "id": account_id,
@@ -216,10 +243,45 @@ def add_account(
         "kind": kind,
         "hint": hint,
     }
+    if credential_id is not None:
+        entry["credential_id"] = credential_id
     registry["accounts"].append(entry)
     registry["active"] = current_active if current_active is not None else account_id
     _save_registry(registry)
-    return Account(account_id, entry["label"], kind, hint)
+    return _account_from_entry(entry)
+
+
+def _check_login_slot(entries: list[dict], credential_id: str | None) -> None:
+    """Enforce the login slot rules: one auto login, no duplicate pins."""
+    if credential_id is None:
+        existing = next(
+            (
+                entry
+                for entry in entries
+                if entry["kind"] == KIND_OPENCODE_DB
+                and entry.get("credential_id") is None
+            ),
+            None,
+        )
+        if existing is not None:
+            raise AccountError(
+                f"an OpenCode login account already exists: '{existing['id']}'"
+            )
+        return
+    duplicate = next(
+        (
+            entry
+            for entry in entries
+            if entry["kind"] == KIND_OPENCODE_DB
+            and entry.get("credential_id") == credential_id
+        ),
+        None,
+    )
+    if duplicate is not None:
+        raise AccountError(
+            f"an OpenCode login account is already pinned to credential "
+            f"'{credential_id}': '{duplicate['id']}'"
+        )
 
 
 def remove_account(account_id: str) -> None:
@@ -407,7 +469,7 @@ def _validate_registry(data: object, path: Path) -> None:
     if (
         isinstance(version, bool)
         or not isinstance(version, int)
-        or version not in (1, 2)
+        or version not in (1, 2, 3)
     ):
         raise _registry_error(path, f"unsupported version {version!r}")
     active = data.get("active")
@@ -459,6 +521,23 @@ def _validate_entry(
         raise _registry_error(
             path, f"account '{account_id}' is opencode-db and cannot have a hint"
         )
+    if "credential_id" in entry:
+        if version != 3:
+            raise _registry_error(
+                path,
+                f"account '{account_id}' has a credential id, which requires "
+                "registry version 3",
+            )
+        credential_id = entry["credential_id"]
+        if not isinstance(credential_id, str) or not credential_id.strip():
+            raise _registry_error(
+                path, f"account '{account_id}' has an invalid credential id"
+            )
+        if kind != KIND_OPENCODE_DB:
+            raise _registry_error(
+                path,
+                f"account '{account_id}' is {kind} and cannot have a credential id",
+            )
 
 
 def _save_registry(data: dict) -> None:
