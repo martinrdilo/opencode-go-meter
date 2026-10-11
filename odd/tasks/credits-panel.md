@@ -1,6 +1,6 @@
 # Feature: credits-panel — Credits balance, extra usage, and auto-recharge in the meter
 
-**Status**: implementation complete + verified (2026-10-10); awaiting the user's relogin confirmation (GNOME code reload)
+**Status**: T1–T6 complete + verified (2026-10-11); user relogin confirmation pending (GNOME code reload)
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/credits-panel` (implementation)
 **Created**: 2026-10-10
@@ -108,6 +108,7 @@ New optional keys; old frontends ignore them, new frontends tolerate their absen
 - [x] **T3 — Frontends: credits section** *(route: delegated writer — 4 files; one writer for GNOME+Cinnamon parity)*: popup rows (Credits amount+state colored, Extra usage On/Off, Auto-recharge state), hidden rules, GNOME stylesheet + metadata bump (7 → 8). Evidence: commit `0f95de6`; `node --check` ×2 + `check-gnome`/`check-cinnamon` green (parent re-ran); assess medium (254 lines, under budget); writer render-harness 25 formatter + 19 cache shapes × 2 frontends.
 - [~] **T4 — Verification** *(route: parent + per-action)*: `make test` 309 green (parent re-ran); `check-gnome`/`check-cinnamon` + `node --check` green (parent re-ran); live `ocgo refresh` smoke on both account kinds (`$2.68` on the OAuth account, `credits: null` on the API key, no regression); devkit shell: extension `state: ACTIVE`, `version: 8`, `error: ''`; render harness 44/44. **Pending: the user's visual confirmation after relogin** (GNOME module reload needs logout/login).
 - [x] **T5 — Docs** *(route: parent)*: README "Credits" section (incl. the API-key limitation), Security line updated, this doc closed. Evidence: this docs commit.
+- [x] **T6 — Show-credits setting** *(user request 2026-10-10; route: delegated writer — 6 files)*: boolean `show-credits` (default true) in the GNOME schema + a prefs switch, same key in the Cinnamon settings schema; both popups hide the credits section live when off; GNOME metadata 8 → 9. Evidence: commit `f13e924`; `node --check` ×3 + `glib-compile-schemas --strict --dry-run` + `gsettings get` (`true`) + checks green (parent re-ran); devkit shell v9 `ACTIVE`, `error: ''`, zero render/settings errors; assess medium (56 lines, under budget).
 
 ## Acceptance criteria
 
@@ -131,3 +132,5 @@ New optional keys; old frontends ignore them, new frontends tolerate their absen
 - 2026-10-10 — T2 done (delegated writer): core credits support shipped; suite 253 → 309 green; static checks green; live smoke OK (`$2.96`, Running low, extra usage on, auto-recharge off). Delivery strategy recorded: `single-pr` + `size:exception` accepted.
 - 2026-10-10 — T3 done (delegated writer): credits section in both popups; syntax + static checks green; assess medium, under budget.
 - 2026-10-10 — T4 (automated) + T5 done: full verification pass; OAuth account `default` re-added to the registry and activated (user-approved; registry backup kept); live refresh `$2.68` with the credits row; README + close-out. User relogin confirmation pending.
+- 2026-10-10 — T6 requested by the user: make the credits section optional via settings (both frontends). Implementation started.
+- 2026-10-11 — T6 done (delegated writer): `show-credits` setting in both frontends (GNOME prefs switch + schema, Cinnamon checkbox), live-applied; devkit v9 ACTIVE clean; README updated.
