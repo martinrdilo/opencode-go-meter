@@ -105,7 +105,7 @@ New optional keys; old frontends ignore them, new frontends tolerate their absen
 
 - [x] **T1 — Spike** *(route: parent, inline — credential-sensitive)*: bundle recon + live probe with the user's explicit authorization. Evidence: Data source above. Commits: none (docs only).
 - [x] **T2 — Core: credits fetch, cache, CLI** *(route: delegated writer — 3 source + 3 test files)*: `fetch_billing_status` / `fetch_auto_recharge` (shared console-JSON helper), `credits_from_billing` mapping, `credits_state()` in `format.py`, `useBalance` → `extra_usage`, CLI refresh wiring (best-effort billing; failures → `credits: {"error": …}`, never fail the refresh), `ocgo status` credits row, refresh summary extension, tests. Evidence: commit `47baf9a`; `make test` 253 → 309 green; `check-gnome`/`check-cinnamon` green; live smoke (OAuth, 2026-10-10): `extra_usage: true`, credits `$2.96` `low`, auto-recharge off, summary `… · $2.96`; assess tier medium (`executable_change`).
-- [ ] **T3 — Frontends: credits section** *(route: delegated writer — 4 files; one writer for GNOME+Cinnamon parity)*: popup rows (Credits amount+state colored, Extra usage On/Off, Auto-recharge state), hidden rules, stylesheet, GNOME metadata version bump.
+- [x] **T3 — Frontends: credits section** *(route: delegated writer — 4 files; one writer for GNOME+Cinnamon parity)*: popup rows (Credits amount+state colored, Extra usage On/Off, Auto-recharge state), hidden rules, GNOME stylesheet + metadata bump (7 → 8). Evidence: commit `0f95de6`; `node --check` ×2 + `check-gnome`/`check-cinnamon` green (parent re-ran); assess medium (254 lines, under budget); writer render-harness 25 formatter + 19 cache shapes × 2 frontends.
 - [ ] **T4 — Verification** *(route: parent + per-action)*: `make test`, `make check-gnome`, `make check-cinnamon`, live `ocgo refresh` smoke, user confirmation in the running session.
 - [ ] **T5 — Docs** *(route: parent)*: README "Credits" section (incl. the API-key limitation), close-out of this doc.
 
@@ -129,3 +129,4 @@ New optional keys; old frontends ignore them, new frontends tolerate their absen
 
 - 2026-10-10 — T1 done: console bundle recon (endpoints/types/strings) + live probe with user authorization; account-kind matrix established (API keys cannot read credits); branch `feat/credits-panel` created.
 - 2026-10-10 — T2 done (delegated writer): core credits support shipped; suite 253 → 309 green; static checks green; live smoke OK (`$2.96`, Running low, extra usage on, auto-recharge off). Delivery strategy recorded: `single-pr` + `size:exception` accepted.
+- 2026-10-10 — T3 done (delegated writer): credits section in both popups; syntax + static checks green; assess medium, under budget.
