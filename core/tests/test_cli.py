@@ -395,6 +395,35 @@ def zen_payload() -> dict:
     }
 
 
+def write_credential_db(path: Path, rows: list[tuple]) -> Path:
+    """Write a labelled opencode credential DB and return its path.
+
+    Each row is ``(id, label, value, active, time_updated)``.
+    """
+    import sqlite3
+
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE credential ("
+        "id TEXT PRIMARY KEY, "
+        "integration_id TEXT NOT NULL, "
+        "label TEXT NOT NULL, "
+        "value TEXT NOT NULL, "
+        "active INTEGER NOT NULL DEFAULT 0, "
+        "time_updated INTEGER NOT NULL DEFAULT 0)"
+    )
+    for credential_id, label, value, active, updated in rows:
+        connection.execute(
+            "INSERT INTO credential "
+            "(id, integration_id, label, value, active, time_updated) "
+            "VALUES (?, 'opencode', ?, ?, ?, ?)",
+            (credential_id, label, value, active, updated),
+        )
+    connection.commit()
+    connection.close()
+    return path
+
+
 class AccountCliTestCase(CliTestCase):
     def setUp(self):
         super().setUp()
@@ -738,6 +767,144 @@ class AccountAddFromDbTests(AccountCliTestCase):
         self.assertFalse(accounts.secret_file_path("login").exists())
 
 
+class AccountAddFromDbPinnedTests(AccountCliTestCase):
+    """``account add --from-db --credential <selector>`` pins a DB row."""
+
+    def _seed_two_credentials(self) -> Path:
+        return write_credential_db(
+            self.tmp / "opencode.db",
+            [
+                (
+                    "cred-a",
+                    "Work",
+                    json.dumps({"access": "token-active-1"}),
+                    1,
+                    200,
+                ),
+                (
+                    "cred-b",
+                    "Personal",
+                    json.dumps({"access": "token-pinned-2"}),
+                    0,
+                    100,
+                ),
+            ],
+        )
+
+    def test_add_pinned_by_credential_id(self):
+        db = self._seed_two_credentials()
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, out, err = run_cli(
+            ["account", "add", "workpin", "--from-db", "--credential", "cred-b"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("cred-b", out)
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["workpin"])
+        self.assertEqual(entries[0].kind, "opencode-db")
+        self.assertEqual(entries[0].credential_id, "cred-b")
+        self.assertEqual(active, "workpin")
+
+    def test_add_pinned_by_unique_label_resolves_the_id(self):
+        db = self._seed_two_credentials()
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, _out, err = run_cli(
+            ["account", "add", "person", "--from-db", "--credential", "Personal"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        entries, _active = accounts.list_accounts()
+        self.assertEqual(entries[0].credential_id, "cred-b")
+
+    def test_ambiguous_label_is_refused_with_candidates(self):
+        db = write_credential_db(
+            self.tmp / "opencode.db",
+            [
+                ("cred-a", "Default", json.dumps({"access": "token-a"}), 1, 200),
+                ("cred-b", "Default", json.dumps({"access": "token-b"}), 0, 100),
+            ],
+        )
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, _out, err = run_cli(
+            ["account", "add", "person", "--from-db", "--credential", "Default"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("matches several credentials", err)
+        self.assertIn("cred-a", err)
+        self.assertIn("cred-b", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_unknown_selector_is_refused(self):
+        db = self._seed_two_credentials()
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, _out, err = run_cli(
+            ["account", "add", "person", "--from-db", "--credential", "ghost"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("no OpenCode credential matches 'ghost'", err)
+        self.assertIn("ocgo account discover", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_credential_without_from_db_is_refused(self):
+        self._isolate()
+        with mock.patch.object(cli, "_read_api_key") as read:
+            code, _out, err = run_cli(
+                ["account", "add", "work", "--credential", "cred-a"]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--credential requires --from-db", err)
+        read.assert_not_called()
+        self.assertIsNone(accounts.load_registry())
+
+    def test_selector_without_a_database_fails_cleanly(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        accounts.remove_account("default")
+        code, _out, err = run_cli(
+            ["account", "add", "person", "--from-db", "--credential", "cred-a"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("No OpenCode credential found", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_expired_pinned_credential_is_refused(self):
+        expires = int(datetime.now(timezone.utc).timestamp() * 1000) - 1
+        db = write_credential_db(
+            self.tmp / "opencode.db",
+            [
+                (
+                    "cred-a",
+                    "Work",
+                    json.dumps({"access": "token-a", "expires": expires}),
+                    1,
+                    200,
+                )
+            ],
+        )
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, _out, err = run_cli(
+            ["account", "add", "person", "--from-db", "--credential", "cred-a"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("expired", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_from_db_alone_still_registers_auto(self):
+        db = self._seed_two_credentials()
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, _out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        entries, _active = accounts.list_accounts()
+        self.assertIsNone(entries[0].credential_id)
+
+
 class AccountSetKeyTests(AccountCliTestCase):
     def test_set_key_replaces_hint_and_secret(self):
         self._isolate()
@@ -849,6 +1016,7 @@ class AccountListTests(AccountCliTestCase):
                         "kind": "opencode-db",
                         "hint": None,
                         "active": True,
+                        "credential_id": None,
                     }
                 ],
             },
@@ -871,13 +1039,32 @@ class AccountListTests(AccountCliTestCase):
         )
         self.assertEqual(
             list(payload["accounts"][1]),
-            ["id", "label", "kind", "hint", "active"],
+            ["id", "label", "kind", "hint", "active", "credential_id"],
         )
         self.assertEqual(payload["accounts"][0]["active"], False)
         self.assertEqual(payload["accounts"][1]["active"], False)
         self.assertEqual(payload["accounts"][2]["active"], True)
         self.assertEqual(payload["accounts"][1]["hint"], creds.mask_token(_ZEN_KEY))
+        self.assertIsNone(payload["accounts"][0]["credential_id"])
+        self.assertIsNone(payload["accounts"][1]["credential_id"])
         self.assertNotIn(_ZEN_KEY, out)
+
+    def test_json_reports_pinned_credential_id(self):
+        self._isolate()
+        accounts.remove_account("default")
+        accounts.add_account(
+            "pin",
+            "Pinned",
+            kind=accounts.KIND_OPENCODE_DB,
+            credential_id="cred-42",
+        )
+        code, out, err = run_cli(["account", "list", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        payload = json.loads(out)
+        self.assertEqual(payload["schema"], 2)
+        self.assertEqual(payload["accounts"][0]["credential_id"], "cred-42")
+        self.assertEqual(payload["accounts"][0]["kind"], "opencode-db")
 
     def test_human_list_marks_the_active_account(self):
         self._isolate()
@@ -888,6 +1075,109 @@ class AccountListTests(AccountCliTestCase):
         self.assertIn("* work", out)
         self.assertIn("oc_sk_", out)
         self.assertNotIn(_ZEN_KEY, out)
+
+
+class AccountDiscoverTests(AccountCliTestCase):
+    def _seed_credentials(self) -> Path:
+        return write_credential_db(
+            self.tmp / "opencode.db",
+            [
+                (
+                    "cred-a",
+                    "Work",
+                    json.dumps(
+                        {
+                            "access": TOKEN,
+                            "metadata": {
+                                "email": "work@example.com",
+                                "orgName": "Acme",
+                            },
+                        }
+                    ),
+                    1,
+                    200,
+                ),
+                (
+                    "cred-b",
+                    "Personal",
+                    json.dumps({"access": "other-secret-token"}),
+                    0,
+                    100,
+                ),
+            ],
+        )
+
+    def test_json_exact_shape_without_tokens(self):
+        db = self._seed_credentials()
+        self._isolate(OCGO_DB=str(db))
+        code, out, err = run_cli(["account", "discover", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(
+            json.loads(out),
+            {
+                "schema": 1,
+                "credentials": [
+                    {
+                        "id": "cred-a",
+                        "label": "Work",
+                        "active": True,
+                        "email": "work@example.com",
+                        "org_name": "Acme",
+                    },
+                    {
+                        "id": "cred-b",
+                        "label": "Personal",
+                        "active": False,
+                        "email": None,
+                        "org_name": None,
+                    },
+                ],
+            },
+        )
+        self.assertNotIn(TOKEN, out)
+        self.assertNotIn("other-secret-token", out)
+
+    def test_text_lists_an_aligned_table(self):
+        db = self._seed_credentials()
+        self._isolate(OCGO_DB=str(db))
+        code, out, err = run_cli(["account", "discover"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("ID", out)
+        self.assertIn("LABEL", out)
+        self.assertIn("ACTIVE", out)
+        self.assertIn("EMAIL", out)
+        self.assertIn("cred-a", out)
+        self.assertIn("Work", out)
+        self.assertIn("yes", out)
+        self.assertIn("no", out)
+        self.assertIn("work@example.com", out)
+        self.assertNotIn(TOKEN, out)
+        self.assertNotIn("other-secret-token", out)
+
+    def test_empty_database_is_friendly(self):
+        db = write_credential_db(self.tmp / "opencode.db", [])
+        self._isolate(OCGO_DB=str(db))
+        code, out, err = run_cli(["account", "discover"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("no OpenCode credentials found", out)
+
+    def test_empty_database_json_lists_nothing(self):
+        db = write_credential_db(self.tmp / "opencode.db", [])
+        self._isolate(OCGO_DB=str(db))
+        code, out, err = run_cli(["account", "discover", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(json.loads(out), {"schema": 1, "credentials": []})
+
+    def test_unreadable_database_fails_cleanly(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        code, out, err = run_cli(["account", "discover", "--json"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("No OpenCode credential found", err)
 
 
 class AccountUseRemoveTests(AccountCliTestCase):
@@ -1015,6 +1305,92 @@ class AccountUseRemoveTests(AccountCliTestCase):
         code, _out, err = run_cli(["status", "--json"])
         self.assertEqual(code, 1)
         self.assertIn("no cache", err)
+
+
+class ActivateInOpencodeTests(AccountCliTestCase):
+    """``account activate-in-opencode`` shells out to the ``opencode`` CLI."""
+
+    def _fake_opencode(self, *, exit_code: int = 0, message: str = "") -> Path:
+        """Install a fake ``opencode`` that logs argv; returns the log path."""
+        log = self.tmp / "opencode-argv.log"
+        body = (
+            "#!/bin/sh\n"
+            "printf '%s\\0' \"$@\" >> \"$FAKE_OPENCODE_LOG\"\n"
+            'echo >> "$FAKE_OPENCODE_LOG"\n'
+        )
+        if message:
+            body += f"echo {message!r} >&2\n"
+        body += f"exit {exit_code}\n"
+        script = self.bin_dir / "opencode"
+        script.write_text(body, encoding="utf-8")
+        script.chmod(0o755)
+        return log
+
+    def _seed_pinned(self, credential_id: str = "cred-42") -> None:
+        accounts.remove_account("default")
+        accounts.add_account(
+            "pin",
+            "Pinned",
+            kind=accounts.KIND_OPENCODE_DB,
+            credential_id=credential_id,
+        )
+
+    def test_pinned_account_switches_with_the_credential_id(self):
+        log = self._fake_opencode()
+        self._isolate(FAKE_OPENCODE_LOG=str(log))
+        self._seed_pinned()
+        code, out, err = run_cli(["account", "activate-in-opencode", "pin"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("pin", out)
+        self.assertIn("cred-42", out)
+        self.assertEqual(
+            log.read_text(encoding="utf-8").rstrip("\x00\n"),
+            "auth\x00switch\x00opencode\x00cred-42",
+        )
+
+    def test_nonzero_exit_relays_the_message(self):
+        log = self._fake_opencode(exit_code=1, message="credential not found")
+        self._isolate(FAKE_OPENCODE_LOG=str(log))
+        self._seed_pinned()
+        code, out, err = run_cli(["account", "activate-in-opencode", "pin"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("credential not found", err)
+        self.assertIn("exit 1", err)
+
+    def test_auto_account_has_nothing_to_switch(self):
+        log = self._fake_opencode()
+        self._isolate(FAKE_OPENCODE_LOG=str(log))
+        code, _out, err = run_cli(["account", "activate-in-opencode", "default"])
+        self.assertEqual(code, 1)
+        self.assertIn("nothing to switch", err)
+        self.assertFalse(log.exists())
+
+    def test_api_key_account_is_refused(self):
+        log = self._fake_opencode()
+        self._isolate(FAKE_OPENCODE_LOG=str(log))
+        accounts.remove_account("default")
+        accounts.add_account("work", "Work")
+        code, _out, err = run_cli(["account", "activate-in-opencode", "work"])
+        self.assertEqual(code, 1)
+        self.assertIn("not an OpenCode login account", err)
+        self.assertFalse(log.exists())
+
+    def test_unknown_account_fails(self):
+        log = self._fake_opencode()
+        self._isolate(FAKE_OPENCODE_LOG=str(log))
+        code, _out, err = run_cli(["account", "activate-in-opencode", "ghost"])
+        self.assertEqual(code, 1)
+        self.assertIn("does not exist", err)
+
+    def test_missing_opencode_command_fails_cleanly(self):
+        self._isolate(with_tool=False)  # empty PATH: no opencode binary
+        self._seed_pinned()
+        code, _out, err = run_cli(["account", "activate-in-opencode", "pin"])
+        self.assertEqual(code, 1)
+        self.assertIn("not found on PATH", err)
+        self.assertNotIn("Traceback", err)
 
 
 class RefreshAccountTests(AccountCliTestCase):
@@ -1193,6 +1569,131 @@ class RefreshAccountTests(AccountCliTestCase):
         self.assertIsNone(personal["last_error"])
         work = cache.load(cache.cache_path("work"))
         self.assertEqual(work["last_error"], "network error contacting opencode.ai: boom")
+
+
+class PinnedRefreshTests(AccountCliTestCase):
+    """Pinned logins resolve their own database row; dangling pins fail softly."""
+
+    def _credential(self):
+        return creds.Credential(token="console-token-abcdefgh", source="test")
+
+    def _seed(self, credential_id: str = "cred-42") -> None:
+        accounts.remove_account("default")
+        accounts.add_account(
+            "pin",
+            "Pinned",
+            kind=accounts.KIND_OPENCODE_DB,
+            credential_id=credential_id,
+        )
+
+    def test_refresh_pinned_passes_the_credential_id(self):
+        self._isolate()
+        self._seed()
+        with (
+            mock.patch.object(
+                cli.creds, "resolve_credential", return_value=self._credential()
+            ) as resolve,
+            mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
+            mock.patch.object(
+                cli.api, "fetch_billing_status", return_value=billing_status_payload()
+            ),
+            mock.patch.object(
+                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
+            ),
+        ):
+            code, out, err = run_cli(["refresh", "--account", "pin"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        resolve.assert_called_once_with(credential_id="cred-42")
+        self.assertIn("(pin)", out)
+
+    def test_refresh_pinned_reads_its_own_row(self):
+        db = write_credential_db(
+            self.tmp / "opencode.db",
+            [
+                (
+                    "cred-a",
+                    "Work",
+                    json.dumps({"access": "token-active-1"}),
+                    1,
+                    200,
+                ),
+                (
+                    "cred-b",
+                    "Personal",
+                    json.dumps({"access": "token-pinned-2"}),
+                    0,
+                    100,
+                ),
+            ],
+        )
+        self._isolate(OCGO_DB=str(db))
+        self._seed(credential_id="cred-b")
+        with (
+            mock.patch.object(
+                cli.api, "fetch_status", return_value=live_payload()
+            ) as fetch,
+            mock.patch.object(
+                cli.api, "fetch_billing_status", return_value=billing_status_payload()
+            ),
+            mock.patch.object(
+                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
+            ),
+        ):
+            code, _out, err = run_cli(["refresh", "--account", "pin"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        fetch.assert_called_once_with("token-pinned-2")
+
+    def test_auth_show_pinned_passes_the_credential_id(self):
+        self._isolate()
+        self._seed()
+        with mock.patch.object(
+            cli.creds, "resolve_credential", return_value=self._credential()
+        ) as resolve:
+            code, out, _err = run_cli(["auth", "show", "--account", "pin"])
+        self.assertEqual(code, 0)
+        resolve.assert_called_once_with(credential_id="cred-42")
+        self.assertIn("Token:   consol…efgh", out)
+
+    def test_dangling_pinned_refresh_fails_per_account(self):
+        db = write_credential_db(
+            self.tmp / "opencode.db",
+            [("cred-a", "Work", json.dumps({"access": "token-active-1"}), 1, 200)],
+        )
+        self._isolate(OCGO_DB=str(db))
+        self._seed()
+        code, _out, err = run_cli(["refresh", "--account", "pin"])
+        self.assertEqual(code, 1)
+        self.assertIn("account 'pin':", err)
+        self.assertIn("no longer exists", err)
+        self.assertIn("cred-42", err)
+
+    def test_all_refresh_continues_past_a_dangling_pin(self):
+        db = write_credential_db(
+            self.tmp / "opencode.db",
+            [("cred-a", "Work", json.dumps({"access": "token-active-1"}), 1, 200)],
+        )
+        self._isolate(OCGO_DB=str(db))
+        self._seed()  # removes default, adds pinned pin -> cred-42 (not in the DB)
+        accounts.add_account("auto", "Auto", kind=accounts.KIND_OPENCODE_DB)
+        with (
+            mock.patch.object(
+                cli.api, "fetch_status", return_value=live_payload()
+            ) as fetch,
+            mock.patch.object(
+                cli.api, "fetch_billing_status", return_value=billing_status_payload()
+            ),
+            mock.patch.object(
+                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
+            ),
+        ):
+            code, out, err = run_cli(["refresh", "--all"])
+        self.assertEqual(code, 1)
+        self.assertIn("(auto)", out)
+        self.assertIn("account 'pin':", err)
+        self.assertIn("no longer exists", err)
+        fetch.assert_called_once_with("token-active-1")
 
 
 class CreditsRefreshTests(AccountCliTestCase):
@@ -1577,7 +2078,7 @@ class DbKindTests(AccountCliTestCase):
         ):
             code, out, _err = run_cli(["refresh", "--account", "login"])
         self.assertEqual(code, 0)
-        resolve.assert_called_once_with()
+        resolve.assert_called_once_with(credential_id=None)
         fetch.assert_called_once_with("console-token-abcdefgh")
         billing.assert_called_once_with("console-token-abcdefgh")
         auto.assert_called_once_with("console-token-abcdefgh")
