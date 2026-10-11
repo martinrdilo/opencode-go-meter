@@ -67,6 +67,30 @@ def _payload() -> dict:
     }
 
 
+def _billing_payload() -> dict:
+    """The live billing/status capture (odd/tasks/credits-panel.md, 2026-10-10)."""
+    return {
+        "billingMode": "prepaid",
+        "mode": "pay-as-you-go",
+        "balanceMicroCents": "312600514",
+        "creditLimitMicroCents": None,
+        "availableMicroCents": "312600514",
+        "canPurchaseCredits": True,
+        "canEnableAutoRecharge": True,
+    }
+
+
+def _auto_recharge_payload() -> dict:
+    """The live billing/auto-recharge capture (2026-10-10)."""
+    return {
+        "enabled": False,
+        "thresholdDollars": 5,
+        "rechargeAmountDollars": 20,
+        "pending": False,
+        "failureReason": None,
+    }
+
+
 class FetchStatusTests(unittest.TestCase):
     def test_request_shape(self):
         transport = RecordingTransport(json.dumps(_payload()).encode("utf-8"))
@@ -174,6 +198,8 @@ class ToCacheSchemaTests(unittest.TestCase):
                         "resets_at": None,
                     },
                 },
+                "extra_usage": None,
+                "credits": None,
             },
         )
 
@@ -204,6 +230,331 @@ class ToCacheSchemaTests(unittest.TestCase):
         payload["access"]["meters"]["month"]["usedMicroCents"] = "not-a-number"
         with self.assertRaises(api.ApiError):
             api.to_cache_schema(payload, now=self.NOW)
+
+    def test_extra_usage_true_when_use_balance_is_true(self):
+        payload = _payload()
+        payload["useBalance"] = True
+        data = api.to_cache_schema(payload, now=self.NOW)
+        self.assertIs(data["extra_usage"], True)
+
+    def test_extra_usage_false_when_use_balance_is_false(self):
+        payload = _payload()
+        payload["useBalance"] = False
+        data = api.to_cache_schema(payload, now=self.NOW)
+        self.assertIs(data["extra_usage"], False)
+
+    def test_extra_usage_absent_is_null(self):
+        data = api.to_cache_schema(_payload(), now=self.NOW)
+        self.assertIsNone(data["extra_usage"])
+
+    def test_extra_usage_non_bool_is_null(self):
+        payload = _payload()
+        payload["useBalance"] = "yes"
+        data = api.to_cache_schema(payload, now=self.NOW)
+        self.assertIsNone(data["extra_usage"])
+
+    def test_credits_is_null_until_the_cli_fills_it(self):
+        data = api.to_cache_schema(_payload(), now=self.NOW)
+        self.assertIsNone(data["credits"])
+
+
+class BillingFetchTests(unittest.TestCase):
+    def test_request_shape(self):
+        transport = RecordingTransport(json.dumps(_billing_payload()).encode("utf-8"))
+        payload = api.fetch_billing_status("secret-token", transport=transport)
+        self.assertEqual(payload, _billing_payload())
+        headers = {
+            key.lower(): value for key, value in transport.request.headers.items()
+        }
+        self.assertEqual(transport.request.full_url, api.BILLING_STATUS_URL)
+        self.assertEqual(transport.request.get_method(), "GET")
+        self.assertEqual(headers["authorization"], "Bearer secret-token")
+        self.assertEqual(headers["accept"], "application/json")
+        self.assertEqual(headers["user-agent"], "ocgo/0.1")
+        self.assertEqual(transport.timeout, 20)
+
+    def test_default_transport_is_urlopen(self):
+        body = json.dumps(_billing_payload()).encode("utf-8")
+        with mock.patch("ocgo.api.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = body
+            self.assertEqual(api.fetch_billing_status("tok"), _billing_payload())
+        urlopen.assert_called_once()
+        self.assertEqual(
+            urlopen.call_args.args[0].full_url, api.BILLING_STATUS_URL
+        )
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 20)
+
+    def test_http_401_is_billing_rejected(self):
+        error = urllib.error.HTTPError(
+            api.BILLING_STATUS_URL, 401, "Unauthorized", {}, None
+        )
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_billing_status("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception),
+            "billing request rejected (HTTP 401) — credits are available only "
+            "for the OpenCode login account",
+        )
+        self.assertNotIsInstance(caught.exception, api.ApiAuthError)
+
+    def test_http_403_is_billing_rejected(self):
+        error = urllib.error.HTTPError(
+            api.BILLING_STATUS_URL, 403, "Forbidden", {}, None
+        )
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_billing_status("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception),
+            "billing request rejected (HTTP 403) — credits are available only "
+            "for the OpenCode login account",
+        )
+        self.assertNotIsInstance(caught.exception, api.ApiEntitlementError)
+
+    def test_http_500_is_network_error(self):
+        error = urllib.error.HTTPError(
+            api.BILLING_STATUS_URL, 500, "Server Error", {}, None
+        )
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_billing_status("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception), "network error contacting opencode.ai: HTTP 500"
+        )
+
+    def test_url_error_is_network_error(self):
+        error = urllib.error.URLError("dns failure")
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_billing_status("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception), "network error contacting opencode.ai: dns failure"
+        )
+
+    def test_timeout_is_network_error(self):
+        error = TimeoutError("timed out")
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_billing_status("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception), "network error contacting opencode.ai: timed out"
+        )
+
+    def test_invalid_json_body_is_network_error(self):
+        transport = RecordingTransport(b"<html>not json</html>")
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_billing_status("tok", transport=transport)
+        self.assertEqual(
+            str(caught.exception),
+            "network error contacting opencode.ai: invalid JSON response",
+        )
+
+
+class AutoRechargeFetchTests(unittest.TestCase):
+    def test_request_shape(self):
+        transport = RecordingTransport(
+            json.dumps(_auto_recharge_payload()).encode("utf-8")
+        )
+        payload = api.fetch_auto_recharge("secret-token", transport=transport)
+        self.assertEqual(payload, _auto_recharge_payload())
+        headers = {
+            key.lower(): value for key, value in transport.request.headers.items()
+        }
+        self.assertEqual(transport.request.full_url, api.BILLING_AUTO_RECHARGE_URL)
+        self.assertEqual(transport.request.get_method(), "GET")
+        self.assertEqual(headers["authorization"], "Bearer secret-token")
+        self.assertEqual(headers["accept"], "application/json")
+        self.assertEqual(headers["user-agent"], "ocgo/0.1")
+        self.assertEqual(transport.timeout, 20)
+
+    def test_default_transport_is_urlopen(self):
+        body = json.dumps(_auto_recharge_payload()).encode("utf-8")
+        with mock.patch("ocgo.api.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = body
+            self.assertEqual(
+                api.fetch_auto_recharge("tok"), _auto_recharge_payload()
+            )
+        urlopen.assert_called_once()
+        self.assertEqual(
+            urlopen.call_args.args[0].full_url, api.BILLING_AUTO_RECHARGE_URL
+        )
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 20)
+
+    def test_http_401_is_billing_rejected(self):
+        error = urllib.error.HTTPError(
+            api.BILLING_AUTO_RECHARGE_URL, 401, "Unauthorized", {}, None
+        )
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_auto_recharge("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception),
+            "billing request rejected (HTTP 401) — credits are available only "
+            "for the OpenCode login account",
+        )
+        self.assertNotIsInstance(caught.exception, api.ApiAuthError)
+
+    def test_http_403_is_billing_rejected(self):
+        error = urllib.error.HTTPError(
+            api.BILLING_AUTO_RECHARGE_URL, 403, "Forbidden", {}, None
+        )
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_auto_recharge("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception),
+            "billing request rejected (HTTP 403) — credits are available only "
+            "for the OpenCode login account",
+        )
+        self.assertNotIsInstance(caught.exception, api.ApiEntitlementError)
+
+    def test_http_500_is_network_error(self):
+        error = urllib.error.HTTPError(
+            api.BILLING_AUTO_RECHARGE_URL, 500, "Server Error", {}, None
+        )
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_auto_recharge("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception), "network error contacting opencode.ai: HTTP 500"
+        )
+
+    def test_url_error_is_network_error(self):
+        error = urllib.error.URLError("dns failure")
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_auto_recharge("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception), "network error contacting opencode.ai: dns failure"
+        )
+
+    def test_timeout_is_network_error(self):
+        error = TimeoutError("timed out")
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_auto_recharge("tok", transport=RecordingTransport(error=error))
+        self.assertEqual(
+            str(caught.exception), "network error contacting opencode.ai: timed out"
+        )
+
+    def test_invalid_json_body_is_network_error(self):
+        transport = RecordingTransport(b"<html>not json</html>")
+        with self.assertRaises(api.ApiError) as caught:
+            api.fetch_auto_recharge("tok", transport=transport)
+        self.assertEqual(
+            str(caught.exception),
+            "network error contacting opencode.ai: invalid JSON response",
+        )
+
+
+class CreditsFromBillingTests(unittest.TestCase):
+    def test_maps_live_capture_to_cache_block(self):
+        credits = api.credits_from_billing(_billing_payload(), _auto_recharge_payload())
+        self.assertEqual(
+            credits,
+            {
+                "available_usd": 3.126,
+                "state": "low",
+                "billing_mode": "prepaid",
+                "auto_recharge": {
+                    "enabled": False,
+                    "threshold_usd": 5.0,
+                    "amount_usd": 20.0,
+                    "pending": False,
+                    "failed": False,
+                },
+            },
+        )
+
+    def test_accepts_numeric_available_microcents(self):
+        billing = _billing_payload()
+        billing["availableMicroCents"] = 312600514
+        credits = api.credits_from_billing(billing, None)
+        self.assertEqual(credits["available_usd"], 3.126)
+
+    def test_empty_state_at_zero_balance(self):
+        billing = _billing_payload()
+        billing["availableMicroCents"] = "0"
+        credits = api.credits_from_billing(billing, _auto_recharge_payload())
+        self.assertEqual(credits["available_usd"], 0.0)
+        self.assertEqual(credits["state"], "empty")
+
+    def test_ok_state_above_five_dollars(self):
+        billing = _billing_payload()
+        billing["availableMicroCents"] = "500000000"
+        credits = api.credits_from_billing(billing, _auto_recharge_payload())
+        self.assertEqual(credits["state"], "ok")
+
+    def test_non_prepaid_is_always_ok(self):
+        billing = _billing_payload()
+        billing["billingMode"] = "credit"
+        billing["availableMicroCents"] = "0"
+        credits = api.credits_from_billing(billing, _auto_recharge_payload())
+        self.assertEqual(credits["state"], "ok")
+        self.assertEqual(credits["billing_mode"], "credit")
+
+    def test_missing_billing_mode_is_null_and_never_low(self):
+        billing = _billing_payload()
+        del billing["billingMode"]
+        credits = api.credits_from_billing(billing, None)
+        self.assertIsNone(credits["billing_mode"])
+        self.assertEqual(credits["state"], "ok")
+
+    def test_missing_auto_recharge_is_null(self):
+        credits = api.credits_from_billing(_billing_payload(), None)
+        self.assertIsNone(credits["auto_recharge"])
+        self.assertEqual(credits["state"], "low")  # no recharge -> not healthy
+
+    def test_healthy_auto_recharge_suppresses_low(self):
+        auto = dict(_auto_recharge_payload(), enabled=True)
+        credits = api.credits_from_billing(_billing_payload(), auto)
+        self.assertFalse(credits["auto_recharge"]["failed"])
+        self.assertEqual(credits["state"], "ok")
+
+    def test_failed_auto_recharge_does_not_lower_a_healthy_balance(self):
+        billing = _billing_payload()
+        billing["availableMicroCents"] = "1000000000"  # $10.00
+        auto = dict(_auto_recharge_payload(), enabled=True, failureReason="declined")
+        credits = api.credits_from_billing(billing, auto)
+        self.assertTrue(credits["auto_recharge"]["failed"])
+        self.assertEqual(credits["state"], "ok")
+
+    def test_failed_auto_recharge_below_the_threshold_is_low(self):
+        auto = dict(_auto_recharge_payload(), enabled=True, failureReason="declined")
+        credits = api.credits_from_billing(_billing_payload(), auto)
+        self.assertTrue(credits["auto_recharge"]["failed"])
+        self.assertEqual(credits["state"], "low")
+
+    def test_tolerant_auto_recharge_fields_default(self):
+        credits = api.credits_from_billing(_billing_payload(), {})
+        self.assertEqual(
+            credits["auto_recharge"],
+            {
+                "enabled": False,
+                "threshold_usd": None,
+                "amount_usd": None,
+                "pending": False,
+                "failed": False,
+            },
+        )
+
+    def test_bad_dollar_fields_are_null(self):
+        auto = dict(
+            _auto_recharge_payload(),
+            thresholdDollars="nope",
+            rechargeAmountDollars=None,
+        )
+        credits = api.credits_from_billing(_billing_payload(), auto)
+        self.assertIsNone(credits["auto_recharge"]["threshold_usd"])
+        self.assertIsNone(credits["auto_recharge"]["amount_usd"])
+
+    def test_missing_available_microcents_is_rejected(self):
+        billing = _billing_payload()
+        del billing["availableMicroCents"]
+        with self.assertRaises(api.ApiError) as caught:
+            api.credits_from_billing(billing, None)
+        self.assertIn("availableMicroCents", str(caught.exception))
+
+    def test_bad_available_microcents_is_rejected(self):
+        billing = _billing_payload()
+        billing["availableMicroCents"] = "not-a-number"
+        with self.assertRaises(api.ApiError):
+            api.credits_from_billing(billing, None)
+
+    def test_non_dict_billing_is_rejected(self):
+        with self.assertRaises(api.ApiError):
+            api.credits_from_billing([1, 2], None)
 
 
 def _zen_payload() -> dict:
@@ -366,8 +717,15 @@ class ToCacheSchemaZenTests(unittest.TestCase):
                         "resets_at": "2026-10-11T02:26:15Z",
                     },
                 },
+                "extra_usage": None,
+                "credits": None,
             },
         )
+
+    def test_extra_usage_and_credits_are_always_null(self):
+        data = api.to_cache_schema_zen(_zen_payload(), now=self.NOW)
+        self.assertIsNone(data["extra_usage"])
+        self.assertIsNone(data["credits"])
 
     def test_fractional_percent_is_rounded_to_int(self):
         payload = _zen_payload()
