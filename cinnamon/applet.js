@@ -34,6 +34,12 @@ const WINDOWS = [
     {key: 'monthly', label: 'Monthly usage', short: '30d'},
 ];
 
+const CREDITS_ROWS = [
+    {key: 'credits', label: 'Credits'},
+    {key: 'extra_usage', label: 'Extra usage'},
+    {key: 'auto_recharge', label: 'Auto-recharge'},
+];
+
 // Adwaita palette variants chosen for the dark Cinnamon panel.
 const COLORS = {
     green: '#8ff0a4',
@@ -146,6 +152,53 @@ function windowsOf(cache) {
 function windowOf(windows, key) {
     const window = windows[key];
     return window && typeof window === 'object' && !Array.isArray(window) ? window : {};
+}
+
+function isObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function creditValueMarkup(text, color) {
+    return color
+        ? `<span foreground="${color}">${escapeMarkup(text)}</span>`
+        : escapeMarkup(text);
+}
+
+function dollarsText(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value))
+        return null;
+    return Number.isInteger(value) ? `$${value}` : `$${value.toFixed(2)}`;
+}
+
+function creditsAmountText(available) {
+    if (typeof available !== 'number' || !Number.isFinite(available))
+        return '—';
+    if (available > 0 && available < 0.01)
+        return '<$0.01';
+    return `$${available.toFixed(2)}`;
+}
+
+function creditsSuffix(state) {
+    if (state === 'low')
+        return {text: 'Running low', color: COLORS.amber};
+    if (state === 'empty')
+        return {text: 'No credits left', color: COLORS.red};
+    return {text: '', color: null};
+}
+
+function autoRechargeValue(auto) {
+    if (auto.failed)
+        return {text: 'Failed', color: COLORS.red};
+    if (auto.pending)
+        return {text: 'Recharging…', color: null};
+    if (auto.enabled) {
+        const amount = dollarsText(auto.amount_usd);
+        const threshold = dollarsText(auto.threshold_usd);
+        if (amount === null || threshold === null)
+            return {text: 'On', color: null};
+        return {text: `Adds ${amount} below ${threshold}`, color: null};
+    }
+    return {text: 'Off', color: null};
 }
 
 function parseAccountList(text) {
@@ -362,6 +415,26 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             this._menuRows.set(window.key, {percent, countdown});
         }
 
+        this._creditsSeparatorItem = new PopupMenu.PopupSeparatorMenuItem();
+        this.menu.addMenuItem(this._creditsSeparatorItem);
+
+        this._creditsItems = new Map();
+        for (const row of CREDITS_ROWS) {
+            const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            const name = new St.Label({
+                text: row.label,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const value = new St.Label({
+                text: '—',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            item.addActor(name, {expand: true});
+            item.addActor(value);
+            this.menu.addMenuItem(item);
+            this._creditsItems.set(row.key, {item, value});
+        }
+
         this._accountSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Account');
         this.menu.addMenuItem(this._accountSubMenuItem);
 
@@ -419,8 +492,52 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             row.countdown.set_text(`Resets in ${formatCountdown(target, now)}`);
         }
 
+        this._renderCredits(cache);
+
         const updated = cache ? formatAgo(cache.fetched_at, now) : null;
         this._refreshItem.label.set_text(`Updated ${updated || '—'} · Refresh`);
+    }
+
+    _renderCredits(cache) {
+        const credits = isObject(cache) && isObject(cache.credits) ? cache.credits : null;
+        const extraUsage = isObject(cache) && typeof cache.extra_usage === 'boolean'
+            ? cache.extra_usage
+            : null;
+        const autoRecharge = credits && isObject(credits.auto_recharge)
+            ? credits.auto_recharge
+            : null;
+
+        const visible = credits !== null || extraUsage !== null;
+        this._creditsSeparatorItem.actor.visible = visible;
+
+        const creditsRow = this._creditsItems.get('credits');
+        creditsRow.item.actor.visible = visible && credits !== null;
+        if (credits) {
+            let text = 'Unavailable';
+            let color = null;
+            if (typeof credits.error !== 'string') {
+                text = creditsAmountText(credits.available_usd);
+                const suffix = creditsSuffix(credits.state);
+                if (suffix.text)
+                    text = `${text} · ${suffix.text}`;
+                color = suffix.color;
+            }
+            creditsRow.value.clutter_text.set_markup(creditValueMarkup(text, color));
+        }
+
+        const extraRow = this._creditsItems.get('extra_usage');
+        extraRow.item.actor.visible = visible && extraUsage !== null;
+        if (extraUsage !== null) {
+            extraRow.value.clutter_text.set_markup(
+                creditValueMarkup(extraUsage ? 'On' : 'Off', null));
+        }
+
+        const autoRow = this._creditsItems.get('auto_recharge');
+        autoRow.item.actor.visible = visible && autoRecharge !== null;
+        if (autoRecharge) {
+            const auto = autoRechargeValue(autoRecharge);
+            autoRow.value.clutter_text.set_markup(creditValueMarkup(auto.text, auto.color));
+        }
     }
 
     _renderAccountMenu() {
