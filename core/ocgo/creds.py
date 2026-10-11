@@ -3,7 +3,9 @@
 Resolution order:
 
 1. ``OCGO_TOKEN`` environment variable (manual/testing override).
-2. The local OpenCode database, opened read-only.
+2. The local OpenCode database, opened read-only. Inside the database the
+   ``active = 1`` credential wins (the one ``opencode auth switch`` marked);
+   when no row is active, the newest ``time_updated`` row wins.
 
 The token is never logged, printed in full, cached, or written anywhere.
 """
@@ -30,9 +32,13 @@ _ENV_TOKEN = "OCGO_TOKEN"
 _ENV_DB = "OCGO_DB"
 _SOURCE_ENV = "OCGO_TOKEN environment"
 _SOURCE_DB = "OpenCode local database"
-_QUERY = (
+_ACTIVE_QUERY = (
     "SELECT value FROM credential WHERE integration_id = 'opencode' "
-    "ORDER BY id DESC LIMIT 1"
+    "AND active = 1 ORDER BY time_updated DESC LIMIT 1"
+)
+_FALLBACK_QUERY = (
+    "SELECT value FROM credential WHERE integration_id = 'opencode' "
+    "ORDER BY time_updated DESC LIMIT 1"
 )
 
 
@@ -97,7 +103,10 @@ def _read_db_row(db_path: Path) -> tuple[str, int | None]:
     uri = Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
     try:
         with closing(sqlite3.connect(uri, uri=True)) as connection:
-            row = connection.execute(_QUERY).fetchone()
+            # Prefer the credential that ``opencode auth switch`` marked active.
+            row = connection.execute(_ACTIVE_QUERY).fetchone()
+            if not row:
+                row = connection.execute(_FALLBACK_QUERY).fetchone()
     except sqlite3.Error as exc:
         raise CredentialError(NO_CREDENTIAL_MESSAGE) from exc
     if not row or not row[0]:

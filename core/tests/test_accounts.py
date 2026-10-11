@@ -581,6 +581,108 @@ class RegistryV2Tests(AccountsTestCase):
             accounts.update_hint("login", "oc_sk_…x")
 
 
+class AddAccountKindTests(AccountsTestCase):
+    """The restored ``kind`` parameter and the one-``opencode-db`` invariant."""
+
+    def test_add_db_kind_on_empty_v2_registry(self):
+        self.write_registry({"version": 2, "active": None, "accounts": []})
+        account = accounts.add_account(
+            "login", "Login", kind=accounts.KIND_OPENCODE_DB
+        )
+        self.assertEqual(
+            account, accounts.Account("login", "Login", "opencode-db", None)
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["login"])
+        self.assertEqual(active, "login")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["accounts"][0]["kind"], "opencode-db")
+        self.assertIsNone(registry["accounts"][0]["hint"])
+
+    def test_add_db_kind_keeps_the_existing_active(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None}
+                ],
+            }
+        )
+        accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["work", "login"])
+        self.assertEqual(active, "work")
+
+    def test_add_db_kind_refused_when_one_exists(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "default",
+                "accounts": [
+                    {
+                        "id": "default",
+                        "label": "D",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    }
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        self.assertEqual(
+            str(caught.exception),
+            "an OpenCode login account already exists: 'default'",
+        )
+        registry = accounts.load_registry()
+        self.assertEqual([entry["id"] for entry in registry["accounts"]], ["default"])
+
+    def test_add_db_kind_refused_without_registry(self):
+        # An absent registry materializes the seeded default opencode-db entry.
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
+        self.assertEqual(
+            str(caught.exception),
+            "an OpenCode login account already exists: 'default'",
+        )
+        self.assertIsNone(accounts.load_registry())
+
+    def test_add_db_kind_after_removing_default(self):
+        accounts.remove_account("default")  # writes the empty v2 registry
+        account = accounts.add_account(
+            "login", "Login", kind=accounts.KIND_OPENCODE_DB
+        )
+        self.assertEqual(account.kind, "opencode-db")
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["login"])
+        self.assertEqual(active, "login")
+
+    def test_add_db_kind_rejects_hint(self):
+        self.write_registry({"version": 2, "active": None, "accounts": []})
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account(
+                "login", "Login", kind=accounts.KIND_OPENCODE_DB, hint="oc_sk_…abcd"
+            )
+        self.assertIn("cannot have a hint", str(caught.exception))
+        self.assertEqual(
+            accounts.load_registry(), {"version": 2, "active": None, "accounts": []}
+        )
+
+    def test_add_rejects_unknown_kind(self):
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account("login", "Login", kind="bogus")
+        self.assertIn("unsupported account kind", str(caught.exception))
+        self.assertIsNone(accounts.load_registry())
+
+    def test_explicit_api_key_kind_still_accepted(self):
+        account = accounts.add_account(
+            "work", "Work", kind=accounts.KIND_API_KEY, hint="oc_sk_…abcd"
+        )
+        self.assertEqual(account.kind, "api-key")
+        self.assertEqual(account.hint, "oc_sk_…abcd")
+
+
 class KeyringSecretTests(AccountsTestCase):
     def test_secret_tool_detection(self):
         self.assertFalse(accounts.secret_available())

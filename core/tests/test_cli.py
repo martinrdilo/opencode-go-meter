@@ -172,7 +172,9 @@ class AuthShowTests(CliTestCase):
         connection.execute(
             "CREATE TABLE credential ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "integration_id TEXT NOT NULL, value TEXT NOT NULL)"
+            "integration_id TEXT NOT NULL, value TEXT NOT NULL, "
+            "active INTEGER NOT NULL DEFAULT 0, "
+            "time_updated INTEGER NOT NULL DEFAULT 0)"
         )
         connection.execute(
             "INSERT INTO credential (integration_id, value) VALUES (?, ?)",
@@ -625,6 +627,115 @@ class AccountAddTests(AccountCliTestCase):
         self.assertEqual(accounts.read_secret("work"), _OTHER_KEY)
         self.assertFalse((self.secrets / "items" / "work").exists())
         self.assertTrue(accounts.secret_file_path("work").is_file())
+
+
+class AccountAddFromDbTests(AccountCliTestCase):
+    def _seed_credential_db(self, *, access=TOKEN, active=1, expires=None) -> Path:
+        """Write a temp OpenCode DB with a single credential row."""
+        import sqlite3
+
+        payload = {"access": access}
+        if expires is not None:
+            payload["expires"] = expires
+        db = self.tmp / "opencode.db"
+        connection = sqlite3.connect(db)
+        connection.execute(
+            "CREATE TABLE credential ("
+            "id TEXT PRIMARY KEY, "
+            "integration_id TEXT NOT NULL, "
+            "value TEXT NOT NULL, "
+            "active INTEGER NOT NULL DEFAULT 0, "
+            "time_updated INTEGER NOT NULL DEFAULT 0)"
+        )
+        connection.execute(
+            "INSERT INTO credential (id, integration_id, value, active, time_updated) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("cred-1", "opencode", json.dumps(payload), active, 1),
+        )
+        connection.commit()
+        connection.close()
+        return db
+
+    def test_add_from_db_registers_without_reading_a_key(self):
+        self._isolate(OCGO_TOKEN=TOKEN)
+        accounts.remove_account("default")
+        with mock.patch.object(cli, "_read_api_key") as read:
+            code, out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "Added account 'login' (OpenCode login)\n")
+        self.assertEqual(err, "")
+        read.assert_not_called()
+        entries, active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["login"])
+        self.assertEqual(entries[0].kind, "opencode-db")
+        self.assertIsNone(entries[0].hint)
+        self.assertEqual(active, "login")
+        self.assertFalse(accounts.has_secret("login"))
+        self.assertNotIn(TOKEN, out + err)
+
+    def test_add_from_db_reads_the_local_database(self):
+        db = self._seed_credential_db()
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, out, err = run_cli(
+            ["account", "add", "login", "--label", "My login", "--from-db"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("Added account 'login' (OpenCode login)", out)
+        entries, active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["login"])
+        self.assertEqual(entries[0].label, "My login")
+        self.assertEqual(active, "login")
+
+    def test_add_from_db_refused_when_a_login_exists(self):
+        self._isolate(OCGO_TOKEN=TOKEN)
+        # Fresh system: the seeded default already occupies the login slot.
+        code, _out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("an OpenCode login account already exists: 'default'", err)
+        self.assertIsNone(accounts.load_registry())
+
+    def test_add_from_db_refused_when_another_login_is_registered(self):
+        self._isolate(OCGO_TOKEN=TOKEN)
+        accounts.remove_account("default")
+        code, _out, _err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 0)
+        code, _out, err = run_cli(["account", "add", "second", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("an OpenCode login account already exists: 'login'", err)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["login"])
+
+    def test_add_from_db_missing_credential_is_actionable(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        accounts.remove_account("default")
+        code, _out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("No OpenCode credential found", err)
+        self.assertIn("Open OpenCode once", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_add_from_db_expired_credential_fails(self):
+        expires = int(datetime.now(timezone.utc).timestamp() * 1000) - 1
+        db = self._seed_credential_db(expires=expires)
+        self._isolate(OCGO_DB=str(db))
+        accounts.remove_account("default")
+        code, _out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("expired", err)
+        self.assertIn("open OpenCode to refresh", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_add_from_db_accepts_and_ignores_store(self):
+        self._isolate(OCGO_TOKEN=TOKEN)
+        accounts.remove_account("default")
+        code, _out, err = run_cli(
+            ["account", "add", "login", "--from-db", "--store", "file"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertFalse(accounts.secret_file_path("login").exists())
 
 
 class AccountSetKeyTests(AccountCliTestCase):

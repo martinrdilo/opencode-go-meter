@@ -12,17 +12,34 @@ from _support import temp_dir
 from ocgo import creds
 
 
-def _write_db(path: Path, rows: list[tuple[str, str]]) -> None:
+def _write_db(path: Path, rows: list[tuple]) -> None:
+    """Create a credential table mirroring production and insert ``rows``.
+
+    Each row is ``(integration_id, value)`` — stored with a generated id,
+    ``active = 0`` and ``time_updated = 0`` — or
+    ``(id, integration_id, value, active, time_updated)``.
+    """
     connection = sqlite3.connect(path)
     connection.execute(
         "CREATE TABLE credential ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "id TEXT PRIMARY KEY, "
         "integration_id TEXT NOT NULL, "
-        "value TEXT NOT NULL)"
+        "value TEXT NOT NULL, "
+        "active INTEGER NOT NULL DEFAULT 0, "
+        "time_updated INTEGER NOT NULL DEFAULT 0)"
     )
-    connection.executemany(
-        "INSERT INTO credential (integration_id, value) VALUES (?, ?)", rows
-    )
+    for index, row in enumerate(rows):
+        if len(row) == 2:
+            integration_id, value = row
+            entry = (f"row-{index}", integration_id, value, 0, 0)
+        else:
+            entry = tuple(row)
+        connection.execute(
+            "INSERT INTO credential "
+            "(id, integration_id, value, active, time_updated) "
+            "VALUES (?, ?, ?, ?, ?)",
+            entry,
+        )
     connection.commit()
     connection.close()
 
@@ -81,13 +98,63 @@ class CredentialResolutionTests(unittest.TestCase):
         _write_db(
             db,
             [
-                ("opencode", json.dumps({"access": "old-token"})),
-                ("other", json.dumps({"access": "other-token"})),
-                ("opencode", json.dumps({"access": "new-token"})),
+                ("a-old", "opencode", json.dumps({"access": "old-token"}), 0, 100),
+                ("b-other", "other", json.dumps({"access": "other-token"}), 0, 300),
+                ("c-new", "opencode", json.dumps({"access": "new-token"}), 0, 200),
             ],
         )
         self._env(OCGO_DB=str(db))
         self.assertEqual(creds.resolve_credential().token, "new-token")
+
+    def test_active_row_wins_over_newer_id_and_timestamp(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                # The active login is older and lexically smaller: the old
+                # "ORDER BY id DESC" query would have picked the other row.
+                (
+                    "aaa-active",
+                    "opencode",
+                    json.dumps({"access": "active-token"}),
+                    1,
+                    100,
+                ),
+                (
+                    "zzz-newer",
+                    "opencode",
+                    json.dumps({"access": "newer-token"}),
+                    0,
+                    200,
+                ),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(creds.resolve_credential().token, "active-token")
+
+    def test_fallback_uses_newest_time_updated_without_active(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "zzz-old",
+                    "opencode",
+                    json.dumps({"access": "older-token"}),
+                    0,
+                    100,
+                ),
+                (
+                    "aaa-new",
+                    "opencode",
+                    json.dumps({"access": "newest-token"}),
+                    0,
+                    200,
+                ),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(creds.resolve_credential().token, "newest-token")
 
     def test_missing_db_file(self):
         self._env(OCGO_DB=str(self.tmp / "nope.db"))
