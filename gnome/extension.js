@@ -239,6 +239,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._tickTimerId = 0;
             this._panelBoxId = 0;
             this._panelPositionId = 0;
+            this._showCreditsId = 0;
             this._menuOpenId = 0;
             this._accounts = [];
             this._activeAccountId = null;
@@ -259,6 +260,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
                 'changed::panel-box', () => this._reposition());
             this._panelPositionId = this._settings.connect(
                 'changed::panel-position', () => this._reposition());
+            this._showCreditsId = this._settings.connect(
+                'changed::show-credits', () => this._updateDisplay());
 
             this._updateDisplay();
             this._startTimers();
@@ -278,6 +281,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
         if (this._panelPositionId) {
             this._settings?.disconnect(this._panelPositionId);
             this._panelPositionId = 0;
+        }
+        if (this._showCreditsId) {
+            this._settings?.disconnect(this._showCreditsId);
+            this._showCreditsId = 0;
         }
         if (this._refreshTimerId) {
             GLib.source_remove(this._refreshTimerId);
@@ -565,6 +572,15 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._updatedItem.label.text = updated ? `Updated ${updated}` : 'Updated —';
     }
 
+    _showCreditsSetting() {
+        try {
+            return this._settings.get_boolean('show-credits');
+        } catch (error) {
+            logError('could not read show-credits; showing the credits section', error);
+            return true;
+        }
+    }
+
     _renderCredits(cache) {
         const credits = creditsOf(cache);
         const extraUsage = extraUsageOf(cache);
@@ -572,7 +588,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
             ? credits.auto_recharge
             : null;
 
-        const visible = credits !== null || extraUsage !== null;
+        const visible = this._showCreditsSetting() &&
+            (credits !== null || extraUsage !== null);
         this._creditsSeparatorItem.visible = visible;
 
         const creditsRow = this._creditsItems.get('credits');

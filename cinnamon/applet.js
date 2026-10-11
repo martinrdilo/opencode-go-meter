@@ -284,6 +284,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
         this.settings.bind('refresh-interval', 'refresh_interval', () => this._onRefreshIntervalChanged());
         this.settings.bind('ocgo-path', 'ocgo_path', null);
+        this.settings.bind('show-credits', 'show_credits', () => this._updateDisplay());
         this.settings.bind('active-account', 'active_account', () => this._onActiveAccountChanged());
 
         this.menuManager = new PopupMenu.PopupMenuManager(this);
@@ -507,7 +508,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             ? credits.auto_recharge
             : null;
 
-        const visible = credits !== null || extraUsage !== null;
+        const visible = this.show_credits !== false &&
+            (credits !== null || extraUsage !== null);
         this._creditsSeparatorItem.actor.visible = visible;
 
         const creditsRow = this._creditsItems.get('credits');

@@ -159,8 +159,21 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         settings.bind('panel-position', positionRow, 'value', Gio.SettingsBindFlags.DEFAULT);
         panelGroup.add(positionRow);
 
+        const popupGroup = new Adw.PreferencesGroup({
+            title: 'Popup',
+            description: 'What the popup shows.',
+        });
+
+        const showCreditsRow = new Adw.SwitchRow({
+            title: 'Show credits',
+            subtitle: 'Credits balance, extra usage, and auto-recharge.',
+        });
+        settings.bind('show-credits', showCreditsRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        popupGroup.add(showCreditsRow);
+
         page.add(group);
         page.add(panelGroup);
+        page.add(popupGroup);
         page.add(this._buildAccountsGroup());
         window.add(page);
 
