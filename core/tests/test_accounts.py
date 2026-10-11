@@ -356,19 +356,6 @@ class RegistryTests(AccountsTestCase):
                     }
                 ],
             },
-            "v3-credential-id-null": {
-                "version": 3,
-                "active": None,
-                "accounts": [
-                    {
-                        "id": "login",
-                        "label": "L",
-                        "kind": "opencode-db",
-                        "hint": None,
-                        "credential_id": None,
-                    }
-                ],
-            },
             "v3-credential-id-int": {
                 "version": 3,
                 "active": None,
@@ -841,6 +828,129 @@ class RegistryV3Tests(AccountsTestCase):
         entries, active = accounts.list_accounts()
         self.assertEqual(entries[0].credential_id, "cred-1")
         self.assertEqual(active, "login")
+
+    def test_v3_explicit_null_credential_id_loads_as_auto(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "login",
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "Login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": None,
+                    }
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertIsNone(entries[0].credential_id)
+        self.assertEqual(active, "login")
+        # The null entry still occupies the singular auto slot.
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account("other", "Other", kind=accounts.KIND_OPENCODE_DB)
+        self.assertIn("already exists", str(caught.exception))
+
+    def test_v3_two_autos_rejected(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "one",
+                "accounts": [
+                    {"id": "one", "label": "One", "kind": "opencode-db", "hint": None},
+                    {"id": "two", "label": "Two", "kind": "opencode-db", "hint": None},
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.load_registry()
+        message = str(caught.exception)
+        self.assertIn("'one'", message)
+        self.assertIn("'two'", message)
+        self.assertIn("credential id", message)
+
+    def test_v3_duplicate_pin_rejected(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "one",
+                "accounts": [
+                    {
+                        "id": "one",
+                        "label": "One",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    },
+                    {
+                        "id": "two",
+                        "label": "Two",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    },
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.load_registry()
+        message = str(caught.exception)
+        self.assertIn("'one'", message)
+        self.assertIn("'two'", message)
+        self.assertIn("cred-1", message)
+
+    def test_v3_auto_and_distinct_pins_still_load(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "auto",
+                "accounts": [
+                    {
+                        "id": "auto",
+                        "label": "Auto",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": None,
+                    },
+                    {
+                        "id": "one",
+                        "label": "One",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    },
+                    {
+                        "id": "two",
+                        "label": "Two",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-2",
+                    },
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["auto", "one", "two"])
+        self.assertIsNone(entries[0].credential_id)
+        self.assertEqual(entries[1].credential_id, "cred-1")
+        self.assertEqual(entries[2].credential_id, "cred-2")
+        self.assertEqual(active, "auto")
+
+    def test_v2_two_logins_rejected_at_load(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "one",
+                "accounts": [
+                    {"id": "one", "label": "One", "kind": "opencode-db", "hint": None},
+                    {"id": "two", "label": "Two", "kind": "opencode-db", "hint": None},
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError):
+            accounts.load_registry()
 
     def test_add_pinned_login_round_trip(self):
         self.write_registry({"version": 3, "active": None, "accounts": []})

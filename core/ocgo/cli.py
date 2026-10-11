@@ -26,6 +26,10 @@ WINDOW_WIDTH = 15  # label column width, matching the console layout
 
 NO_ACCOUNTS_MESSAGE = "no accounts configured — run 'ocgo account add <id>'"
 
+# Same 10-second budget as the secret-tool calls in accounts.py: a wedged
+# OpenCode service must not hang account management.
+_OPENCODE_SWITCH_TIMEOUT_SECONDS = 10
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -546,11 +550,16 @@ def cmd_account_activate_in_opencode(args: argparse.Namespace) -> int:
             ["opencode", "auth", "switch", "opencode", account.credential_id],
             capture_output=True,
             text=True,
+            timeout=_OPENCODE_SWITCH_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
         return _fail(
             "the 'opencode' command was not found on PATH — install OpenCode "
             "or add it to PATH"
+        )
+    except subprocess.TimeoutExpired:
+        return _fail(
+            "the 'opencode' command timed out; is the OpenCode service responsive?"
         )
     except OSError as exc:
         return _fail(f"could not run the 'opencode' command: {exc}")

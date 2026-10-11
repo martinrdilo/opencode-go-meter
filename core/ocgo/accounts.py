@@ -488,8 +488,30 @@ def _validate_registry(data: object, path: Path) -> None:
     if not isinstance(entries, list):
         raise _registry_error(path, "'accounts' must be a list")
     seen: set[str] = set()
+    auto_login: str | None = None
+    pinned: dict[str, str] = {}
     for index, entry in enumerate(entries):
         _validate_entry(entry, index, seen, path, version)
+        if entry["kind"] != KIND_OPENCODE_DB:
+            continue
+        credential_id = entry.get("credential_id")
+        if credential_id is None:
+            if auto_login is not None:
+                raise _registry_error(
+                    path,
+                    f"account '{entry['id']}' is an OpenCode login without a "
+                    f"credential id, but account '{auto_login}' already is; "
+                    "at most one login may follow the active credential",
+                )
+            auto_login = entry["id"]
+        elif credential_id in pinned:
+            raise _registry_error(
+                path,
+                f"account '{entry['id']}' pins credential '{credential_id}', "
+                f"which account '{pinned[credential_id]}' already pins",
+            )
+        else:
+            pinned[credential_id] = entry["id"]
 
 
 def _validate_entry(
@@ -521,14 +543,16 @@ def _validate_entry(
         raise _registry_error(
             path, f"account '{account_id}' is opencode-db and cannot have a hint"
         )
-    if "credential_id" in entry:
+    # An explicit ``"credential_id": null`` counts as absent (auto binding);
+    # storage only writes the key when a credential is actually pinned.
+    credential_id = entry.get("credential_id")
+    if credential_id is not None:
         if version != 3:
             raise _registry_error(
                 path,
                 f"account '{account_id}' has a credential id, which requires "
                 "registry version 3",
             )
-        credential_id = entry["credential_id"]
         if not isinstance(credential_id, str) or not credential_id.strip():
             raise _registry_error(
                 path, f"account '{account_id}' has an invalid credential id"

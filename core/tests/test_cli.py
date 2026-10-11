@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
@@ -1390,6 +1391,23 @@ class ActivateInOpencodeTests(AccountCliTestCase):
         code, _out, err = run_cli(["account", "activate-in-opencode", "pin"])
         self.assertEqual(code, 1)
         self.assertIn("not found on PATH", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_timeout_fails_cleanly(self):
+        # A fake that never returns: the switch must respect the bounded
+        # timeout instead of hanging on a wedged OpenCode service.
+        body = f"#!{sys.executable}\nimport time\ntime.sleep(30)\n"
+        script = self.bin_dir / "opencode"
+        script.write_text(body, encoding="utf-8")
+        script.chmod(0o755)
+        self._isolate()
+        self._seed_pinned()
+        with mock.patch.object(cli, "_OPENCODE_SWITCH_TIMEOUT_SECONDS", 0.5):
+            code, out, err = run_cli(["account", "activate-in-opencode", "pin"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("timed out", err)
+        self.assertIn("OpenCode service", err)
         self.assertNotIn("Traceback", err)
 
 
