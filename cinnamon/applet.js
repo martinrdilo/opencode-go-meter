@@ -3,6 +3,7 @@
 
 const Applet = imports.ui.applet;
 const Dialog = imports.ui.dialog;
+const Main = imports.ui.main;
 const ModalDialog = imports.ui.modalDialog;
 const PopupMenu = imports.ui.popupMenu;
 const RadioButton = imports.ui.radioButton;
@@ -25,10 +26,12 @@ const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
 
 const ACCOUNTS_SCHEMA = 2;
+const DISCOVER_SCHEMA = 1;
 const DEFAULT_ACCOUNT_ID = 'default';
 const KIND_OPENCODE_DB = 'opencode-db';
 const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
 
 const WINDOWS = [
     {key: 'rolling', label: 'Rolling usage', short: '5h'},
@@ -232,6 +235,12 @@ function parseAccountList(text) {
                 ? entry.label
                 : id,
             kind: typeof entry.kind === 'string' ? entry.kind : '',
+            // Additive field (the payload keeps schema 2): null means the
+            // account is not pinned to a database credential.
+            credential_id: typeof entry.credential_id === 'string' &&
+                entry.credential_id !== ''
+                ? entry.credential_id
+                : null,
             active: false,
         });
     }
@@ -240,6 +249,54 @@ function parseAccountList(text) {
     for (const account of accounts)
         account.active = account.id === active;
     return {accounts, active};
+}
+
+function parseDiscoverJson(text) {
+    if (typeof text !== 'string' || text.trim() === '')
+        return null;
+    let payload = null;
+    try {
+        payload = JSON.parse(text);
+    } catch (error) {
+        return null;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+        return null;
+    if (payload.schema !== DISCOVER_SCHEMA || !Array.isArray(payload.credentials))
+        return null;
+
+    const credentials = [];
+    const seen = new Set();
+    for (const entry of payload.credentials) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+            return null;
+        const id = entry.id;
+        if (typeof id !== 'string' || id.trim() === '' || seen.has(id))
+            return null;
+        seen.add(id);
+        credentials.push({
+            id,
+            label: typeof entry.label === 'string' && entry.label.trim() !== ''
+                ? entry.label
+                : id,
+            active: entry.active === true,
+            email: typeof entry.email === 'string' && entry.email.trim() !== ''
+                ? entry.email
+                : null,
+            org_name: typeof entry.org_name === 'string' &&
+                entry.org_name.trim() !== ''
+                ? entry.org_name
+                : null,
+        });
+    }
+    return {credentials};
+}
+
+// Display-only suffix for a discovered credential: the email when present,
+// the organization name otherwise.
+function credentialDisplayLabel(credential) {
+    const suffix = credential.email || credential.org_name;
+    return suffix ? `${credential.label} (${suffix})` : credential.label;
 }
 
 function accountFormError(accountId, key, fromDb = false) {
@@ -271,10 +328,13 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._tickTimerId = 0;
         this._activeAccountId = null;
         this._accounts = [];
+        this._credentials = [];
         this._accountsLoaded = false;
         this._accountsLoading = false;
         this._accountsError = null;
         this._accountsErrorLogged = false;
+        this._credentialsError = null;
+        this._credentialsErrorLogged = false;
         this._accountsGeneration = 0;
         this._accountsPending = null;
         this._initialRefreshPending = false;
@@ -382,6 +442,13 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 const suffix = updated ? ` · data from ${updated}` : '';
                 lines.push(`Last refresh failed: ${truncate(lastError, MAX_WARNING_CHARS)}${suffix}`);
             }
+        }
+        // Discover failures are non-fatal: the auto path keeps working.
+        if (this._credentialsError)
+            lines.push(`Credentials unavailable: ${truncate(this._credentialsError, MAX_WARNING_CHARS)}`);
+        for (const account of this._danglingAccounts()) {
+            lines.push(`Account '${account.label}' points to an OpenCode credential ` +
+                'that no longer exists — remove it or sign in again in OpenCode.');
         }
         this.set_applet_tooltip(lines.join('\n'));
     }
@@ -548,8 +615,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (!this._accountSubMenuItem)
             return;
         const accounts = this._accounts || [];
+        const dangling = this._danglingAccounts();
+        const activateTarget = this._activateTargetAccount();
         const signature = `${this._accountsError || ''}\u0002` + accounts.map(account =>
-            `${account.id}\u0000${account.label}\u0000${account.active ? 1 : 0}`).join('\u0001');
+            `${account.id}\u0000${this._accountDisplayLabel(account)}\u0000${account.active ? 1 : 0}`).join('\u0001') +
+            `\u0003${activateTarget ? activateTarget.id : ''}` +
+            `\u0004${dangling.map(account => account.id).join('\u0000')}`;
         if (signature === this._accountMenuSignature)
             return;
         if (this._accountSubMenuItem.menu.isOpen)
@@ -561,14 +632,101 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (accounts.length === 0) {
             const text = this._accountsError ? 'Accounts unavailable' : 'No accounts configured';
             submenu.addMenuItem(new PopupMenu.PopupMenuItem(text, {reactive: false}));
-        } else {
-            for (const account of accounts) {
-                const item = new PopupMenu.PopupMenuItem(account.label);
-                item.setOrnament(PopupMenu.OrnamentType.DOT, account.active);
-                item.connect('activate', () => this._switchAccount(account.id));
+            return;
+        }
+        for (const account of accounts) {
+            const item = new PopupMenu.PopupMenuItem(this._accountDisplayLabel(account));
+            item.setOrnament(PopupMenu.OrnamentType.DOT, account.active);
+            item.connect('activate', () => this._switchAccount(account.id));
+            submenu.addMenuItem(item);
+        }
+
+        // Make active in OpenCode: only meaningful for a pinned login; the
+        // target is the account the applet currently shows (the selected one).
+        submenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        const activateItem = new PopupMenu.PopupMenuItem('Make active in OpenCode');
+        activateItem.setSensitive(activateTarget !== null);
+        if (activateTarget) {
+            activateItem.connect('activate', () => {
+                this._confirmActivateInOpencode(activateTarget);
+            });
+        }
+        submenu.addMenuItem(activateItem);
+
+        // Pinned logins whose credential disappeared: surface, never block.
+        if (dangling.length > 0) {
+            submenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            for (const account of dangling) {
+                const text = `Account '${account.label}': OpenCode credential missing`;
+                const item = new PopupMenu.PopupMenuItem(text, {reactive: false});
+                item.label.clutter_text.set_markup(
+                    `<span foreground="${COLORS.amber}">${escapeMarkup(text)}</span>`);
                 submenu.addMenuItem(item);
             }
         }
+    }
+
+    // The applet's selected (active) account, when it is a pinned login.
+    _activateTargetAccount() {
+        if (!this._activeAccountId)
+            return null;
+        const account = (this._accounts || []).find(
+            entry => entry.id === this._activeAccountId);
+        if (!account || account.kind !== KIND_OPENCODE_DB || !account.credential_id)
+            return null;
+        return account;
+    }
+
+    // Display-only suffix marking a pinned login whose credential is the
+    // active one in OpenCode.
+    _accountDisplayLabel(account) {
+        if (account.kind !== KIND_OPENCODE_DB || !account.credential_id)
+            return account.label;
+        const credential = (this._credentials || []).find(
+            entry => entry.id === account.credential_id);
+        return credential && credential.active
+            ? `${account.label} (active in OpenCode)`
+            : account.label;
+    }
+
+    // Pinned logins whose credential disappeared from the database listing.
+    // Empty while discover failed: an unreadable listing cannot tell "gone"
+    // from "unreadable", and the failure itself is already surfaced.
+    _danglingAccounts() {
+        if (this._credentialsError)
+            return [];
+        const known = new Set((this._credentials || []).map(entry => entry.id));
+        return (this._accounts || []).filter(account =>
+            account.kind === KIND_OPENCODE_DB && account.credential_id &&
+            !known.has(account.credential_id));
+    }
+
+    // Credential picker entries: the auto binding when no auto login exists,
+    // plus every discovered credential that is not registered yet.
+    _credentialChoices() {
+        const choices = [];
+        if (!this._hasAutoLogin())
+            choices.push({credentialId: null, label: AUTO_CREDENTIAL_LABEL});
+        const registered = new Set();
+        for (const account of this._accounts || []) {
+            if (account.kind === KIND_OPENCODE_DB && account.credential_id)
+                registered.add(account.credential_id);
+        }
+        for (const credential of this._credentials || []) {
+            if (registered.has(credential.id))
+                continue;
+            choices.push({
+                credentialId: credential.id,
+                label: credentialDisplayLabel(credential),
+            });
+        }
+        return choices;
+    }
+
+    _hasAutoLogin() {
+        return (this._accounts || []).some(
+            account => account.kind === KIND_OPENCODE_DB &&
+                !account.credential_id);
     }
 
     // -- accounts ------------------------------------------------------------
@@ -591,33 +749,62 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     _startAccountLoad(generation, onComplete) {
         const binary = this._ocgoPath();
         if (!binary) {
-            this._finishAccountLoad(generation, onComplete, null, 'ocgo not found');
+            this._finishAccountLoad(
+                generation, onComplete,
+                {parsed: null, errorMessage: 'ocgo not found', error: null},
+                {parsed: null, errorMessage: 'ocgo not found'});
             return;
         }
         this._accountsLoading = true;
+        const accounts = {parsed: null, errorMessage: null, error: null};
+        const credentials = {parsed: null, errorMessage: null};
+        let remaining = 2;
+        const finish = () => {
+            if (--remaining > 0)
+                return;
+            this._accountsLoading = false;
+            this._finishAccountLoad(generation, onComplete, accounts, credentials);
+        };
+        // Accounts and discovered credentials load together; a discover
+        // failure is non-fatal (empty credential list, auto path intact).
+        this._spawnAccountJson(
+            binary, ['account', 'list', '--json'], parseAccountList,
+            (parsed, errorMessage, error = null) => {
+                accounts.parsed = parsed;
+                accounts.errorMessage = errorMessage;
+                accounts.error = error;
+                finish();
+            });
+        this._spawnAccountJson(
+            binary, ['account', 'discover', '--json'], parseDiscoverJson,
+            (parsed, errorMessage) => {
+                credentials.parsed = parsed;
+                credentials.errorMessage = errorMessage;
+                finish();
+            });
+    }
+
+    _spawnAccountJson(binary, args, parser, callback) {
+        const command = `ocgo ${args[0]} ${args[1]}`;
         try {
             Util.spawnCommandLineAsyncIO(null, (stdout, stderr, exitCode) => {
-                this._accountsLoading = false;
                 if (this._removed) {
-                    this._accountsPending = null;
+                    callback(null, null);
                     return;
                 }
-                let errorMessage = null;
-                if (exitCode !== 0)
-                    errorMessage = `ocgo account list failed (exit ${exitCode})`;
-                const parsed = errorMessage ? null : parseAccountList(stdout);
-                if (!errorMessage && !parsed)
-                    errorMessage = 'unexpected ocgo account list output';
-                this._finishAccountLoad(generation, onComplete, parsed, errorMessage);
-            }, {argv: [binary, 'account', 'list', '--json']});
+                if (exitCode !== 0) {
+                    callback(null, `${command} failed (exit ${exitCode})`);
+                    return;
+                }
+                const parsed = parser(stdout);
+                callback(parsed, parsed ? null : `unexpected ${command} output`);
+            }, {argv: [binary, ...args]});
         } catch (error) {
-            this._accountsLoading = false;
-            this._finishAccountLoad(
-                generation, onComplete, null, 'could not start ocgo account list', error);
+            callback(null, `could not start ${command}`, error);
         }
     }
 
-    _finishAccountLoad(generation, onComplete, parsed, errorMessage, error = null) {
+    _finishAccountLoad(generation, onComplete, accountsResult, credentialsResult) {
         if (this._removed) {
             this._accountsPending = null;
             return;
@@ -625,22 +812,41 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (generation === this._accountsGeneration) {
             // Newest request: apply the result (or the fallback) and run its
             // callback on both paths, so a queued action is never dropped.
-            if (parsed) {
-                this._accounts = parsed.accounts;
+            const accounts = accountsResult ? accountsResult.parsed : null;
+            const credentials = credentialsResult ? credentialsResult.parsed : null;
+            // Discover failures are non-fatal: the empty credential list
+            // keeps the auto path working and the error surfaces in the
+            // tooltip and the journal.
+            this._credentials = credentials ? credentials.credentials : [];
+            this._credentialsError = credentialsResult
+                ? credentialsResult.errorMessage
+                : null;
+            if (this._credentialsError) {
+                if (!this._credentialsErrorLogged) {
+                    this._credentialsErrorLogged = true;
+                    logError(this._credentialsError);
+                }
+            } else {
+                this._credentialsErrorLogged = false;
+            }
+            if (accounts) {
+                this._accounts = accounts.accounts;
                 this._accountsLoaded = true;
                 this._accountsError = null;
                 this._accountsErrorLogged = false;
-                this._activeAccountId = parsed.active;
+                this._activeAccountId = accounts.active;
             } else {
                 if (!this._accountsLoaded) {
                     this._accounts = [];
                     this._activeAccountId = null;
                 }
                 this._accountsLoaded = true;
-                this._accountsError = errorMessage;
+                this._accountsError = accountsResult ? accountsResult.errorMessage : null;
                 if (!this._accountsErrorLogged) {
                     this._accountsErrorLogged = true;
-                    logError(`${errorMessage}; keeping the current account list`, error);
+                    logError(
+                        `${this._accountsError}; keeping the current account list`,
+                        accountsResult ? accountsResult.error : null);
                 }
             }
             this._renderAccountMenu();
@@ -699,15 +905,20 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             // Combobox keys must be unique: duplicate labels collapse into one
             // option, hiding accounts. Labels stay bare when unique; colliding
             // ones get a deterministic '(id)' suffix. The option value is
-            // always the account id.
+            // always the account id. The display-only '(active in OpenCode)'
+            // suffix participates in label collision handling like any other
+            // part of the label.
             const counts = new Map();
-            for (const account of this._accounts)
-                counts.set(account.label, (counts.get(account.label) || 0) + 1);
+            for (const account of this._accounts) {
+                const label = this._accountDisplayLabel(account);
+                counts.set(label, (counts.get(label) || 0) + 1);
+            }
             const used = new Set();
             for (const account of this._accounts) {
-                let key = counts.get(account.label) === 1
-                    ? account.label
-                    : `${account.label} (${account.id})`;
+                const label = this._accountDisplayLabel(account);
+                let key = counts.get(label) === 1
+                    ? label
+                    : `${label} (${account.id})`;
                 while (used.has(key))
                     key += ` (${account.id})`;
                 used.add(key);
@@ -806,19 +1017,57 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         const keyEntry = new St.Entry({hint_text: 'oc_sk_…', x_expand: true});
         keyEntry.clutter_text.set_password_char('\u25cf');
 
-        // The OpenCode login is singular: once one is registered, the add flow
-        // only offers API keys. Otherwise the login is the default choice.
-        const hasLogin = this._accounts.some(
-            account => account.kind === KIND_OPENCODE_DB);
+        // The "OpenCode login" type stays available while no auto (unpinned)
+        // login is registered yet, or while at least one discovered credential
+        // is not registered as a pinned login. Otherwise only API keys remain.
+        const choices = this._credentialChoices();
+        const allowLogin = !this._hasAutoLogin() ||
+            choices.some(choice => choice.credentialId !== null);
         const typeChooser = new RadioButton.RadioButtonGroup();
-        if (!hasLogin)
+        if (allowLogin)
             typeChooser.addButton(KIND_OPENCODE_DB, 'OpenCode login');
         typeChooser.addButton(KIND_API_KEY, 'API key');
-        typeChooser.setActive(hasLogin ? KIND_API_KEY : KIND_OPENCODE_DB);
+        typeChooser.setActive(allowLogin ? KIND_OPENCODE_DB : KIND_API_KEY);
 
         dialog.contentLayout.add_child(this._labeledRow('Account id', idEntry));
         dialog.contentLayout.add_child(this._labeledRow('Label (optional)', labelEntry));
         dialog.contentLayout.add_child(this._labeledRow('Type', typeChooser.actor));
+
+        // Credential combo: a themed button opening a popup menu (the
+        // in-process Cinnamon combo pattern; modal dialogs can host popups).
+        let selectedCredential = choices.length > 0 ? choices[0] : null;
+        const combo = new St.Button({
+            style_class: 'dialog-button',
+            reactive: true,
+            can_focus: true,
+            x_expand: true,
+        });
+        const comboLabel = new St.Label({
+            text: selectedCredential ? selectedCredential.label : 'No credentials found',
+        });
+        combo.add_child(comboLabel);
+        const credentialMenu = new PopupMenu.PopupMenu(combo, St.Side.TOP);
+        const menuManager = new PopupMenu.PopupMenuManager({actor: combo});
+        Main.uiGroup.add_actor(credentialMenu.actor);
+        credentialMenu.actor.hide();
+        menuManager.addMenu(credentialMenu);
+        combo.connect('clicked', () => credentialMenu.toggle());
+        for (const choice of choices) {
+            const item = new PopupMenu.PopupMenuItem(choice.label);
+            item.connect('activate', () => {
+                selectedCredential = choice;
+                comboLabel.set_text(choice.label);
+            });
+            credentialMenu.addMenuItem(item);
+        }
+        const credentialRow = this._labeledRow('Credential', combo);
+        credentialRow.visible = false;
+        dialog.contentLayout.add_child(credentialRow);
+        dialog.connect('destroy', () => {
+            credentialMenu.close(false);
+            credentialMenu.destroy();
+        });
+
         const keyRow = this._labeledRow('API key', keyEntry);
         dialog.contentLayout.add_child(keyRow);
 
@@ -848,10 +1097,18 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             let args;
             let pendingText;
             if (fromDb) {
-                // The CLI registers the local OpenCode login; no key, no stdin.
+                // The CLI registers an OpenCode login; no key, no stdin.
+                // Without --credential the account follows the active
+                // OpenCode credential (the auto entry).
+                if (!selectedCredential) {
+                    status.set_text('No OpenCode credentials are available to add.');
+                    return;
+                }
                 args = ['account', 'add', accountId, '--from-db'];
                 if (label)
                     args.push('--label', label);
+                if (selectedCredential.credentialId)
+                    args.push('--credential', selectedCredential.credentialId);
                 pendingText = `Adding the OpenCode login as '${accountId}'…`;
             } else {
                 const command = accountCommandFor(accountId, this._accounts);
@@ -909,12 +1166,15 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         const updateTypeState = () => {
             const fromDb = selectedType() === KIND_OPENCODE_DB;
             keyRow.visible = !fromDb;
+            credentialRow.visible = fromDb;
             if (fromDb)
                 keyEntry.set_text('');
+            if (!fromDb)
+                credentialMenu.close();
             content.title = fromDb ? 'Add account' : 'Add / replace account key';
             content.description = fromDb
-                ? 'Registers your local OpenCode login. Sign in with OpenCode '
-                    + 'first if there is none.'
+                ? 'Registers an OpenCode login. Pick the auto binding (follows ' +
+                    'the active OpenCode credential) or a discovered credential.'
                 : 'API-key accounts from the OpenCode console. The key is sent to '
                     + 'the ocgo CLI and is never stored by the applet.';
             confirmInfo.button.label = fromDb ? 'Add account' : 'Add / replace key';
@@ -965,6 +1225,77 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         'could not remove the account', stderr, stdout));
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 });
+            },
+            default: true,
+        };
+        dialog.setButtons([
+            {
+                label: 'Cancel',
+                action: () => dialog.close(),
+                key: Clutter.KEY_Escape,
+            },
+            confirmInfo,
+        ]);
+        dialog.open();
+    }
+
+    _confirmActivateInOpencode(account) {
+        if (this._accountsDialog)
+            return;
+        const dialog = this._openAccountsDialog();
+        let closed = false;
+        dialog.connect('destroy', () => {
+            closed = true;
+        });
+
+        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+            title: `Make '${account.label}' active in OpenCode?`,
+            description: 'OpenCode will use this account for new sessions.',
+        }));
+
+        const status = this._statusLabel();
+        dialog.contentLayout.add_child(status);
+
+        let closeTimerId = 0;
+        dialog.connect('destroy', () => {
+            if (closeTimerId) {
+                Mainloop.source_remove(closeTimerId);
+                closeTimerId = 0;
+            }
+        });
+
+        const confirmInfo = {
+            label: 'Make active',
+            action: () => {
+                this._setDialogButtonEnabled(confirmInfo.button, false);
+                status.set_text('Switching the active OpenCode credential…');
+                this._runAccountCommand(
+                    ['account', 'activate-in-opencode', account.id], null,
+                    (ok, stdout, stderr) => {
+                        if (this._removed)
+                            return;
+                        if (ok)
+                            this._loadAccounts();
+                        if (closed)
+                            return;
+                        if (ok) {
+                            const summary = [stdout.trim(), stderr.trim()]
+                                .filter(Boolean).join(' ');
+                            status.set_text(summary ||
+                                `Account '${account.id}' is now active in OpenCode.`);
+                            closeTimerId = Mainloop.timeout_add(1200, () => {
+                                closeTimerId = 0;
+                                if (this._accountsDialog === dialog)
+                                    dialog.close();
+                                return false;
+                            });
+                            return;
+                        }
+                        status.set_text(this._failureMessage(
+                            'could not make the account active in OpenCode',
+                            stderr, stdout));
+                        this._setDialogButtonEnabled(confirmInfo.button, true);
+                    });
             },
             default: true,
         };
