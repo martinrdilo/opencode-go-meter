@@ -1,6 +1,6 @@
 # Feature: multi-oauth-accounts — multiple OpenCode Console (OAuth) logins as first-class accounts
 
-**Status**: IN PROGRESS — T1 done (design approved by the user: option A); T2–T5 pending
+**Status**: IN PROGRESS — T1–T2 done; T3–T5 pending
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/multi-oauth-accounts`
 **Created**: 2026-10-11
@@ -21,7 +21,7 @@ Option A (chosen by the user 2026-10-11) beat option B (switch-only action) beca
 - `opencode auth switch [target] [credential]` — credential id/label accepted positionally; the account picker only opens when the credential is omitted → non-interactive switching is possible.
 - Local DB today: 1 credential (`label=Default`, `active=1`, `method=device`, `type=oauth`). `value` JSON keys: `access`, `expires`, `refresh`, `metadata` (`accountID`, `email`, `orgID`, `orgName`, `server`).
 - Token TTL 30 days; `time_updated` == creation (no rotation yet) → dormant-credential staleness is mild (~30d grace; refreshed when used in OpenCode). `EXPIRED_MESSAGE` already covers the stale case.
-- Injection points: `creds.resolve_credential` callers at `cli.py:150-153` (`_refresh_one`), `263-267` (`cmd_status`), `359` (`--from-db` path); singular invariant at `accounts.py:199`; frontends pin the accounts JSON payload `schema = 2` (`gnome/prefs.js:9`, `cinnamon/applet.js:27`).
+- Injection points (line refs corrected after verification): the `creds.resolve_credential` resolver sites are `_refresh_one`, `cmd_auth_show`, and the `--from-db` add path (`cmd_status` is cache-only and never resolves); the singular invariant lived in `add_account`; frontends pin the accounts JSON payload `schema = 2` (`gnome/prefs.js:9`, `cinnamon/applet.js:27`) — the additive `credential_id` field keeps it at 2.
 - Recon memory: Engram obs #1438 (`odd/multi-oauth-accounts/recon`).
 
 ## Design (approved by the user, option A)
@@ -52,7 +52,7 @@ Option A (chosen by the user 2026-10-11) beat option B (switch-only action) beca
 ## Tasks
 
 - [x] T1 — Design + recon *(route: parent, inline)*: facts live-verified, options A/B presented, user approved A (with the activate-in-opencode bonus). Evidence: this doc + Engram #1438. Pending (non-blocking): live probe of refresh-on-switch behavior (needs user OK) — affects UX copy only.
-- [ ] T2 — Core *(route: delegated writer — multi-file core + tests)*: registry v3 + pinned binding + `creds` resolve-by-id + `list_db_credentials` + CLI (`--credential`, `discover`, `activate-in-opencode`) + tests. Evidence: TBD.
+- [x] T2 — Core *(route: delegated writer — multi-file core + tests)*: registry v3 + pinned binding + `creds` resolve-by-id + `list_db_credentials` + CLI (`--credential`, `discover`, `activate-in-opencode`) + tests. Evidence: commits `12f9fec` + `4f5afae`; suite 326 → 384 green; isolated smoke OK (3 synthetic credentials: discover/add-by-id/add-by-label/list/activate/dangling + `refresh --all` continuation); independent verifier **verified** (57/57 probes, 0 blockers, 0 minors); assess `unassessable/high` (OpenCode runtime not eligible for immutable receipt review — RDD off) → independent verifier path per the delegated gate; 3 nit findings closed in bounded correction `c7cdb92` (explicit-null tolerance, load-time cross-entry validation, 10s `opencode` subprocess timeout); parent spot check 390 green.
 - [ ] T3 — Frontends *(route: delegated writer — GNOME + Cinnamon parity)*: credential picker, multi-login list, activate action, dangling feedback; metadata 13. Evidence: TBD.
 - [ ] T4 — Verification *(route: parent + per-action)*: `make test` + static checks; isolated smoke via `OCGO_DB` temp DB with synthetic credentials; user UI confirmation; optional real smoke once a 2nd account is logged in (`opencode auth login`, user action). Evidence: TBD.
 - [ ] T5 — Docs *(route: parent)*: README accounts section + doc close. Evidence: TBD.
@@ -77,3 +77,5 @@ Option A (chosen by the user 2026-10-11) beat option B (switch-only action) beca
 ## Progress log
 
 - 2026-10-11 — T1 done: recon recovered + completed (live-verified switch args, 30d TTL, DB state, injection points); options A/B presented; user approved option A including the `activate-in-opencode` bonus. Branch created.
+- 2026-10-11 — T2 done (delegated writer, two work-unit commits `12f9fec` + `4f5afae`): registry v3 + pinned credentials + resolve-by-id + `discover` + `activate-in-opencode`; suite 326 → 384.
+- 2026-10-11 — T2 verification: independent verifier `verified` (57/57 probes; nits only); assess `unassessable/high` (runtime ineligible; RDD off) → verifier path per the delegated gate; nit correction round `c7cdb92` (load-time invariants, null tolerance, `opencode` timeout) → suite 390 green; parent spot check green.
