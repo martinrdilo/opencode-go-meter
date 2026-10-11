@@ -37,6 +37,7 @@ Context: the credits feature made the OAuth login the only credential that can r
 - [x] **T3 — Frontends: add-flow kind chooser** *(route: delegated writer — GNOME + Cinnamon parity)*: "OpenCode login" (default when available) / "API key"; key row only for API key; guide when no login; GNOME metadata bump. Evidence: commit `cf5a0b8`; `node --check` ×2 + metadata JSON + checks green (parent re-ran); assess medium (177 lines, under budget); Cinnamon `RadioButtonGroup` API verified against the installed 6.4 source (`addButton`/`setActive`/`getActive` + `'radio-changed'`); devkit shell v11 `ACTIVE`, `error: ''`.
 - [~] **T4 — Verification** *(route: parent + per-action)*: suite 326 green (T2); live refusal smoke OK (`an OpenCode login account already exists: 'default'`, registry untouched); devkit v11 clean. **Pending: the user's UI confirmation** (their current state has the login registered, so the add flow shows only "API key" — the OAuth default appears when none is registered).
 - [x] **T5 — Docs** *(route: parent)*: README Accounts section, this doc closed. Evidence: this docs commit.
+- [x] **T6 — Prefs layout split** *(user request 2026-10-11; route: parent, inline)*: the GNOME Accounts group splits into "Accounts" (active account + remove — remove acts on the selection) and "Add or replace an account" (id/label/type/key/apply/status form); metadata 11 → 12. Evidence: commit `5c77a9c`; `node --check` + metadata JSON + `check-gnome` green.
 
 ## Acceptance criteria
 
@@ -58,3 +59,4 @@ Context: the credits feature made the OAuth login the only credential that can r
 - 2026-10-11 — T2 done (delegated writer): core `--from-db` + active-credential resolution; suite 309 → 326; isolated live smoke OK; assess medium.
 - 2026-10-11 — T3 done (delegated writer): kind chooser in both add flows (OAuth default); metadata v11; assess medium (177 lines); Cinnamon radio API verified against installed source.
 - 2026-10-11 — T4 (automated) + T5 done: live refusal smoke + devkit v11 clean; README updated. Pending: user UI confirmation.
+- 2026-10-11 — T6 done (user request): prefs Accounts group split into info ("Accounts": active + remove) and form ("Add or replace an account"); metadata v12.
