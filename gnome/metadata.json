@@ -4,5 +4,5 @@
   "description": "OpenCode Go subscription usage in the top bar",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.opencode-go-meter",
-  "version": 10
+  "version": 11
 }

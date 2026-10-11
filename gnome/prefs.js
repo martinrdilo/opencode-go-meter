@@ -71,12 +71,12 @@ function parseAccountsJson(text) {
     return {accounts, active};
 }
 
-function accountFormError(accountId, key) {
+function accountFormError(accountId, key, fromDb = false) {
     if (!accountId)
         return 'Enter an account id.';
     if (!ACCOUNT_ID_RE.test(accountId))
         return 'Invalid account id: use a-z, 0-9, dot, underscore, or dash (max 64).';
-    if (!key)
+    if (!fromDb && !key)
         return 'Enter an API key.';
     return null;
 }
@@ -105,6 +105,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._accountActionInProgress = false;
         this._accountActionAwaitingLoad = false;
         this._removeDialogOpen = false;
+        this._typeKinds = [];
+        this._typeModelSignature = null;
 
         const page = new Adw.PreferencesPage();
         const group = new Adw.PreferencesGroup({
@@ -177,6 +179,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         page.add(this._buildAccountsGroup());
         window.add(page);
 
+        this._updateTypeModel();
         this._loadAccounts();
     }
 
@@ -185,7 +188,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     _buildAccountsGroup() {
         const group = new Adw.PreferencesGroup({
             title: 'Accounts',
-            description: 'Manage OpenCode Go API-key accounts. The default account uses the OpenCode login.',
+            description: 'Manage OpenCode Go accounts. The default account uses the OpenCode login.',
         });
 
         this._activeRow = new Adw.ComboRow({title: 'Active account'});
@@ -200,6 +203,10 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
 
         this._labelRow = new Adw.EntryRow({title: 'Label (optional)'});
         group.add(this._labelRow);
+
+        this._typeRow = new Adw.ComboRow({title: 'Type'});
+        this._typeRow.connect('notify::selected', () => this._updateFormState());
+        group.add(this._typeRow);
 
         this._keyRow = new Adw.PasswordEntryRow({title: 'API key'});
         group.add(this._keyRow);
@@ -234,6 +241,50 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         if (!Number.isInteger(index) || index < 0 || index >= this._accounts.length)
             return null;
         return this._accounts[index];
+    }
+
+    // The add-flow type model follows the loaded accounts: the OpenCode login
+    // is singular, so once one is registered only API keys can be added.
+    _typeOptions() {
+        const hasLogin = this._accounts.some(
+            account => account.kind === KIND_OPENCODE_DB);
+        return hasLogin ? [KIND_API_KEY] : [KIND_OPENCODE_DB, KIND_API_KEY];
+    }
+
+    _typeLabel(kind) {
+        return kind === KIND_OPENCODE_DB ? 'OpenCode login' : 'API key';
+    }
+
+    _selectedType() {
+        const index = this._typeRow.selected;
+        if (!Number.isInteger(index) || index < 0 || index >= this._typeKinds.length)
+            return null;
+        return this._typeKinds[index];
+    }
+
+    _updateTypeModel() {
+        const kinds = this._typeOptions();
+        const previous = this._selectedType();
+        const signature = kinds.join('\u0000');
+        if (signature !== this._typeModelSignature) {
+            this._typeModelSignature = signature;
+            this._typeKinds = kinds;
+            this._typeRow.model = Gtk.StringList.new(
+                kinds.map(kind => this._typeLabel(kind)));
+        }
+        // The user's choice survives a rebuild; when the OpenCode login option
+        // disappears (an account appeared), fall back to the remaining type.
+        const index = previous === null ? -1 : kinds.indexOf(previous);
+        this._typeRow.selected = index >= 0 ? index : 0;
+        this._updateFormState();
+    }
+
+    _updateFormState() {
+        const fromDb = this._selectedType() === KIND_OPENCODE_DB;
+        this._keyRow.visible = !fromDb;
+        if (fromDb)
+            this._keyRow.text = '';
+        this._applyRow.title = fromDb ? 'Add account' : 'Add / replace key';
     }
 
     _renderAccounts() {
@@ -286,6 +337,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
             this._activeId = null;
         }
         this._renderAccounts();
+        this._updateTypeModel();
     }
 
     _loadAccounts() {
@@ -379,19 +431,28 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     _applyAccountForm() {
         const accountId = this._idRow.text.trim();
         const label = this._labelRow.text.trim();
-        const key = this._keyRow.text;
-        const error = accountFormError(accountId, key);
+        const fromDb = this._selectedType() === KIND_OPENCODE_DB;
+        const key = fromDb ? '' : this._keyRow.text;
+        const error = accountFormError(accountId, key, fromDb);
         if (error) {
             this._setFeedback(error);
             return;
         }
         if (!this._beginAccountAction())
             return;
-        const command = accountCommandFor(accountId, this._accounts);
-        const args = ['account', command, accountId, '--store', 'auto'];
-        if (command === 'add' && label)
-            args.push('--label', label);
-        this._runAccountCommand(args, key, (ok, stdout, stderr) => {
+        let args;
+        if (fromDb) {
+            // The CLI registers the local OpenCode login; no key, no stdin.
+            args = ['account', 'add', accountId, '--from-db'];
+            if (label)
+                args.push('--label', label);
+        } else {
+            const command = accountCommandFor(accountId, this._accounts);
+            args = ['account', command, accountId, '--store', 'auto'];
+            if (command === 'add' && label)
+                args.push('--label', label);
+        }
+        this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
             this._keyRow.text = '';
             if (ok) {
                 const summary = [stdout.trim(), stderr.trim()]
@@ -402,7 +463,9 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                 this._loadAccounts();
             } else {
                 this._setFeedback(this._failureMessage(
-                    'could not update the account', stderr, stdout));
+                    fromDb ? 'could not add the OpenCode login account'
+                        : 'could not update the account',
+                    stderr, stdout));
                 this._endAccountAction();
             }
         });

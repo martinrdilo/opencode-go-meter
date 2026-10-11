@@ -5,6 +5,7 @@ const Applet = imports.ui.applet;
 const Dialog = imports.ui.dialog;
 const ModalDialog = imports.ui.modalDialog;
 const PopupMenu = imports.ui.popupMenu;
+const RadioButton = imports.ui.radioButton;
 const Settings = imports.ui.settings;
 const Mainloop = imports.mainloop;
 const Util = imports.misc.util;
@@ -26,6 +27,7 @@ const MAX_WARNING_CHARS = 70;
 const ACCOUNTS_SCHEMA = 2;
 const DEFAULT_ACCOUNT_ID = 'default';
 const KIND_OPENCODE_DB = 'opencode-db';
+const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const WINDOWS = [
@@ -240,12 +242,12 @@ function parseAccountList(text) {
     return {accounts, active};
 }
 
-function accountFormError(accountId, key) {
+function accountFormError(accountId, key, fromDb = false) {
     if (!accountId)
         return 'Enter an account id.';
     if (!ACCOUNT_ID_RE.test(accountId))
         return 'Invalid account id: use a-z, 0-9, dot, underscore, or dash (max 64).';
-    if (!key)
+    if (!fromDb && !key)
         return 'Enter an API key.';
     return null;
 }
@@ -769,11 +771,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             button.add_style_pseudo_class('insensitive');
     }
 
-    _entryRow(text, entry) {
+    _labeledRow(text, child) {
         const row = new St.BoxLayout({vertical: true, x_expand: true});
         row.add_child(new St.Label({text: text}));
-        entry.x_expand = true;
-        row.add_child(entry);
+        child.x_expand = true;
+        row.add_child(child);
         return row;
     }
 
@@ -792,19 +794,33 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             closed = true;
         });
 
-        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+        const content = new Dialog.MessageDialogContent({
             title: 'Add / replace account key',
             description: 'API-key accounts from the OpenCode console. The key is sent to '
                 + 'the ocgo CLI and is never stored by the applet.',
-        }));
+        });
+        dialog.contentLayout.add_child(content);
 
         const idEntry = new St.Entry({hint_text: 'e.g. work', x_expand: true});
         const labelEntry = new St.Entry({hint_text: 'optional', x_expand: true});
         const keyEntry = new St.Entry({hint_text: 'oc_sk_…', x_expand: true});
         keyEntry.clutter_text.set_password_char('\u25cf');
-        dialog.contentLayout.add_child(this._entryRow('Account id', idEntry));
-        dialog.contentLayout.add_child(this._entryRow('Label (optional)', labelEntry));
-        dialog.contentLayout.add_child(this._entryRow('API key', keyEntry));
+
+        // The OpenCode login is singular: once one is registered, the add flow
+        // only offers API keys. Otherwise the login is the default choice.
+        const hasLogin = this._accounts.some(
+            account => account.kind === KIND_OPENCODE_DB);
+        const typeChooser = new RadioButton.RadioButtonGroup();
+        if (!hasLogin)
+            typeChooser.addButton(KIND_OPENCODE_DB, 'OpenCode login');
+        typeChooser.addButton(KIND_API_KEY, 'API key');
+        typeChooser.setActive(hasLogin ? KIND_API_KEY : KIND_OPENCODE_DB);
+
+        dialog.contentLayout.add_child(this._labeledRow('Account id', idEntry));
+        dialog.contentLayout.add_child(this._labeledRow('Label (optional)', labelEntry));
+        dialog.contentLayout.add_child(this._labeledRow('Type', typeChooser.actor));
+        const keyRow = this._labeledRow('API key', keyEntry);
+        dialog.contentLayout.add_child(keyRow);
 
         const status = this._statusLabel();
         dialog.contentLayout.add_child(status);
@@ -817,24 +833,38 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }
         });
 
+        const selectedType = () => typeChooser.getActive();
+
         const submit = () => {
             const accountId = idEntry.get_text().trim();
             const label = labelEntry.get_text().trim();
-            const key = keyEntry.get_text();
-            const error = accountFormError(accountId, key);
+            const fromDb = selectedType() === KIND_OPENCODE_DB;
+            const key = fromDb ? '' : keyEntry.get_text();
+            const error = accountFormError(accountId, key, fromDb);
             if (error) {
                 status.set_text(error);
                 return;
             }
-            const command = accountCommandFor(accountId, this._accounts);
-            const args = ['account', command, accountId, '--store', 'auto'];
-            if (command === 'add' && label)
-                args.push('--label', label);
+            let args;
+            let pendingText;
+            if (fromDb) {
+                // The CLI registers the local OpenCode login; no key, no stdin.
+                args = ['account', 'add', accountId, '--from-db'];
+                if (label)
+                    args.push('--label', label);
+                pendingText = `Adding the OpenCode login as '${accountId}'…`;
+            } else {
+                const command = accountCommandFor(accountId, this._accounts);
+                args = ['account', command, accountId, '--store', 'auto'];
+                if (command === 'add' && label)
+                    args.push('--label', label);
+                pendingText = command === 'add'
+                    ? `Adding account '${accountId}'…`
+                    : `Replacing the key for '${accountId}'…`;
+            }
             this._setDialogButtonEnabled(confirmInfo.button, false);
-            status.set_text(command === 'add'
-                ? `Adding account '${accountId}'…`
-                : `Replacing the key for '${accountId}'…`);
-            this._runAccountCommand(args, key, (ok, stdout, stderr) => {
+            status.set_text(pendingText);
+            this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
                 if (this._removed)
                     return;
                 if (ok)
@@ -854,7 +884,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     });
                 } else {
                     status.set_text(this._failureMessage(
-                        'could not update the account', stderr, stdout));
+                        fromDb ? 'could not add the OpenCode login account'
+                            : 'could not update the account',
+                        stderr, stdout));
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 }
             });
@@ -873,6 +905,22 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             },
             confirmInfo,
         ]);
+
+        const updateTypeState = () => {
+            const fromDb = selectedType() === KIND_OPENCODE_DB;
+            keyRow.visible = !fromDb;
+            if (fromDb)
+                keyEntry.set_text('');
+            content.title = fromDb ? 'Add account' : 'Add / replace account key';
+            content.description = fromDb
+                ? 'Registers your local OpenCode login. Sign in with OpenCode '
+                    + 'first if there is none.'
+                : 'API-key accounts from the OpenCode console. The key is sent to '
+                    + 'the ocgo CLI and is never stored by the applet.';
+            confirmInfo.button.label = fromDb ? 'Add account' : 'Add / replace key';
+        };
+        typeChooser.connect('radio-changed', () => updateTypeState());
+        updateTypeState();
         dialog.setInitialKeyFocus(idEntry);
         dialog.open();
     }
