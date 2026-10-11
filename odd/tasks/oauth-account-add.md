@@ -33,7 +33,7 @@ Context: the credits feature made the OAuth login the only credential that can r
 ## Tasks
 
 - [x] **T1 — Design + recon** *(route: parent, inline)*: history recovered, DB schema + CLI surface verified, plan approved by the user. Evidence: this doc.
-- [ ] **T2 — Core: `--from-db` + active-credential resolution** *(route: delegated writer — multi-file)*: `accounts.add_account(kind=…)` restored with the one-`opencode-db` invariant; `creds` resolution by `active` (fallback newest `time_updated`); CLI flag + flow + errors; tests.
+- [x] **T2 — Core: `--from-db` + active-credential resolution** *(route: delegated writer — multi-file)*: `accounts.add_account(kind=…)` restored with the one-`opencode-db` invariant; `creds` resolution by `active` (fallback newest `time_updated`); CLI flag + flow + errors; tests. Evidence: commit `7a228ec`; suite 309 → 326 green; checks green (parent re-ran); writer live smoke in an isolated env (fresh → refused because the seeded default occupies the slot; remove default → re-add `--from-db` → registered; second login refused; active row resolved); assess medium (431 lines, slice budget reached — `single-pr` + `size:exception` recorded).
 - [ ] **T3 — Frontends: add-flow kind chooser** *(route: delegated writer — GNOME + Cinnamon parity)*: "OpenCode login" (default when available) / "API key"; key row only for API key; guide when no login; GNOME metadata bump.
 - [ ] **T4 — Verification** *(route: parent + per-action)*: suite, checks, live smoke (remove → re-add `--from-db` → refresh), devkit, user UI confirmation.
 - [ ] **T5 — Docs** *(route: parent)*: README Accounts section, this doc closed.
@@ -55,3 +55,4 @@ Context: the credits feature made the OAuth login the only credential that can r
 ## Progress log
 
 - 2026-10-11 — T1 done: user request + approval; T10 reversal recorded; branch created.
+- 2026-10-11 — T2 done (delegated writer): core `--from-db` + active-credential resolution; suite 309 → 326; isolated live smoke OK; assess medium.
