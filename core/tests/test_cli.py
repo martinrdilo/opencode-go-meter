@@ -1000,10 +1000,16 @@ class AccountSetKeyTests(AccountCliTestCase):
     def test_set_key_converts_a_db_account(self):
         self._isolate()
         self._seed_db_account()
-        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(
+                cli.api, "fetch_zen_status", return_value=zen_payload()
+            ) as fetch,
+        ):
             code, out, err = run_cli(["account", "set-key", "login"])
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
+        fetch.assert_called_once_with(_ZEN_KEY)
         self.assertIn("now uses a stored API key", out)
         self.assertIn("OpenCode login replaced", out)
         self.assertNotIn(_ZEN_KEY, out + err)
@@ -1020,10 +1026,51 @@ class AccountSetKeyTests(AccountCliTestCase):
         self.assertEqual(registry["accounts"][0]["kind"], "api-key")
         self.assertNotIn("credential_id", registry["accounts"][0])
 
+    def test_set_key_conversion_entitlement_warns(self):
+        self._isolate()
+        self._seed_db_account()
+        error = api.ApiEntitlementError(
+            "this account has no active OpenCode Go subscription"
+        )
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", side_effect=error),
+        ):
+            code, out, err = run_cli(["account", "set-key", "login"])
+        self.assertEqual(code, 0)
+        self.assertIn("OpenCode login replaced", out)
+        self.assertIn("no active OpenCode Go subscription", err)
+        self.assertIn("account 'login' converted", err)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual(entries[0].kind, "api-key")
+        self.assertEqual(accounts.read_secret("login"), _ZEN_KEY)
+
+    def test_set_key_conversion_api_error_keeps_the_login(self):
+        self._isolate()
+        self._seed_db_account()
+        error = api.ApiAuthError("the API key was rejected (HTTP 401)")
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_OTHER_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", side_effect=error),
+        ):
+            code, _out, err = run_cli(["account", "set-key", "login"])
+        self.assertEqual(code, 1)
+        self.assertIn("API key was rejected", err)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual(entries[0].kind, "opencode-db")
+        self.assertFalse(accounts.has_secret("login"))
+        registry = accounts.load_registry()
+        self.assertEqual(registry["accounts"][0]["kind"], "opencode-db")
+        self.assertIsNone(registry["accounts"][0]["hint"])
+        self.assertEqual(registry["accounts"][0]["id"], "login")
+
     def test_set_key_conversion_honors_the_file_backend(self):
         self._isolate()
         self._seed_db_account()
-        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+        ):
             code, _out, _err = run_cli(
                 ["account", "set-key", "login", "--store", "file"]
             )
@@ -1036,10 +1083,14 @@ class AccountSetKeyTests(AccountCliTestCase):
     def test_set_key_conversion_requires_a_key(self):
         self._isolate()
         self._seed_db_account()
-        with mock.patch.object(cli, "_read_api_key", return_value="   "):
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value="   "),
+            mock.patch.object(cli.api, "fetch_zen_status") as fetch,
+        ):
             code, _out, err = run_cli(["account", "set-key", "login"])
         self.assertEqual(code, 1)
         self.assertIn("no API key provided", err)
+        fetch.assert_not_called()
         entries, _active = accounts.list_accounts()
         self.assertEqual(entries[0].kind, "opencode-db")
         self.assertFalse(accounts.has_secret("login"))
@@ -1052,7 +1103,10 @@ class AccountSetKeyTests(AccountCliTestCase):
         code, _out, err = run_cli(["account", "add", "x2", "--from-db"])
         self.assertEqual(code, 1)
         self.assertIn("an OpenCode login account already exists: 'login'", err)
-        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+        ):
             code, _out, _err = run_cli(["account", "set-key", "login"])
         self.assertEqual(code, 0)
         code, out, err = run_cli(["account", "add", "x2", "--from-db"])
@@ -1066,7 +1120,10 @@ class AccountSetKeyTests(AccountCliTestCase):
         accounts.add_account(
             "pin", "Pin", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-42"
         )
-        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+        ):
             code, out, err = run_cli(["account", "set-key", "pin"])
         self.assertEqual(code, 0)
         self.assertEqual(err, "")

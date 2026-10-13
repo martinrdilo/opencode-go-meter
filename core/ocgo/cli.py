@@ -432,19 +432,6 @@ def cmd_account_set_key(args: argparse.Namespace) -> int:
     key = _read_api_key().strip()
     if not key:
         return _fail("no API key provided")
-
-    if account.kind == accounts.KIND_OPENCODE_DB:
-        try:
-            hint = accounts.store_secret(account_id, key, backend=args.store)
-            accounts.convert_to_api_key(account_id, hint)
-        except accounts.AccountError as exc:
-            return _fail(exc)
-        print(
-            f"Account '{account_id}' now uses a stored API key "
-            f"({hint}; OpenCode login replaced)."
-        )
-        return 0
-
     no_subscription = False
     try:
         api.fetch_zen_status(key)
@@ -453,11 +440,30 @@ def cmd_account_set_key(args: argparse.Namespace) -> int:
     except api.ApiError as exc:
         return _fail(exc)
 
+    # The UI routes existing ids here: an opencode-db account is converted to
+    # an api-key account in place, every other account is a key replacement.
+    converting = account.kind == accounts.KIND_OPENCODE_DB
     try:
         hint = accounts.store_secret(account_id, key, backend=args.store)
-        accounts.update_hint(account_id, hint)
+        if converting:
+            accounts.convert_to_api_key(account_id, hint)
+        else:
+            accounts.update_hint(account_id, hint)
     except accounts.AccountError as exc:
         return _fail(exc)
+
+    if converting:
+        print(
+            f"Account '{account_id}' now uses a stored API key "
+            f"({hint}; OpenCode login replaced)."
+        )
+        if no_subscription:
+            print(
+                f"ocgo: account '{account_id}' converted, but this account "
+                "has no active OpenCode Go subscription",
+                file=sys.stderr,
+            )
+        return 0
 
     print(f"Updated key for account '{account_id}' ({hint})")
     if no_subscription:
