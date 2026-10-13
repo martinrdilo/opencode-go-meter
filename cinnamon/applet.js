@@ -12,7 +12,6 @@ const Util = imports.misc.util;
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
-const GObject = imports.gi.GObject;
 const Pango = imports.gi.Pango;
 const St = imports.gi.St;
 
@@ -60,40 +59,49 @@ function logError(message, error) {
 // Cinnamon 6.4 added imports.ui.dialog (MessageDialogContent); Cinnamon 5.4
 // (Linux Mint 21) has no such module. This local replacement mirrors the 6.4
 // component: same style classes and the same title/description accessors.
-const MessageContent = GObject.registerClass(
-class MessageContent extends St.BoxLayout {
-    _init(params = {}) {
-        super._init({
-            style_class: 'message-dialog-content',
-            vertical: true,
-            x_expand: true,
-        });
-        this._titleLabel = new St.Label({style_class: 'message-dialog-title'});
-        this._descriptionLabel = new St.Label({style_class: 'message-dialog-description'});
-        this._descriptionLabel.clutter_text.line_wrap = true;
-        this._descriptionLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-        this.add_child(this._titleLabel);
-        this.add_child(this._descriptionLabel);
-        this.title = params.title || '';
-        this.description = params.description || '';
-    }
+// The extra 'confirm-dialog-title'/'run-dialog-description' classes are what
+// the 5.4 theme styles (the message-dialog-* ones exist only from 6.4).
+//
+// A factory, not a GObject subclass: re-importing applet.js (ReloadXlet) must
+// not re-register a GObject type name — 'Type name ... is already registered'
+// fails the import and kills the reload — so the component is a plain box
+// with title/description accessor properties.
+function MessageContent(params = {}) {
+    const content = new St.BoxLayout({
+        style_class: 'message-dialog-content',
+        vertical: true,
+        x_expand: true,
+    });
+    const titleLabel = new St.Label({style_class: 'message-dialog-title'});
+    titleLabel.add_style_class_name('confirm-dialog-title');
+    const descriptionLabel = new St.Label({style_class: 'message-dialog-description'});
+    descriptionLabel.add_style_class_name('run-dialog-description');
+    descriptionLabel.clutter_text.line_wrap = true;
+    descriptionLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+    content.add_child(titleLabel);
+    content.add_child(descriptionLabel);
 
-    get title() {
-        return this._titleLabel.text;
-    }
-
-    set title(value) {
-        this._titleLabel.set_text(value || '');
-    }
-
-    get description() {
-        return this._descriptionLabel.text;
-    }
-
-    set description(value) {
-        this._descriptionLabel.set_text(value || '');
-    }
-});
+    let titleText = '';
+    let descriptionText = '';
+    Object.defineProperty(content, 'title', {
+        get: () => titleText,
+        set: value => {
+            titleText = value || '';
+            titleLabel.set_text(titleText);
+        },
+    });
+    Object.defineProperty(content, 'description', {
+        get: () => descriptionText,
+        set: value => {
+            descriptionText = value || '';
+            descriptionLabel.set_text(descriptionText);
+        },
+    });
+    // Seed the accessors from the parameters, like the 6.4 component does.
+    content.title = params.title || '';
+    content.description = params.description || '';
+    return content;
+}
 
 function parseDate(value) {
     if (typeof value !== 'string' || value.trim() === '')
@@ -150,6 +158,14 @@ function truncate(text, max) {
 
 function escapeMarkup(text) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// StBoxLayout has no 'spacing' property on Cinnamon 5.4 or 6.4 (5.4 reads it
+// from the CSS 'spacing' property, 6.4 keeps it on the layout manager), so
+// spacing is set through the inner Clutter.BoxLayout.
+function setBoxSpacing(box, spacing) {
+    if (box.layout_manager instanceof Clutter.BoxLayout)
+        box.layout_manager.spacing = spacing;
 }
 
 function expandHome(path) {
@@ -409,28 +425,37 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     on_applet_removed_from_panel(deleteConfig) {
-        this._removed = true;
-        if (this.settings) {
-            this.settings.finalize();
-            this.settings = null;
+        // Defense in depth over the applet manager's own try/catch: the field
+        // report showed a hard Cinnamon crash around removal, so a teardown
+        // error must never escape this handler.
+        try {
+            this._removed = true;
+            if (this.settings) {
+                this.settings.finalize();
+                this.settings = null;
+            }
+            if (this._refreshTimerId) {
+                Mainloop.source_remove(this._refreshTimerId);
+                this._refreshTimerId = 0;
+            }
+            if (this._tickTimerId) {
+                Mainloop.source_remove(this._tickTimerId);
+                this._tickTimerId = 0;
+            }
+            if (this.menu) {
+                this.menu.destroy();
+                this.menu = null;
+            }
+            if (this._accountsDialog) {
+                this._accountsDialog.destroy();
+                this._accountsDialog = null;
+            }
+            if (this.menuManager && typeof this.menuManager.destroy === 'function')
+                this.menuManager.destroy();
+            this.menuManager = null;
+        } catch (error) {
+            logError('teardown failed', error);
         }
-        if (this._refreshTimerId) {
-            Mainloop.source_remove(this._refreshTimerId);
-            this._refreshTimerId = 0;
-        }
-        if (this._tickTimerId) {
-            Mainloop.source_remove(this._tickTimerId);
-            this._tickTimerId = 0;
-        }
-        if (this.menu) {
-            this.menu.destroy();
-            this.menu = null;
-        }
-        if (this._accountsDialog) {
-            this._accountsDialog.destroy();
-            this._accountsDialog = null;
-        }
-        this.menuManager = null;
     }
 
     // -- rendering -----------------------------------------------------------
@@ -1008,6 +1033,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     _openAccountsDialog() {
         const dialog = new ModalDialog.ModalDialog();
+        // Uniform breathing room between the dialog's rows on both themes
+        // (5.4's modal-dialog-content-box sets no spacing).
+        setBoxSpacing(dialog.contentLayout, 6);
         this._accountsDialog = dialog;
         dialog.connect('destroy', () => {
             if (this._accountsDialog === dialog)
@@ -1035,9 +1063,19 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _statusLabel() {
-        const label = new St.Label({text: ''});
+        const label = new St.Label({text: '', style_class: 'run-dialog-description'});
         label.clutter_text.line_wrap = true;
         return label;
+    }
+
+    // Status line shared by the account dialogs: neutral/pending text plain,
+    // failure text in the theme's error color (styled on 5.4 and 6.4).
+    _setStatus(label, text, failed) {
+        label.set_text(text);
+        if (failed)
+            label.add_style_class_name('error');
+        else
+            label.remove_style_class_name('error');
     }
 
     on_accounts_apply() {
@@ -1056,6 +1094,95 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
         dialog.contentLayout.add_child(content);
 
+        // First-run affordance: with no discovered OpenCode login (or an
+        // unreadable credential store) the "OpenCode login" type can only
+        // dead-end, so the browser login path is offered up front.
+        const noCredentials = (this._credentials || []).length === 0;
+        if (noCredentials || this._credentialsError) {
+            const helper = new St.BoxLayout({vertical: true, x_expand: true});
+            setBoxSpacing(helper, 4);
+            const helperLabel = new St.Label({
+                text: this._credentialsError
+                    ? 'Could not read the OpenCode credential store. '
+                        + truncate(this._credentialsError, MAX_WARNING_CHARS)
+                    : 'No OpenCode login found on this machine.',
+            });
+            helperLabel.clutter_text.line_wrap = true;
+            helperLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            helper.add_child(helperLabel);
+
+            // Both button classes: 'modal-dialog-button' styles on Cinnamon
+            // 5.4 themes, 'dialog-button' on 6.4 themes.
+            const helperButtons = new St.BoxLayout();
+            setBoxSpacing(helperButtons, 6);
+            // Offered whenever no credentials were discovered, including when
+            // the store itself could not be read: "opencode auth login" is
+            // what creates (or repairs) it.
+            if (noCredentials) {
+                const loginButton = new St.Button({
+                    style_class: 'modal-dialog-button dialog-button',
+                    label: 'Log in with OpenCode…',
+                    reactive: true,
+                    can_focus: true,
+                });
+                loginButton.connect('clicked', () => {
+                    try {
+                        const script = GLib.build_filenamev(
+                            [GLib.get_tmp_dir(), 'ocgo-opencode-login.sh']);
+                        GLib.file_set_contents(script, '#!/bin/sh\nopencode auth login\nprintf "\\nLogin finished — you can close this window.\\n"\nread -r _\n');
+                        GLib.chmod(script, 0o755);
+                        if (!Util.spawn(['x-terminal-emulator', '-e', script]))
+                            throw new Error('x-terminal-emulator could not be started');
+                        this._setStatus(status, 'Terminal opened — complete the login in ' +
+                            'your browser, then press Refresh.', false);
+                    } catch (error) {
+                        logError('could not open the login terminal', error);
+                        this._setStatus(status, 'Could not open a terminal — run this ' +
+                            'command: opencode auth login', true);
+                    }
+                });
+                helperButtons.add_child(loginButton);
+            }
+
+            const refreshButton = new St.Button({
+                style_class: 'modal-dialog-button dialog-button',
+                label: 'Refresh',
+                reactive: true,
+                can_focus: true,
+            });
+            refreshButton.connect('clicked', () => {
+                this._setStatus(status, 'Reloading accounts and credentials…', false);
+                this._loadAccounts(() => {
+                    if (this._removed)
+                        return;
+                    // The refresh updates this dialog in place: a
+                    // destroy-and-recreate cycle proved fragile while this was
+                    // developed and the root cause is not settled, so the open
+                    // dialog is reused instead of torn down.
+                    populateCredentialChoices();
+                    if (this._credentialsError) {
+                        helper.visible = true;
+                        helperLabel.set_text('Could not read the OpenCode credential store. '
+                            + truncate(this._credentialsError, MAX_WARNING_CHARS));
+                        this._setStatus(status,
+                            'Could not reload the OpenCode credential store.', true);
+                    } else if ((this._credentials || []).length === 0) {
+                        helper.visible = true;
+                        helperLabel.set_text('No OpenCode login found on this machine.');
+                        this._setStatus(status,
+                            'Still no OpenCode login found on this machine.', false);
+                    } else {
+                        helper.visible = false;
+                        this._setStatus(status, 'Credentials reloaded.', false);
+                    }
+                });
+            });
+            helperButtons.add_child(refreshButton);
+
+            helper.add_child(helperButtons);
+            dialog.contentLayout.add_child(helper);
+        }
+
         const idEntry = new St.Entry({hint_text: 'e.g. work', x_expand: true});
         const labelEntry = new St.Entry({hint_text: 'optional', x_expand: true});
         const keyEntry = new St.Entry({hint_text: 'oc_sk_…', x_expand: true});
@@ -1071,7 +1198,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (allowLogin)
             typeChooser.addButton(KIND_OPENCODE_DB, 'OpenCode login');
         typeChooser.addButton(KIND_API_KEY, 'API key');
-        typeChooser.setActive(allowLogin ? KIND_OPENCODE_DB : KIND_API_KEY);
+        // With no discovered credential to bind, default to the API key so
+        // the first submit can succeed instead of dead-ending on --from-db.
+        typeChooser.setActive(allowLogin && !noCredentials ? KIND_OPENCODE_DB : KIND_API_KEY);
 
         dialog.contentLayout.add_child(this._labeledRow('Account id', idEntry));
         dialog.contentLayout.add_child(this._labeledRow('Label (optional)', labelEntry));
@@ -1079,35 +1208,53 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         // Credential combo: a themed button opening a popup menu (the
         // in-process Cinnamon combo pattern; modal dialogs can host popups).
+        // Both button classes: 'dialog-button' styles inside the 6.4 dialog,
+        // 'modal-dialog-button' is the 5.4 theme's dialog button. The text is
+        // St.Button's own label — the theme styles it with the button; a plain
+        // child St.Label inherits no color and renders invisible on 6.4.
         let selectedCredential = choices.length > 0 ? choices[0] : null;
         const combo = new St.Button({
-            style_class: 'dialog-button',
+            style_class: 'dialog-button modal-dialog-button',
             reactive: true,
             can_focus: true,
             x_expand: true,
+            label: selectedCredential ? selectedCredential.label : 'No credentials found',
         });
-        const comboLabel = new St.Label({
-            text: selectedCredential ? selectedCredential.label : 'No credentials found',
-        });
-        combo.add_child(comboLabel);
         const credentialMenu = new PopupMenu.PopupMenu(combo, St.Side.TOP);
         const menuManager = new PopupMenu.PopupMenuManager({actor: combo});
         Main.uiGroup.add_actor(credentialMenu.actor);
         credentialMenu.actor.hide();
         menuManager.addMenu(credentialMenu);
         combo.connect('clicked', () => credentialMenu.toggle());
-        for (const choice of choices) {
-            const item = new PopupMenu.PopupMenuItem(choice.label);
-            item.connect('activate', () => {
-                selectedCredential = choice;
-                comboLabel.set_text(choice.label);
-            });
-            credentialMenu.addMenuItem(item);
-        }
+        // (Re)builds the combo entries from the discovered credentials; the
+        // Refresh button calls it again after a terminal login.
+        const populateCredentialChoices = () => {
+            const fresh = this._credentialChoices();
+            credentialMenu.removeAll();
+            for (const choice of fresh) {
+                const item = new PopupMenu.PopupMenuItem(choice.label);
+                item.connect('activate', () => {
+                    selectedCredential = choice;
+                    combo.label = choice.label;
+                });
+                credentialMenu.addMenuItem(item);
+            }
+            if (!fresh.some(choice => selectedCredential &&
+                    choice.credentialId === selectedCredential.credentialId))
+                selectedCredential = fresh.length > 0 ? fresh[0] : null;
+            combo.label = selectedCredential
+                ? selectedCredential.label
+                : 'No credentials found';
+        };
+        populateCredentialChoices();
         const credentialRow = this._labeledRow('Credential', combo);
         credentialRow.visible = false;
         dialog.contentLayout.add_child(credentialRow);
         dialog.connect('destroy', () => {
+            // Guarded like the applet's own menu manager: 5.4 and 6.4 both
+            // expose destroy(), but never trust the class shape here.
+            if (menuManager && typeof menuManager.destroy === 'function')
+                menuManager.destroy();
             credentialMenu.close(false);
             credentialMenu.destroy();
         });
@@ -1135,7 +1282,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             const key = fromDb ? '' : keyEntry.get_text();
             const error = accountFormError(accountId, key, fromDb);
             if (error) {
-                status.set_text(error);
+                this._setStatus(status, error, true);
                 return;
             }
             let args;
@@ -1145,7 +1292,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // Without --credential the account follows the active
                 // OpenCode credential (the auto entry).
                 if (!selectedCredential) {
-                    status.set_text('No OpenCode credentials are available to add.');
+                    this._setStatus(status,
+                        'No OpenCode credentials are available to add.', true);
                     return;
                 }
                 args = ['account', 'add', accountId, '--from-db'];
@@ -1164,7 +1312,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     : `Replacing the key for '${accountId}'…`;
             }
             this._setDialogButtonEnabled(confirmInfo.button, false);
-            status.set_text(pendingText);
+            this._setStatus(status, pendingText, false);
             this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
                 if (this._removed)
                     return;
@@ -1176,7 +1324,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 keyEntry.set_text('');
                 if (ok) {
                     const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join(' ');
-                    status.set_text(summary || `Account '${accountId}' updated.`);
+                    this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
                     closeTimerId = Mainloop.timeout_add(1200, () => {
                         closeTimerId = 0;
                         if (this._accountsDialog === dialog)
@@ -1184,10 +1332,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         return false;
                     });
                 } else {
-                    status.set_text(this._failureMessage(
+                    this._setStatus(status, this._failureMessage(
                         fromDb ? 'could not add the OpenCode login account'
                             : 'could not update the account',
-                        stderr, stdout));
+                        stderr, stdout), true);
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 }
             });
@@ -1253,7 +1401,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             label: 'Remove',
             action: () => {
                 this._setDialogButtonEnabled(confirmInfo.button, false);
-                status.set_text('Removing…');
+                this._setStatus(status, 'Removing…', false);
                 this._runAccountCommand(['account', 'remove', account.id], null, (ok, stdout, stderr) => {
                     if (this._removed)
                         return;
@@ -1265,8 +1413,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     }
                     if (closed)
                         return;
-                    status.set_text(this._failureMessage(
-                        'could not remove the account', stderr, stdout));
+                    this._setStatus(status, this._failureMessage(
+                        'could not remove the account', stderr, stdout), true);
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 });
             },
@@ -1284,16 +1432,43 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     // Settings-dialog entry point for "Make active in OpenCode…". Mirrors the
-    // Remove button's handling: one accounts dialog at a time, silent no-op
-    // when the selected account is not a pinned login, then the shared
-    // confirmation flow (same as the popup submenu item).
+    // Remove button's handling: one accounts dialog at a time; a pinned login
+    // goes to the shared confirmation flow (same as the popup submenu item),
+    // anything else gets an explainer instead of a silent no-op.
     on_accounts_activate() {
         if (this._accountsDialog)
             return;
         const account = this._selectedComboAccount();
-        if (!this._isPinnedLogin(account))
+        if (!this._isPinnedLogin(account)) {
+            this._openActivateExplainer(account);
             return;
+        }
         this._confirmActivateInOpencode(account);
+    }
+
+    // Explains "Make active in OpenCode…" when it does not apply: only a
+    // pinned OpenCode login can become the credential OpenCode itself uses.
+    _openActivateExplainer(account) {
+        const dialog = this._openAccountsDialog();
+        const lead = account
+            ? `The selected account '${account.label}' is not a pinned OpenCode login. `
+            : 'No account is selected above. ';
+        dialog.contentLayout.add_child(new MessageContent({
+            title: 'Make active in OpenCode',
+            description: lead
+                + 'This action makes a pinned OpenCode login the credential OpenCode '
+                + 'itself uses for new sessions. It needs a pinned login — add one with '
+                + '"Add / replace key…" (type "OpenCode login", pick a specific credential).',
+        }));
+        dialog.setButtons([
+            {
+                label: 'OK',
+                action: () => dialog.close(),
+                key: Clutter.KEY_Escape,
+                default: true,
+            },
+        ]);
+        dialog.open();
     }
 
     _confirmActivateInOpencode(account) {
@@ -1325,7 +1500,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             label: 'Make active',
             action: () => {
                 this._setDialogButtonEnabled(confirmInfo.button, false);
-                status.set_text('Switching the active OpenCode credential…');
+                this._setStatus(status, 'Switching the active OpenCode credential…', false);
                 this._runAccountCommand(
                     ['account', 'activate-in-opencode', account.id], null,
                     (ok, stdout, stderr) => {
@@ -1338,8 +1513,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         if (ok) {
                             const summary = [stdout.trim(), stderr.trim()]
                                 .filter(Boolean).join(' ');
-                            status.set_text(summary ||
-                                `Account '${account.id}' is now active in OpenCode.`);
+                            this._setStatus(status, summary ||
+                                `Account '${account.id}' is now active in OpenCode.`, false);
                             closeTimerId = Mainloop.timeout_add(1200, () => {
                                 closeTimerId = 0;
                                 if (this._accountsDialog === dialog)
@@ -1348,9 +1523,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                             });
                             return;
                         }
-                        status.set_text(this._failureMessage(
+                        this._setStatus(status, this._failureMessage(
                             'could not make the account active in OpenCode',
-                            stderr, stdout));
+                            stderr, stdout), true);
                         this._setDialogButtonEnabled(confirmInfo.button, true);
                     });
             },
@@ -1368,7 +1543,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _failureMessage(fallback, stderr, stdout) {
-        return (stderr || stdout || '').trim() || fallback;
+        let detail = (stderr || stdout || '').trim();
+        // The raw NO_CREDENTIAL stderr assumes a terminal user; point at the
+        // dialog's own affordances instead.
+        if (detail.includes('No OpenCode credential found')) {
+            detail = 'No OpenCode login found on this machine — use '
+                + '"Log in with OpenCode…" or switch the type to API key.';
+        }
+        return detail || fallback;
     }
 
     _runAccountCommand(args, stdinText, callback) {
