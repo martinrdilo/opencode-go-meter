@@ -52,16 +52,19 @@ ALLOWED_UI_MODULES = frozenset(
     {"applet", "main", "modalDialog", "popupMenu", "radioButton", "settings"}
 )
 ALLOWED_MISC_MODULES = frozenset({"util"})
+ALLOWED_ROOT_MODULES = frozenset({"mainloop"})
 
 # Anchored to the 'const X = imports.<module>;' declaration so module names
-# mentioned in comments are not matched.
+# mentioned in comments are not matched. The guard is deliberately
+# declaration-syntax only: `let`, destructuring patterns, inline uses and a
+# missing semicolon are not caught (the applet uses the const form uniformly).
 IMPORT_DECL_RE = re.compile(r"^\s*const\s+\w+\s*=\s*imports\.([\w.]+)\s*;", re.MULTILINE)
 
 
 def _allowed_import(module: str) -> bool:
     parts = module.split(".")
-    if module == "mainloop":
-        return True
+    if len(parts) == 1:
+        return module in ALLOWED_ROOT_MODULES
     if len(parts) == 2 and parts[0] == "gi":
         return True
     if len(parts) == 2 and parts[0] == "ui":
@@ -131,8 +134,8 @@ def main() -> int:
         return fail(
             f"cinnamon/applet.js imports 'imports.{module}', which is not in "
             "the Cinnamon 5.4 allowlist; verify it exists in the oldest "
-            "supported Cinnamon release, then add it to ALLOWED_UI_MODULES "
-            "or ALLOWED_MISC_MODULES in this script"
+            "supported Cinnamon release, then add it to ALLOWED_UI_MODULES, "
+            "ALLOWED_MISC_MODULES or ALLOWED_ROOT_MODULES in this script"
         )
 
     print(f"ok: cinnamon applet checks passed ({uuid})")
