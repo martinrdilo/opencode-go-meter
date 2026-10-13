@@ -152,6 +152,14 @@ function escapeMarkup(text) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// StBoxLayout has no 'spacing' property on Cinnamon 5.4 or 6.4 (5.4 reads it
+// from the CSS 'spacing' property, 6.4 keeps it on the layout manager), so
+// spacing is set through the inner Clutter.BoxLayout.
+function setBoxSpacing(box, spacing) {
+    if (box.layout_manager instanceof Clutter.BoxLayout)
+        box.layout_manager.spacing = spacing;
+}
+
 function expandHome(path) {
     if (path === '~')
         return GLib.get_home_dir();
@@ -1056,6 +1064,91 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
         dialog.contentLayout.add_child(content);
 
+        // First-run affordance: with no discovered OpenCode login (or an
+        // unreadable credential store) the "OpenCode login" type can only
+        // dead-end, so the browser login path is offered up front.
+        const noCredentials = (this._credentials || []).length === 0;
+        if (noCredentials || this._credentialsError) {
+            const helper = new St.BoxLayout({vertical: true, x_expand: true});
+            setBoxSpacing(helper, 4);
+            const helperLabel = new St.Label({
+                text: this._credentialsError
+                    ? 'Could not read the OpenCode credential store. '
+                        + truncate(this._credentialsError, MAX_WARNING_CHARS)
+                    : 'No OpenCode login found on this machine.',
+            });
+            helperLabel.clutter_text.line_wrap = true;
+            helperLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            helper.add_child(helperLabel);
+
+            // Both button classes: 'modal-dialog-button' styles on Cinnamon
+            // 5.4 themes, 'dialog-button' on 6.4 themes.
+            const helperButtons = new St.BoxLayout();
+            setBoxSpacing(helperButtons, 6);
+            if (!this._credentialsError) {
+                const loginButton = new St.Button({
+                    style_class: 'modal-dialog-button dialog-button',
+                    label: 'Log in with OpenCode…',
+                    reactive: true,
+                    can_focus: true,
+                });
+                loginButton.connect('clicked', () => {
+                    try {
+                        const script = GLib.build_filenamev(
+                            [GLib.get_tmp_dir(), 'ocgo-opencode-login.sh']);
+                        GLib.file_set_contents(script, '#!/bin/sh\nopencode auth login\nprintf "\\nLogin finished — you can close this window.\\n"\nread -r _\n');
+                        GLib.chmod(script, 0o755);
+                        if (!Util.spawn(['x-terminal-emulator', '-e', script]))
+                            throw new Error('x-terminal-emulator could not be started');
+                        status.set_text('Terminal opened — complete the login in your ' +
+                            'browser, then press Refresh.');
+                    } catch (error) {
+                        logError('could not open the login terminal', error);
+                        status.set_text('Could not open a terminal — run this command: ' +
+                            'opencode auth login');
+                    }
+                });
+                helperButtons.add_child(loginButton);
+            }
+
+            const refreshButton = new St.Button({
+                style_class: 'modal-dialog-button dialog-button',
+                label: 'Refresh',
+                reactive: true,
+                can_focus: true,
+            });
+            refreshButton.connect('clicked', () => {
+                status.set_text('Reloading accounts and credentials…');
+                this._loadAccounts(() => {
+                    if (this._removed)
+                        return;
+                    // The refresh updates this dialog in place: destroying it
+                    // (or letting it be collected after a close) aborts
+                    // Cinnamon with a clutter_actor_dispose assertion when the
+                    // dialog holds focusable children, so it is never torn
+                    // down while the applet lives.
+                    populateCredentialChoices();
+                    if (this._credentialsError) {
+                        helper.visible = true;
+                        helperLabel.set_text('Could not read the OpenCode credential store. '
+                            + truncate(this._credentialsError, MAX_WARNING_CHARS));
+                        status.set_text('Could not reload the OpenCode credential store.');
+                    } else if ((this._credentials || []).length === 0) {
+                        helper.visible = true;
+                        helperLabel.set_text('No OpenCode login found on this machine.');
+                        status.set_text('Still no OpenCode login found on this machine.');
+                    } else {
+                        helper.visible = false;
+                        status.set_text('Credentials reloaded.');
+                    }
+                });
+            });
+            helperButtons.add_child(refreshButton);
+
+            helper.add_child(helperButtons);
+            dialog.contentLayout.add_child(helper);
+        }
+
         const idEntry = new St.Entry({hint_text: 'e.g. work', x_expand: true});
         const labelEntry = new St.Entry({hint_text: 'optional', x_expand: true});
         const keyEntry = new St.Entry({hint_text: 'oc_sk_…', x_expand: true});
@@ -1071,7 +1164,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (allowLogin)
             typeChooser.addButton(KIND_OPENCODE_DB, 'OpenCode login');
         typeChooser.addButton(KIND_API_KEY, 'API key');
-        typeChooser.setActive(allowLogin ? KIND_OPENCODE_DB : KIND_API_KEY);
+        // With no discovered credential to bind, default to the API key so
+        // the first submit can succeed instead of dead-ending on --from-db.
+        typeChooser.setActive(allowLogin && !noCredentials ? KIND_OPENCODE_DB : KIND_API_KEY);
 
         dialog.contentLayout.add_child(this._labeledRow('Account id', idEntry));
         dialog.contentLayout.add_child(this._labeledRow('Label (optional)', labelEntry));
@@ -1096,14 +1191,27 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         credentialMenu.actor.hide();
         menuManager.addMenu(credentialMenu);
         combo.connect('clicked', () => credentialMenu.toggle());
-        for (const choice of choices) {
-            const item = new PopupMenu.PopupMenuItem(choice.label);
-            item.connect('activate', () => {
-                selectedCredential = choice;
-                comboLabel.set_text(choice.label);
-            });
-            credentialMenu.addMenuItem(item);
-        }
+        // (Re)builds the combo entries from the discovered credentials; the
+        // Refresh button calls it again after a terminal login.
+        const populateCredentialChoices = () => {
+            const fresh = this._credentialChoices();
+            credentialMenu.removeAll();
+            for (const choice of fresh) {
+                const item = new PopupMenu.PopupMenuItem(choice.label);
+                item.connect('activate', () => {
+                    selectedCredential = choice;
+                    comboLabel.set_text(choice.label);
+                });
+                credentialMenu.addMenuItem(item);
+            }
+            if (!fresh.some(choice => selectedCredential &&
+                    choice.credentialId === selectedCredential.credentialId))
+                selectedCredential = fresh.length > 0 ? fresh[0] : null;
+            comboLabel.set_text(selectedCredential
+                ? selectedCredential.label
+                : 'No credentials found');
+        };
+        populateCredentialChoices();
         const credentialRow = this._labeledRow('Credential', combo);
         credentialRow.visible = false;
         dialog.contentLayout.add_child(credentialRow);
@@ -1368,7 +1476,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _failureMessage(fallback, stderr, stdout) {
-        return (stderr || stdout || '').trim() || fallback;
+        let detail = (stderr || stdout || '').trim();
+        // The raw NO_CREDENTIAL stderr assumes a terminal user; point at the
+        // dialog's own affordances instead.
+        if (detail.includes('No OpenCode credential found')) {
+            detail = 'No OpenCode login found on this machine — use '
+                + '"Log in with OpenCode…" or switch the type to API key.';
+        }
+        return detail || fallback;
     }
 
     _runAccountCommand(args, stdinText, callback) {
