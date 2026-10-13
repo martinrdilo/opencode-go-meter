@@ -1,8 +1,9 @@
 # Feature: first-run-accounts — fresh install with an API key only
 
-**Status**: T1–T5 done — T6 in progress (PR #3)
+**Status**: Complete — T1–T6 done; PR #3 open (merge is the user's call)
 **Repo**: `opencode-go-meter`
-**Branch**: `fix/first-run-accounts` (from `main` @ `574d0f7`)
+**Branch**: `fix/first-run-accounts` (from `main` @ `574d0f7`; tracks `origin`)
+**PR**: https://github.com/martinrdilo/opencode-go-meter/pull/3
 **Created**: 2026-10-13
 
 ## Objective
@@ -136,7 +137,12 @@ discoverability, and messaging.
   Corrections re-checked by the parent (targeted 25-test run OK; diffs
   reviewed). Post-correction suite: **422 OK**; live smoke on a label-less DB
   seeds the default again.
-- [ ] **T6 — PR #3** *(route: parent; branch-pr skill)*.
+- [x] **T6 — PR #3** *(route: parent; branch-pr skill)*. DONE 2026-10-13:
+  pushed `fix/first-run-accounts` (now tracking `origin`) and opened PR #3 —
+  https://github.com/martinrdilo/opencode-go-meter/pull/3 (label `bug`; no
+  linked issue — the repo has no issue-first flow, documented in the PR body).
+  CI (`make test` + `check-gnome`/`check-cinnamon`) runs on it. Merge is the
+  user's call; residuals listed above.
 
 ## Acceptance criteria
 
@@ -186,6 +192,11 @@ exception (precedent: multi-oauth-accounts).
   regression) and independent verifier `verified with findings`; corrections
   `2d679d0` (schema-independent probe) + `6212d81` (secret rollback) →
   **422 OK**. Next: T6 (PR #3).
+- 2026-10-13 — T6 done: PR #3 opened
+  (https://github.com/martinrdilo/opencode-go-meter/pull/3, label `bug`).
+  Residuals: real-key round-trip and GNOME live pass (user-side), discover's
+  `label` dependency (noted). Sandboxes left at
+  `/tmp/opencode/{fra-live,fra-scratch,cinnamon-test}` for inspection.
 
 ---
 
