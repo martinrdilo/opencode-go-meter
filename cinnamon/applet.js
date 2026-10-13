@@ -425,28 +425,37 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     on_applet_removed_from_panel(deleteConfig) {
-        this._removed = true;
-        if (this.settings) {
-            this.settings.finalize();
-            this.settings = null;
+        // Defense in depth over the applet manager's own try/catch: the field
+        // report showed a hard Cinnamon crash around removal, so a teardown
+        // error must never escape this handler.
+        try {
+            this._removed = true;
+            if (this.settings) {
+                this.settings.finalize();
+                this.settings = null;
+            }
+            if (this._refreshTimerId) {
+                Mainloop.source_remove(this._refreshTimerId);
+                this._refreshTimerId = 0;
+            }
+            if (this._tickTimerId) {
+                Mainloop.source_remove(this._tickTimerId);
+                this._tickTimerId = 0;
+            }
+            if (this.menu) {
+                this.menu.destroy();
+                this.menu = null;
+            }
+            if (this._accountsDialog) {
+                this._accountsDialog.destroy();
+                this._accountsDialog = null;
+            }
+            if (this.menuManager && typeof this.menuManager.destroy === 'function')
+                this.menuManager.destroy();
+            this.menuManager = null;
+        } catch (error) {
+            logError('teardown failed', error);
         }
-        if (this._refreshTimerId) {
-            Mainloop.source_remove(this._refreshTimerId);
-            this._refreshTimerId = 0;
-        }
-        if (this._tickTimerId) {
-            Mainloop.source_remove(this._tickTimerId);
-            this._tickTimerId = 0;
-        }
-        if (this.menu) {
-            this.menu.destroy();
-            this.menu = null;
-        }
-        if (this._accountsDialog) {
-            this._accountsDialog.destroy();
-            this._accountsDialog = null;
-        }
-        this.menuManager = null;
     }
 
     // -- rendering -----------------------------------------------------------
@@ -1242,6 +1251,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         credentialRow.visible = false;
         dialog.contentLayout.add_child(credentialRow);
         dialog.connect('destroy', () => {
+            // Guarded like the applet's own menu manager: 5.4 and 6.4 both
+            // expose destroy(), but never trust the class shape here.
+            if (menuManager && typeof menuManager.destroy === 'function')
+                menuManager.destroy();
             credentialMenu.close(false);
             credentialMenu.destroy();
         });
