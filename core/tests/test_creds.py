@@ -44,7 +44,9 @@ def _write_db(path: Path, rows: list[tuple]) -> None:
     connection.close()
 
 
-class CredentialResolutionTests(unittest.TestCase):
+class EnvTestCase(unittest.TestCase):
+    """Temp dir plus an isolated process environment."""
+
     def setUp(self):
         self.tmp = Path(self.enterContext(temp_dir()))
 
@@ -54,6 +56,34 @@ class CredentialResolutionTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+
+def _write_labelled_db(path: Path, rows: list[tuple]) -> None:
+    """Create a labelled credential table mirroring production and insert ``rows``.
+
+    Each row is ``(id, integration_id, label, value, active, time_updated)``.
+    """
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE credential ("
+        "id TEXT PRIMARY KEY, "
+        "integration_id TEXT NOT NULL, "
+        "label TEXT NOT NULL, "
+        "value TEXT NOT NULL, "
+        "active INTEGER NOT NULL DEFAULT 0, "
+        "time_updated INTEGER NOT NULL DEFAULT 0)"
+    )
+    for row in rows:
+        connection.execute(
+            "INSERT INTO credential "
+            "(id, integration_id, label, value, active, time_updated) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            tuple(row),
+        )
+    connection.commit()
+    connection.close()
+
+
+class CredentialResolutionTests(EnvTestCase):
     def test_env_token_wins_over_db(self):
         db = self.tmp / "opencode.db"
         _write_db(db, [("opencode", json.dumps({"access": "db-token-1234567890"}))])
@@ -273,6 +303,321 @@ class CredentialResolutionTests(unittest.TestCase):
         credential = creds.resolve_credential()
         self.assertIsNone(credential.expires_ms)
         self.assertIsNone(credential.expires_at)
+
+
+class PinnedCredentialTests(EnvTestCase):
+    """``resolve_credential(credential_id=...)`` pins the database row."""
+
+    def test_pinned_row_wins_over_active_and_newest(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "aaa-active",
+                    "opencode",
+                    json.dumps({"access": "active-token-1"}),
+                    1,
+                    100,
+                ),
+                (
+                    "zzz-newest",
+                    "opencode",
+                    json.dumps({"access": "newest-token-1"}),
+                    0,
+                    300,
+                ),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential(credential_id="zzz-newest")
+        self.assertEqual(credential.token, "newest-token-1")
+        self.assertEqual(credential.source, "OpenCode local database")
+        # The auto path still follows the active row.
+        self.assertEqual(creds.resolve_credential().token, "active-token-1")
+
+    def test_pinned_row_returns_token_and_expiry(self):
+        expires = int(time.time() * 1000) + 3_600_000
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "cred-pin",
+                    "opencode",
+                    json.dumps({"access": "pinned-token-1234", "expires": expires}),
+                    0,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential(credential_id="cred-pin")
+        self.assertEqual(credential.token, "pinned-token-1234")
+        self.assertEqual(credential.expires_ms, expires)
+        self.assertIsNotNone(credential.expires_at)
+
+    def test_pinned_missing_row_is_actionable(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db, [("cred-1", "opencode", json.dumps({"access": "tok-1"}), 0, 100)]
+        )
+        self._env(OCGO_DB=str(db))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(credential_id="ghost")
+        self.assertEqual(
+            str(caught.exception),
+            "The OpenCode credential 'ghost' no longer exists in the local "
+            "database — remove this account or sign in again in OpenCode.",
+        )
+
+    def test_pinned_missing_db_file_is_actionable(self):
+        self._env(OCGO_DB=str(self.tmp / "nope.db"))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(credential_id="ghost")
+        message = str(caught.exception)
+        self.assertIn("ghost", message)
+        self.assertIn("no longer exists", message)
+
+    def test_pinned_malformed_row_is_actionable(self):
+        db = self.tmp / "opencode.db"
+        _write_db(db, [("cred-1", "opencode", "{not json", 0, 100)])
+        self._env(OCGO_DB=str(db))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(credential_id="cred-1")
+        self.assertIn("no longer exists", str(caught.exception))
+
+    def test_expired_pinned_row_uses_expired_message(self):
+        now_ms = int(time.time() * 1000)
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "cred-pin",
+                    "opencode",
+                    json.dumps({"access": "pinned-token-1234", "expires": now_ms - 1}),
+                    0,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(credential_id="cred-pin", now_ms=now_ms)
+        self.assertEqual(str(caught.exception), creds.EXPIRED_MESSAGE)
+
+    def test_env_token_still_wins_when_pinned(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db, [("cred-1", "opencode", json.dumps({"access": "db-token"}), 0, 100)]
+        )
+        self._env(OCGO_TOKEN="env-token", OCGO_DB=str(db))
+        credential = creds.resolve_credential(credential_id="cred-1")
+        self.assertEqual(credential.token, "env-token")
+        self.assertEqual(credential.source, "OCGO_TOKEN environment")
+
+
+class ListDbCredentialsTests(EnvTestCase):
+    """``list_db_credentials`` exposes display metadata only."""
+
+    def test_fields_metadata_and_order(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-new",
+                    "opencode",
+                    "New",
+                    json.dumps(
+                        {
+                            "access": "new-access-token",
+                            "metadata": {"email": "new@example.com", "orgName": "ACME"},
+                        }
+                    ),
+                    1,
+                    200,
+                ),
+                (
+                    "cred-old",
+                    "opencode",
+                    "Old",
+                    json.dumps({"access": "old-access-token"}),
+                    0,
+                    100,
+                ),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credentials = creds.list_db_credentials()
+        self.assertEqual(
+            [credential.id for credential in credentials], ["cred-new", "cred-old"]
+        )
+        self.assertEqual(
+            credentials[0],
+            creds.DbCredential(
+                id="cred-new",
+                label="New",
+                active=True,
+                email="new@example.com",
+                org_name="ACME",
+            ),
+        )
+        self.assertEqual(
+            credentials[1],
+            creds.DbCredential(
+                id="cred-old",
+                label="Old",
+                active=False,
+                email=None,
+                org_name=None,
+            ),
+        )
+
+    def test_malformed_value_still_lists_the_row(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(db, [("cred-1", "opencode", "Default", "{not json", 0, 100)])
+        self._env(OCGO_DB=str(db))
+        credentials = creds.list_db_credentials()
+        self.assertEqual(len(credentials), 1)
+        self.assertEqual(credentials[0].id, "cred-1")
+        self.assertEqual(credentials[0].label, "Default")
+        self.assertFalse(credentials[0].active)
+        self.assertIsNone(credentials[0].email)
+        self.assertIsNone(credentials[0].org_name)
+
+    def test_metadata_members_of_wrong_types_are_none(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-1",
+                    "opencode",
+                    "Default",
+                    json.dumps(
+                        {
+                            "access": "token-value",
+                            "metadata": {"email": 7, "orgName": None},
+                        }
+                    ),
+                    1,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.list_db_credentials()[0]
+        self.assertIsNone(credential.email)
+        self.assertIsNone(credential.org_name)
+
+    def test_non_object_metadata_is_none(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-1",
+                    "opencode",
+                    "Default",
+                    json.dumps({"access": "token-value", "metadata": ["x"]}),
+                    1,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.list_db_credentials()[0]
+        self.assertIsNone(credential.email)
+        self.assertIsNone(credential.org_name)
+
+    def test_no_token_material_in_results(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-1",
+                    "opencode",
+                    "Default",
+                    json.dumps(
+                        {
+                            "access": "secret-access-token",
+                            "refresh": "secret-refresh-token",
+                        }
+                    ),
+                    1,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credentials = creds.list_db_credentials()
+        self.assertEqual(
+            set(creds.DbCredential.__dataclass_fields__),
+            {"id", "label", "active", "email", "org_name"},
+        )
+        rendered = " ".join(repr(credential) for credential in credentials)
+        self.assertNotIn("secret-access-token", rendered)
+        self.assertNotIn("secret-refresh-token", rendered)
+
+    def test_other_integrations_are_excluded(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-google",
+                    "google",
+                    "Google",
+                    json.dumps({"access": "g"}),
+                    1,
+                    300,
+                ),
+                (
+                    "cred-open",
+                    "opencode",
+                    "Open",
+                    json.dumps({"access": "o"}),
+                    1,
+                    200,
+                ),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(
+            [credential.id for credential in creds.list_db_credentials()],
+            ["cred-open"],
+        )
+
+    def test_empty_table_lists_nothing(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(db, [])
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(creds.list_db_credentials(), [])
+
+    def test_missing_db_is_no_credential_message(self):
+        self._env(OCGO_DB=str(self.tmp / "nope.db"))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.list_db_credentials()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_file_that_is_not_sqlite_is_no_credential_message(self):
+        db = self.tmp / "opencode.db"
+        db.write_text("this is not a database", encoding="utf-8")
+        self._env(OCGO_DB=str(db))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.list_db_credentials()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_db_without_the_table_is_no_credential_message(self):
+        db = self.tmp / "opencode.db"
+        sqlite3.connect(db).close()
+        self._env(OCGO_DB=str(db))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.list_db_credentials()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
 
 
 class DefaultPathTests(unittest.TestCase):

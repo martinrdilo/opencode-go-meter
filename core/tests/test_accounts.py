@@ -255,7 +255,7 @@ class RegistryTests(AccountsTestCase):
         base = {"version": 1, "active": "default", "accounts": []}
         cases = {
             "not-object": [1, 2],
-            "bad-version": {**base, "version": 3},
+            "bad-version": {**base, "version": 4},
             "float-version": {**base, "version": 1.0},
             "bool-version": {**base, "version": True},
             "missing-active": {"version": 1, "accounts": []},
@@ -305,6 +305,70 @@ class RegistryTests(AccountsTestCase):
                     {"id": "login", "label": "L", "kind": "opencode-db", "hint": "x"}
                 ],
             },
+            "v1-credential-id": {
+                **base,
+                "accounts": [
+                    {
+                        "id": "work",
+                        "label": "W",
+                        "kind": "api-key",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    }
+                ],
+            },
+            "v2-credential-id": {
+                "version": 2,
+                "active": None,
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "L",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    }
+                ],
+            },
+            "v3-credential-id-on-api-key": {
+                "version": 3,
+                "active": None,
+                "accounts": [
+                    {
+                        "id": "work",
+                        "label": "W",
+                        "kind": "api-key",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    }
+                ],
+            },
+            "v3-credential-id-empty": {
+                "version": 3,
+                "active": None,
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "L",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "",
+                    }
+                ],
+            },
+            "v3-credential-id-int": {
+                "version": 3,
+                "active": None,
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "L",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": 7,
+                    }
+                ],
+            },
         }
         for name, data in cases.items():
             with self.subTest(case=name):
@@ -326,10 +390,10 @@ class RegistryTests(AccountsTestCase):
             accounts.set_active("ghost")
         self.assertIsNone(accounts.load_registry())
 
-    def test_set_active_default_without_registry_materializes_v2(self):
+    def test_set_active_default_without_registry_materializes_registry(self):
         accounts.set_active("default")
         registry = accounts.load_registry()
-        self.assertEqual(registry["version"], 2)
+        self.assertEqual(registry["version"], 3)
         self.assertEqual(registry["active"], "default")
         self.assertEqual(
             [entry["id"] for entry in registry["accounts"]], ["default"]
@@ -359,7 +423,7 @@ class RegistryTests(AccountsTestCase):
     def test_remove_seeded_default_writes_empty_registry(self):
         accounts.remove_account("default")
         registry = accounts.load_registry()
-        self.assertEqual(registry["version"], 2)
+        self.assertEqual(registry["version"], 3)
         self.assertIsNone(registry["active"])
         self.assertEqual(registry["accounts"], [])
         entries, active = accounts.list_accounts()
@@ -412,7 +476,7 @@ class RegistryV2Tests(AccountsTestCase):
         self.assertEqual(entries[0].kind, "opencode-db")
         self.assertEqual(active, "work")
 
-    def test_v1_mutation_writes_v2_with_seeded_default(self):
+    def test_v1_mutation_writes_v3_with_seeded_default(self):
         self.write_registry(
             {
                 "version": 1,
@@ -424,7 +488,7 @@ class RegistryV2Tests(AccountsTestCase):
         )
         accounts.add_account("personal", "Personal")
         registry = accounts.load_registry()
-        self.assertEqual(registry["version"], 2)
+        self.assertEqual(registry["version"], 3)
         self.assertEqual(registry["active"], "work")
         self.assertEqual(
             [entry["id"] for entry in registry["accounts"]],
@@ -681,6 +745,333 @@ class AddAccountKindTests(AccountsTestCase):
         )
         self.assertEqual(account.kind, "api-key")
         self.assertEqual(account.hint, "oc_sk_…abcd")
+
+
+class RegistryV3Tests(AccountsTestCase):
+    """Registry v3: the auto login stays singular, pins bind database rows."""
+
+    def test_v2_registry_loads_the_login_as_auto(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "login",
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "Login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    },
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None},
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["login", "work"])
+        self.assertIsNone(entries[0].credential_id)
+        self.assertIsNone(entries[1].credential_id)
+        self.assertEqual(active, "login")
+
+    def test_v2_read_does_not_rewrite_the_file(self):
+        self.write_registry({"version": 2, "active": None, "accounts": []})
+        accounts.list_accounts()
+        self.assertEqual(accounts.load_registry()["version"], 2)
+
+    def test_v2_mutation_writes_v3(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "login",
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "Login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    }
+                ],
+            }
+        )
+        accounts.add_account("work", "Work")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 3)
+        self.assertEqual(registry["active"], "login")
+        self.assertEqual(
+            [entry["id"] for entry in registry["accounts"]], ["login", "work"]
+        )
+
+    def test_absent_registry_mutation_writes_v3(self):
+        accounts.add_account("work", "Work")
+        self.assertEqual(accounts.load_registry()["version"], 3)
+
+    def test_seeded_default_is_auto(self):
+        entries, _active = accounts.list_accounts()
+        self.assertEqual(entries[0].id, "default")
+        self.assertIsNone(entries[0].credential_id)
+
+    def test_v3_pinned_entry_round_trip(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "login",
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "Login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    }
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual(entries[0].credential_id, "cred-1")
+        self.assertEqual(active, "login")
+
+    def test_v3_explicit_null_credential_id_loads_as_auto(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "login",
+                "accounts": [
+                    {
+                        "id": "login",
+                        "label": "Login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": None,
+                    }
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertIsNone(entries[0].credential_id)
+        self.assertEqual(active, "login")
+        # The null entry still occupies the singular auto slot.
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account("other", "Other", kind=accounts.KIND_OPENCODE_DB)
+        self.assertIn("already exists", str(caught.exception))
+
+    def test_v3_two_autos_rejected(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "one",
+                "accounts": [
+                    {"id": "one", "label": "One", "kind": "opencode-db", "hint": None},
+                    {"id": "two", "label": "Two", "kind": "opencode-db", "hint": None},
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.load_registry()
+        message = str(caught.exception)
+        self.assertIn("'one'", message)
+        self.assertIn("'two'", message)
+        self.assertIn("credential id", message)
+
+    def test_v3_duplicate_pin_rejected(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "one",
+                "accounts": [
+                    {
+                        "id": "one",
+                        "label": "One",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    },
+                    {
+                        "id": "two",
+                        "label": "Two",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    },
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.load_registry()
+        message = str(caught.exception)
+        self.assertIn("'one'", message)
+        self.assertIn("'two'", message)
+        self.assertIn("cred-1", message)
+
+    def test_v3_auto_and_distinct_pins_still_load(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "auto",
+                "accounts": [
+                    {
+                        "id": "auto",
+                        "label": "Auto",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": None,
+                    },
+                    {
+                        "id": "one",
+                        "label": "One",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-1",
+                    },
+                    {
+                        "id": "two",
+                        "label": "Two",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-2",
+                    },
+                ],
+            }
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["auto", "one", "two"])
+        self.assertIsNone(entries[0].credential_id)
+        self.assertEqual(entries[1].credential_id, "cred-1")
+        self.assertEqual(entries[2].credential_id, "cred-2")
+        self.assertEqual(active, "auto")
+
+    def test_v2_two_logins_rejected_at_load(self):
+        self.write_registry(
+            {
+                "version": 2,
+                "active": "one",
+                "accounts": [
+                    {"id": "one", "label": "One", "kind": "opencode-db", "hint": None},
+                    {"id": "two", "label": "Two", "kind": "opencode-db", "hint": None},
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError):
+            accounts.load_registry()
+
+    def test_add_pinned_login_round_trip(self):
+        self.write_registry({"version": 3, "active": None, "accounts": []})
+        account = accounts.add_account(
+            "personal",
+            "Personal",
+            kind=accounts.KIND_OPENCODE_DB,
+            credential_id="cred-2",
+        )
+        self.assertEqual(account.credential_id, "cred-2")
+        entries, active = accounts.list_accounts()
+        self.assertEqual(entries[0].credential_id, "cred-2")
+        self.assertEqual(active, "personal")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["accounts"][0]["credential_id"], "cred-2")
+
+    def test_add_pinned_while_the_auto_login_exists(self):
+        account = accounts.add_account(
+            "personal",
+            "Personal",
+            kind=accounts.KIND_OPENCODE_DB,
+            credential_id="cred-2",
+        )
+        self.assertEqual(account.credential_id, "cred-2")
+        entries, _active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["default", "personal"])
+        self.assertIsNone(entries[0].credential_id)
+        self.assertEqual(entries[1].credential_id, "cred-2")
+        stored = accounts.load_registry()["accounts"]
+        self.assertNotIn("credential_id", stored[0])
+
+    def test_add_auto_while_a_pinned_login_exists(self):
+        self.write_registry({"version": 3, "active": None, "accounts": []})
+        accounts.add_account(
+            "pin", "Pin", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-1"
+        )
+        account = accounts.add_account("auto", "Auto", kind=accounts.KIND_OPENCODE_DB)
+        self.assertIsNone(account.credential_id)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["pin", "auto"])
+
+    def test_add_second_auto_login_refused(self):
+        self.write_registry({"version": 3, "active": None, "accounts": []})
+        accounts.add_account("first", "First", kind=accounts.KIND_OPENCODE_DB)
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account("second", "Second", kind=accounts.KIND_OPENCODE_DB)
+        self.assertEqual(
+            str(caught.exception),
+            "an OpenCode login account already exists: 'first'",
+        )
+        self.assertEqual(
+            [entry["id"] for entry in accounts.load_registry()["accounts"]], ["first"]
+        )
+
+    def test_add_duplicate_pin_refused(self):
+        self.write_registry({"version": 3, "active": None, "accounts": []})
+        accounts.add_account(
+            "first", "First", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-1"
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account(
+                "second",
+                "Second",
+                kind=accounts.KIND_OPENCODE_DB,
+                credential_id="cred-1",
+            )
+        message = str(caught.exception)
+        self.assertIn("already pinned", message)
+        self.assertIn("cred-1", message)
+        self.assertIn("'first'", message)
+        self.assertEqual(
+            [entry["id"] for entry in accounts.load_registry()["accounts"]], ["first"]
+        )
+
+    def test_add_several_pins(self):
+        self.write_registry({"version": 3, "active": None, "accounts": []})
+        accounts.add_account(
+            "one", "One", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-1"
+        )
+        accounts.add_account(
+            "two", "Two", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-2"
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual(
+            [entry.credential_id for entry in entries], ["cred-1", "cred-2"]
+        )
+        self.assertEqual(active, "one")
+
+    def test_auto_entry_stores_no_credential_id_key(self):
+        self.write_registry({"version": 3, "active": None, "accounts": []})
+        accounts.add_account("auto", "Auto", kind=accounts.KIND_OPENCODE_DB)
+        self.assertNotIn("credential_id", accounts.load_registry()["accounts"][0])
+
+    def test_add_pin_rejected_for_api_key(self):
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.add_account("work", "Work", credential_id="cred-1")
+        self.assertIn("api-key", str(caught.exception))
+        self.assertIsNone(accounts.load_registry())
+
+    def test_add_pin_must_be_a_non_empty_string(self):
+        for credential_id in ("", "   ", 7, ["cred-1"]):
+            with self.subTest(credential_id=credential_id):
+                with self.assertRaises(accounts.AccountError):
+                    accounts.add_account(
+                        "pin",
+                        "Pin",
+                        kind=accounts.KIND_OPENCODE_DB,
+                        credential_id=credential_id,
+                    )
+        self.assertIsNone(accounts.load_registry())
+
+    def test_remove_pinned_login(self):
+        self.write_registry({"version": 3, "active": None, "accounts": []})
+        accounts.add_account(
+            "pin", "Pin", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-1"
+        )
+        accounts.remove_account("pin")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 3)
+        self.assertEqual(registry["accounts"], [])
+        self.assertIsNone(registry["active"])
 
 
 class KeyringSecretTests(AccountsTestCase):

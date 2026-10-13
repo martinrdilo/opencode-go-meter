@@ -7,9 +7,11 @@ import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 
 const ACCOUNTS_SCHEMA = 2;
+const DISCOVER_SCHEMA = 1;
 const KIND_OPENCODE_DB = 'opencode-db';
 const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
 
 function resolveOcgoPath(settings) {
     try {
@@ -62,6 +64,12 @@ function parseAccountsJson(text) {
                 : id,
             kind: typeof entry.kind === 'string' ? entry.kind : '',
             hint: typeof entry.hint === 'string' ? entry.hint : null,
+            // Additive field (the payload keeps schema 2): null means the
+            // account is not pinned to a database credential.
+            credential_id: typeof entry.credential_id === 'string' &&
+                entry.credential_id !== ''
+                ? entry.credential_id
+                : null,
         });
     }
     const requested = typeof payload.active === 'string' ? payload.active : null;
@@ -69,6 +77,54 @@ function parseAccountsJson(text) {
     for (const account of accounts)
         account.active = account.id === active;
     return {accounts, active};
+}
+
+function parseDiscoverJson(text) {
+    if (typeof text !== 'string' || text.trim() === '')
+        return null;
+    let payload = null;
+    try {
+        payload = JSON.parse(text);
+    } catch (error) {
+        return null;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+        return null;
+    if (payload.schema !== DISCOVER_SCHEMA || !Array.isArray(payload.credentials))
+        return null;
+
+    const credentials = [];
+    const seen = new Set();
+    for (const entry of payload.credentials) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+            return null;
+        const id = entry.id;
+        if (typeof id !== 'string' || id.trim() === '' || seen.has(id))
+            return null;
+        seen.add(id);
+        credentials.push({
+            id,
+            label: typeof entry.label === 'string' && entry.label.trim() !== ''
+                ? entry.label
+                : id,
+            active: entry.active === true,
+            email: typeof entry.email === 'string' && entry.email.trim() !== ''
+                ? entry.email
+                : null,
+            org_name: typeof entry.org_name === 'string' &&
+                entry.org_name.trim() !== ''
+                ? entry.org_name
+                : null,
+        });
+    }
+    return {credentials};
+}
+
+// Display-only suffix for a discovered credential: the email when present,
+// the organization name otherwise.
+function credentialDisplayLabel(credential) {
+    const suffix = credential.email || credential.org_name;
+    return suffix ? `${credential.label} (${suffix})` : credential.label;
 }
 
 function accountFormError(accountId, key, fromDb = false) {
@@ -97,6 +153,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._settings = settings;
         this._window = window;
         this._accounts = [];
+        this._credentials = [];
         this._activeId = null;
         this._updatingActive = false;
         this._accountsLoading = false;
@@ -105,8 +162,11 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._accountActionInProgress = false;
         this._accountActionAwaitingLoad = false;
         this._removeDialogOpen = false;
+        this._activateDialogOpen = false;
         this._typeKinds = [];
         this._typeModelSignature = null;
+        this._credentialEntries = [];
+        this._credentialModelSignature = null;
 
         const page = new Adw.PreferencesPage();
         const group = new Adw.PreferencesGroup({
@@ -202,6 +262,13 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._removeRow.connect('activated', () => this._confirmRemove());
         group.add(this._removeRow);
 
+        this._activateRow = new Adw.ButtonRow({
+            title: 'Make active in OpenCode',
+        });
+        this._activateRow.sensitive = false;
+        this._activateRow.connect('activated', () => this._confirmActivate());
+        group.add(this._activateRow);
+
         const formGroup = new Adw.PreferencesGroup({
             title: 'Add or replace an account',
             description: 'Adds a new account, or replaces the API key of an existing one.',
@@ -219,6 +286,10 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._typeRow = new Adw.ComboRow({title: 'Type'});
         this._typeRow.connect('notify::selected', () => this._updateFormState());
         formGroup.add(this._typeRow);
+
+        this._credentialRow = new Adw.ComboRow({title: 'OpenCode credential'});
+        this._credentialRow.visible = false;
+        formGroup.add(this._credentialRow);
 
         this._keyRow = new Adw.PasswordEntryRow({title: 'API key'});
         formGroup.add(this._keyRow);
@@ -249,12 +320,23 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         return this._accounts[index];
     }
 
-    // The add-flow type model follows the loaded accounts: the OpenCode login
-    // is singular, so once one is registered only API keys can be added.
+    // The add-flow type model follows the loaded accounts and credentials:
+    // "OpenCode login" stays available while an auto (unpinned) login is not
+    // registered yet, or while at least one discovered credential is not
+    // registered as a pinned login.
+    _hasAutoLogin() {
+        return this._accounts.some(
+            account => account.kind === KIND_OPENCODE_DB &&
+                !account.credential_id);
+    }
+
     _typeOptions() {
-        const hasLogin = this._accounts.some(
-            account => account.kind === KIND_OPENCODE_DB);
-        return hasLogin ? [KIND_API_KEY] : [KIND_OPENCODE_DB, KIND_API_KEY];
+        const hasAuto = this._hasAutoLogin();
+        const unregistered = this._credentialChoices().some(
+            choice => choice.credentialId !== null);
+        return !hasAuto || unregistered
+            ? [KIND_OPENCODE_DB, KIND_API_KEY]
+            : [KIND_API_KEY];
     }
 
     _typeLabel(kind) {
@@ -268,6 +350,61 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         return this._typeKinds[index];
     }
 
+    // Credential picker entries: the auto binding when no auto login exists,
+    // plus every discovered credential that is not registered yet.
+    _credentialChoices() {
+        const choices = [];
+        if (!this._hasAutoLogin())
+            choices.push({credentialId: null, label: AUTO_CREDENTIAL_LABEL});
+        const registered = new Set();
+        for (const account of this._accounts) {
+            if (account.kind === KIND_OPENCODE_DB && account.credential_id)
+                registered.add(account.credential_id);
+        }
+        for (const credential of this._credentials) {
+            if (registered.has(credential.id))
+                continue;
+            choices.push({
+                credentialId: credential.id,
+                label: credentialDisplayLabel(credential),
+            });
+        }
+        return choices;
+    }
+
+    _selectedCredential() {
+        const index = this._credentialRow.selected;
+        if (!Number.isInteger(index) || index < 0 ||
+                index >= this._credentialEntries.length)
+            return null;
+        return this._credentialEntries[index];
+    }
+
+    _updateCredentialModel() {
+        const previous = this._selectedCredential();
+        const choices = this._credentialChoices();
+        const signature = choices.map(
+            choice => `${choice.credentialId ?? ''}\u0000${choice.label}`
+        ).join('\u0001');
+        if (signature !== this._credentialModelSignature) {
+            this._credentialModelSignature = signature;
+            this._credentialEntries = choices;
+            this._credentialRow.model = Gtk.StringList.new(
+                choices.map(choice => choice.label));
+        }
+        // Keep the user's pick across rebuilds; a vanished credential falls
+        // back to the first entry (auto when it is offered).
+        let index = 0;
+        if (previous !== null && previous.credentialId !== null) {
+            const found = this._credentialEntries.findIndex(
+                choice => choice.credentialId === previous.credentialId);
+            if (found >= 0)
+                index = found;
+        }
+        this._credentialRow.selected =
+            this._credentialEntries.length > 0 ? index : -1;
+    }
+
     _updateTypeModel() {
         const kinds = this._typeOptions();
         const previous = this._selectedType();
@@ -279,10 +416,12 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                 kinds.map(kind => this._typeLabel(kind)));
         }
         // The user's choice survives a rebuild; when the OpenCode login option
-        // disappears (an account appeared), fall back to the remaining type.
+        // disappears (an auto login appeared and every credential is
+        // registered), fall back to the remaining type.
         const index = previous === null ? -1 : kinds.indexOf(previous);
         this._typeRow.selected = index >= 0 ? index : 0;
         this._updateFormState();
+        this._updateCredentialModel();
     }
 
     _updateFormState() {
@@ -290,7 +429,28 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._keyRow.visible = !fromDb;
         if (fromDb)
             this._keyRow.text = '';
+        this._credentialRow.visible = fromDb;
         this._applyRow.title = fromDb ? 'Add account' : 'Add / replace key';
+    }
+
+    // Display-only suffix marking a pinned login whose credential is the
+    // active one in OpenCode. Purely informational: selection stays by index.
+    _accountDisplayLabel(account) {
+        if (account.kind !== KIND_OPENCODE_DB || !account.credential_id)
+            return account.label;
+        const credential = this._credentials.find(
+            entry => entry.id === account.credential_id);
+        return credential && credential.active
+            ? `${account.label} (active in OpenCode)`
+            : account.label;
+    }
+
+    // Pinned logins whose credential disappeared from the database listing.
+    _danglingLogins() {
+        const known = new Set(this._credentials.map(entry => entry.id));
+        return this._accounts.filter(account =>
+            account.kind === KIND_OPENCODE_DB && account.credential_id &&
+            !known.has(account.credential_id));
     }
 
     _renderAccounts() {
@@ -300,7 +460,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                 this._activeRow.model = Gtk.StringList.new(['No accounts']);
                 this._activeRow.selected = 0; // placeholder; no account selected
             } else {
-                const labels = this._accounts.map(account => account.label);
+                const labels = this._accounts.map(
+                    account => this._accountDisplayLabel(account));
                 this._activeRow.model = Gtk.StringList.new(labels);
                 const index = this._accounts.findIndex(
                     account => account.id === this._activeId);
@@ -317,6 +478,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._applyRow.sensitive = !busy;
         const selected = this._selectedAccount();
         this._removeRow.sensitive = !busy && !!selected;
+        this._activateRow.sensitive = !busy && !!selected &&
+            selected.kind === KIND_OPENCODE_DB && !!selected.credential_id;
     }
 
     _beginAccountAction() {
@@ -359,48 +522,98 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         const binary = resolveOcgoPath(this._settings);
         if (!binary) {
             this._finishAccountLoad(
-                generation, null, 'ocgo not found; set the path above');
+                generation, null, null, 'ocgo not found; set the path above', null);
             return;
         }
         this._accountsLoading = true;
-        try {
-            const subprocess = Gio.Subprocess.new(
-                [binary, 'account', 'list', '--json'],
-                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
-            subprocess.communicate_utf8_async(null, null, (process, result) => {
-                this._accountsLoading = false;
-                let stdout = '';
-                try {
-                    const [, out] = process.communicate_utf8_finish(result);
-                    stdout = out ?? '';
-                } catch (error) {
-                    this._finishAccountLoad(generation, null, 'could not read accounts');
-                    return;
-                }
-                const parsed = process.get_successful()
-                    ? parseAccountsJson(stdout)
-                    : null;
-                if (!parsed) {
-                    this._finishAccountLoad(generation, null, 'could not read accounts');
-                    return;
-                }
-                this._finishAccountLoad(generation, parsed, null);
-            });
-        } catch (error) {
+        const results = {
+            accounts: null,
+            accountsError: null,
+            credentials: null,
+            discoverError: null,
+        };
+        let remaining = 2;
+        const finish = () => {
+            if (--remaining > 0)
+                return;
             this._accountsLoading = false;
             this._finishAccountLoad(
-                generation, null, `could not read accounts: ${error.message ?? error}`);
-        }
+                generation, results.accounts, results.credentials,
+                results.accountsError, results.discoverError);
+        };
+        // Accounts and discovered credentials load together; a discover
+        // failure is non-fatal (empty credential list, auto path intact).
+        this._readJsonCommand(
+            binary, ['account', 'list', '--json'], parseAccountsJson, parsed => {
+                results.accounts = parsed;
+                results.accountsError = parsed ? null : 'could not read accounts';
+                finish();
+            });
+        this._readJsonCommand(
+            binary, ['account', 'discover', '--json'], parseDiscoverJson, parsed => {
+                results.credentials = parsed;
+                results.discoverError = parsed
+                    ? null
+                    : 'could not list the OpenCode credentials';
+                finish();
+            });
     }
 
-    _finishAccountLoad(generation, parsed, errorMessage) {
+    _readJsonCommand(binary, args, parser, callback) {
+        let subprocess = null;
+        try {
+            subprocess = Gio.Subprocess.new(
+                [binary, ...args],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
+        } catch (error) {
+            callback(null);
+            return;
+        }
+        subprocess.communicate_utf8_async(null, null, (process, result) => {
+            let stdout = '';
+            try {
+                const [, out] = process.communicate_utf8_finish(result);
+                stdout = out ?? '';
+            } catch (error) {
+                callback(null);
+                return;
+            }
+            callback(process.get_successful() ? parser(stdout) : null);
+        });
+    }
+
+    _finishAccountLoad(generation, accountsParsed, credentialsParsed,
+        accountsError, discoverError = null) {
         if (generation === this._accountsGeneration) {
-            if (parsed) {
-                this._applyAccounts(parsed);
+            // Discover defaults to an empty list; a failed discover only
+            // disables the specific-credential choices (the auto entry, when
+            // offered, keeps working) and surfaces through the status row.
+            this._credentials = credentialsParsed
+                ? credentialsParsed.credentials
+                : [];
+            if (accountsParsed) {
+                this._applyAccounts(accountsParsed);
             } else {
                 this._applyAccounts(null);
-                this._setFeedback(errorMessage);
             }
+            const messages = [];
+            if (!accountsParsed && accountsError)
+                messages.push(accountsError);
+            if (discoverError)
+                messages.push(discoverError);
+            // Dangling feedback only when discover returned a real list; a
+            // failed discover is already reported and cannot tell "gone" from
+            // "unreadable".
+            if (!discoverError && credentialsParsed) {
+                for (const account of this._danglingLogins()) {
+                    messages.push(
+                        `Account '${account.label}' points to an OpenCode ` +
+                        'credential that no longer exists — remove it or sign ' +
+                        'in again in OpenCode.');
+                }
+            }
+            if (messages.length > 0)
+                this._setFeedback(messages.join('\n'));
             if (this._accountActionAwaitingLoad)
                 this._endAccountAction();
         }
@@ -444,14 +657,22 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
             this._setFeedback(error);
             return;
         }
+        const credential = fromDb ? this._selectedCredential() : null;
+        if (fromDb && !credential) {
+            this._setFeedback('No OpenCode credentials are available to add.');
+            return;
+        }
         if (!this._beginAccountAction())
             return;
         let args;
         if (fromDb) {
-            // The CLI registers the local OpenCode login; no key, no stdin.
+            // The CLI registers an OpenCode login; no key, no stdin. Without
+            // --credential the account follows the active OpenCode credential.
             args = ['account', 'add', accountId, '--from-db'];
             if (label)
                 args.push('--label', label);
+            if (credential.credentialId)
+                args.push('--credential', credential.credentialId);
         } else {
             const command = accountCommandFor(accountId, this._accounts);
             args = ['account', command, accountId, '--store', 'auto'];
@@ -525,6 +746,61 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                 } else {
                     this._setFeedback(this._failureMessage(
                         'could not remove the account', stderr, stdout));
+                    this._endAccountAction();
+                }
+            });
+    }
+
+    _confirmActivate() {
+        const account = this._selectedAccount();
+        if (!account)
+            return;
+        if (this._accountActionInProgress || this._activateDialogOpen)
+            return;
+        this._activateDialogOpen = true;
+        this._activateRow.sensitive = false;
+        this._presentActivateDialog(account);
+    }
+
+    _presentActivateDialog(account) {
+        const dialog = new Adw.MessageDialog({
+            transient_for: this._window,
+            heading: `Make '${account.label}' active in OpenCode?`,
+            body: 'OpenCode will use this account for new sessions.',
+        });
+        dialog.add_response('cancel', 'Cancel');
+        dialog.add_response('activate', 'Make active');
+        dialog.set_response_appearance('activate', Adw.ResponseAppearance.SUGGESTED);
+        dialog.set_default_response('cancel');
+        dialog.set_close_response('cancel');
+        dialog.connect('response', (_dialog, response) => {
+            this._onActivateDialogResponse(account, response);
+        });
+        dialog.present();
+    }
+
+    _onActivateDialogResponse(account, response) {
+        this._activateDialogOpen = false;
+        this._updateActionSensitivity();
+        if (response === 'activate')
+            this._activateInOpencode(account);
+    }
+
+    _activateInOpencode(account) {
+        if (!this._beginAccountAction())
+            return;
+        this._runAccountCommand(
+            ['account', 'activate-in-opencode', account.id], null,
+            (ok, stdout, stderr) => {
+                if (ok) {
+                    this._setFeedback(
+                        stdout.trim() || `Account '${account.id}' is now active in OpenCode.`);
+                    this._accountActionAwaitingLoad = true;
+                    this._loadAccounts();
+                } else {
+                    this._setFeedback(this._failureMessage(
+                        'could not make the account active in OpenCode',
+                        stderr, stdout));
                     this._endAccountAction();
                 }
             });

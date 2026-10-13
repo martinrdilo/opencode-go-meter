@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,10 @@ ANSI_RESET = "\x1b[0m"
 WINDOW_WIDTH = 15  # label column width, matching the console layout
 
 NO_ACCOUNTS_MESSAGE = "no accounts configured — run 'ocgo account add <id>'"
+
+# Same 10-second budget as the secret-tool calls in accounts.py: a wedged
+# OpenCode service must not hang account management.
+_OPENCODE_SWITCH_TIMEOUT_SECONDS = 10
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,6 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="register the local OpenCode login as an account (no API key)",
     )
+    add.add_argument(
+        "--credential",
+        metavar="ID_OR_LABEL",
+        help="with --from-db: pin the account to this database credential",
+    )
     add.set_defaults(func=cmd_account_add)
 
     set_key = account_sub.add_parser(
@@ -93,6 +103,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     listing.add_argument("--json", action="store_true", help="print a JSON document")
     listing.set_defaults(func=cmd_account_list)
+
+    discover = account_sub.add_parser(
+        "discover", help="list the OpenCode credentials in the local database"
+    )
+    discover.add_argument(
+        "--json", action="store_true", help="print a JSON document"
+    )
+    discover.set_defaults(func=cmd_account_discover)
+
+    activate = account_sub.add_parser(
+        "activate-in-opencode",
+        help="make a pinned login the active credential in OpenCode",
+    )
+    activate.add_argument("id", metavar="ID")
+    activate.set_defaults(func=cmd_account_activate_in_opencode)
 
     use = account_sub.add_parser("use", help="switch the active account")
     use.add_argument("id", metavar="ID")
@@ -150,7 +175,9 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
     is_db = account.kind == accounts.KIND_OPENCODE_DB
     try:
         if is_db:
-            token = creds.resolve_credential().token
+            token = creds.resolve_credential(
+                credential_id=account.credential_id
+            ).token
             payload = api.fetch_status(token)
             data = api.to_cache_schema(payload, now=now)
             try:
@@ -264,7 +291,7 @@ def cmd_auth_show(args: argparse.Namespace) -> int:
         return _show_stored_key(account)
 
     try:
-        credential = creds.resolve_credential()
+        credential = creds.resolve_credential(credential_id=account.credential_id)
     except creds.CredentialError as exc:
         return _fail(exc)
 
@@ -295,26 +322,46 @@ def cmd_account_add(args: argparse.Namespace) -> int:
         entries, _active = accounts.list_accounts()
     except accounts.AccountError as exc:
         return _fail(exc)
+    if args.credential is not None and not args.from_db:
+        return _fail("--credential requires --from-db")
     if any(account.id == account_id for account in entries):
         return _fail(f"account '{account_id}' already exists")
 
     label = (args.label or account_id).strip() or account_id
 
+    credential_id: str | None = None
+    if args.credential is not None:
+        try:
+            credential_id = _resolve_credential_selector(args.credential)
+        except (accounts.AccountError, creds.CredentialError) as exc:
+            return _fail(exc)
+
     if args.from_db:
         try:
-            creds.resolve_credential()
+            creds.resolve_credential(credential_id=credential_id)
         except creds.CredentialError as exc:
-            return _fail(
-                f"{exc} For an API key instead: ocgo account add "
-                f"{account_id} --label <label> (no --from-db)."
-            )
+            if credential_id is None:
+                return _fail(
+                    f"{exc} For an API key instead: ocgo account add "
+                    f"{account_id} --label <label> (no --from-db)."
+                )
+            return _fail(exc)
         try:
             accounts.add_account(
-                account_id, label, kind=accounts.KIND_OPENCODE_DB
+                account_id,
+                label,
+                kind=accounts.KIND_OPENCODE_DB,
+                credential_id=credential_id,
             )
         except accounts.AccountError as exc:
             return _fail(exc)
-        print(f"Added account '{account_id}' (OpenCode login)")
+        if credential_id is None:
+            print(f"Added account '{account_id}' (OpenCode login)")
+        else:
+            print(
+                f"Added account '{account_id}' "
+                f"(OpenCode login, credential '{credential_id}')"
+            )
         return 0
 
     key = _read_api_key().strip()
@@ -346,6 +393,28 @@ def cmd_account_add(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     return 0
+
+
+def _resolve_credential_selector(selector: str) -> str:
+    """Resolve a ``--credential`` selector: exact id first, then exact label."""
+    candidates = creds.list_db_credentials()
+    for credential in candidates:
+        if credential.id == selector:
+            return credential.id
+    matches = [
+        credential for credential in candidates if credential.label == selector
+    ]
+    if not matches:
+        raise accounts.AccountError(
+            f"no OpenCode credential matches '{selector}' — run "
+            "'ocgo account discover' to list the available credentials"
+        )
+    if len(matches) > 1:
+        ids = ", ".join(credential.id for credential in matches)
+        raise accounts.AccountError(
+            f"the credential label '{selector}' matches several credentials: {ids}"
+        )
+    return matches[0].id
 
 
 def cmd_account_set_key(args: argparse.Namespace) -> int:
@@ -399,6 +468,8 @@ def cmd_account_list(args: argparse.Namespace) -> int:
         return _fail(exc)
     if args.json:
         payload = {
+            # Schema stays 2: "credential_id" is an additive entry field, so
+            # existing frontend consumers keep working unchanged.
             "schema": 2,
             "active": active,
             "accounts": [
@@ -408,6 +479,7 @@ def cmd_account_list(args: argparse.Namespace) -> int:
                     "kind": account.kind,
                     "hint": account.hint,
                     "active": account.id == active,
+                    "credential_id": account.credential_id,
                 }
                 for account in entries
             ],
@@ -424,6 +496,91 @@ def cmd_account_list(args: argparse.Namespace) -> int:
         else:
             details = f"{account.kind}, {account.hint}"
         print(f"{marker} {account.id:<12} {account.label}  ({details})")
+    return 0
+
+
+def cmd_account_discover(args: argparse.Namespace) -> int:
+    try:
+        credentials = creds.list_db_credentials()
+    except creds.CredentialError as exc:
+        return _fail(exc)
+    if args.json:
+        payload = {
+            "schema": 1,
+            "credentials": [
+                {
+                    "id": credential.id,
+                    "label": credential.label,
+                    "active": credential.active,
+                    "email": credential.email,
+                    "org_name": credential.org_name,
+                }
+                for credential in credentials
+            ],
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    if not credentials:
+        print("no OpenCode credentials found in the local database")
+        return 0
+    id_width = max([len("ID")] + [len(credential.id) for credential in credentials])
+    label_width = max(
+        [len("LABEL")] + [len(credential.label) for credential in credentials]
+    )
+    print(f"{'ID':<{id_width}}  {'LABEL':<{label_width}}  {'ACTIVE':<6}  EMAIL")
+    for credential in credentials:
+        active = "yes" if credential.active else "no"
+        email = credential.email or "-"
+        print(
+            f"{credential.id:<{id_width}}  {credential.label:<{label_width}}  "
+            f"{active:<6}  {email}"
+        )
+    return 0
+
+
+def cmd_account_activate_in_opencode(args: argparse.Namespace) -> int:
+    try:
+        account = _find_account(args.id)
+    except accounts.AccountError as exc:
+        return _fail(exc)
+    if account.kind != accounts.KIND_OPENCODE_DB:
+        return _fail(f"account '{account.id}' is not an OpenCode login account")
+    if account.credential_id is None:
+        return _fail(
+            f"account '{account.id}' follows the active OpenCode credential; "
+            "there is nothing to switch"
+        )
+    try:
+        result = subprocess.run(
+            ["opencode", "auth", "switch", "opencode", account.credential_id],
+            capture_output=True,
+            text=True,
+            timeout=_OPENCODE_SWITCH_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        return _fail(
+            "the 'opencode' command was not found on PATH — install OpenCode "
+            "or add it to PATH"
+        )
+    except subprocess.TimeoutExpired:
+        return _fail(
+            "the 'opencode' command timed out; is the OpenCode service responsive?"
+        )
+    except OSError as exc:
+        return _fail(f"could not run the 'opencode' command: {exc}")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        message = (
+            f"'opencode auth switch opencode {account.credential_id}' failed "
+            f"(exit {result.returncode})"
+        )
+        if detail:
+            message += f": {detail}"
+        return _fail(message)
+    print(
+        f"Made account '{account.id}' the active credential in OpenCode "
+        f"('{account.credential_id}')"
+    )
     return 0
 
 
