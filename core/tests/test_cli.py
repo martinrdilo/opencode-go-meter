@@ -1064,6 +1064,50 @@ class AccountSetKeyTests(AccountCliTestCase):
         self.assertIsNone(registry["accounts"][0]["hint"])
         self.assertEqual(registry["accounts"][0]["id"], "login")
 
+    def test_set_key_conversion_failure_rolls_back_the_secret(self):
+        self._isolate()
+        self._seed_db_account()
+        error = accounts.AccountError("the conversion exploded")
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+            mock.patch.object(
+                cli.accounts, "convert_to_api_key", side_effect=error
+            ),
+        ):
+            code, _out, err = run_cli(["account", "set-key", "login"])
+        self.assertEqual(code, 1)
+        self.assertIn("the conversion exploded", err)
+        self.assertFalse(accounts.has_secret("login"))
+        with self.assertRaises(accounts.AccountError):
+            accounts.read_secret("login")
+        entries, _active = accounts.list_accounts()
+        self.assertEqual(entries[0].kind, "opencode-db")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["accounts"][0]["kind"], "opencode-db")
+
+    def test_set_key_conversion_rollback_failure_keeps_the_original_error(self):
+        self._isolate()
+        self._seed_db_account()
+        error = accounts.AccountError("the conversion exploded")
+        with (
+            mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY),
+            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
+            mock.patch.object(
+                cli.accounts, "convert_to_api_key", side_effect=error
+            ),
+            mock.patch.object(
+                cli.accounts,
+                "delete_secret",
+                side_effect=accounts.AccountError("cleanup exploded"),
+            ),
+        ):
+            code, _out, err = run_cli(["account", "set-key", "login"])
+        self.assertEqual(code, 1)
+        self.assertIn("the conversion exploded", err)
+        self.assertIn("could not clean up", err)
+        self.assertIn("cleanup exploded", err)
+
     def test_set_key_conversion_honors_the_file_backend(self):
         self._isolate()
         self._seed_db_account()

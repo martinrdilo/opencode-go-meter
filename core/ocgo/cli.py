@@ -447,11 +447,16 @@ def cmd_account_set_key(args: argparse.Namespace) -> int:
     converting = account.kind == accounts.KIND_OPENCODE_DB
     try:
         hint = accounts.store_secret(account_id, key, backend=args.store)
+    except accounts.AccountError as exc:
+        return _fail(exc)
+    try:
         if converting:
             accounts.convert_to_api_key(account_id, hint)
         else:
             accounts.update_hint(account_id, hint)
     except accounts.AccountError as exc:
+        if converting:
+            _rollback_secret(account_id)
         return _fail(exc)
 
     if converting:
