@@ -4,9 +4,9 @@ The registry (``$XDG_CONFIG_HOME/ocgo/accounts.json``) is the single source of
 truth for the account list and the active account. It is fully user-owned: the
 list may be empty, ``active`` may be ``null``, and every account — of kind
 ``api-key`` or ``opencode-db`` — can be added and removed. Absent, v1, and v2
-registries materialize their effective v3 view in memory (absent and v1
-materialize the seeded ``default`` account); the next mutation writes version 3
-with the effective list.
+registries materialize their effective v3 view in memory; absent materializes
+the seeded ``default`` only while a login is stored (v1 always prepends it);
+the next mutation writes version 3 with the effective list.
 
 ``opencode-db`` accounts either follow the database's active credential
 ("auto", at most one) or pin one database credential id (``credential_id``,
@@ -34,7 +34,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .creds import mask_token
+from .creds import has_stored_login, mask_token
 
 DEFAULT_ACCOUNT_ID = "default"
 DEFAULT_LABEL = "Default"
@@ -140,11 +140,16 @@ def _seeded_default_entry() -> dict:
 def _effective_registry() -> dict:
     """Return a v3 view: absent, v1, and v2 registries are upgraded in memory.
 
-    v1 and v2 files are read as-is (entries never carry ``credential_id``
-    there); the first mutation writes the whole effective list as version 3.
+    An absent registry materializes the seeded ``default`` only while a login
+    is stored (:func:`creds.has_stored_login`); without one it materializes
+    empty so a fresh API-key-only setup starts from a clean slate. v1 and v2
+    files are read as-is (entries never carry ``credential_id`` there); the
+    first mutation writes the whole effective list as version 3.
     """
     registry = load_registry()
     if registry is None:
+        if not has_stored_login():
+            return {"version": REGISTRY_VERSION, "active": None, "accounts": []}
         return {
             "version": REGISTRY_VERSION,
             "active": DEFAULT_ACCOUNT_ID,
@@ -212,9 +217,10 @@ def add_account(
     never do. An ``opencode-db`` account without ``credential_id`` follows the
     database's active credential ("auto") and is singular: adding one is
     refused while another auto login is listed (the seeded default already
-    occupies the slot on absent, v1, and v2 registries). With ``credential_id``
-    the account is pinned to that database credential; many pins may coexist,
-    but pinning the same credential id twice is refused.
+    occupies the slot on v1 and v2 registries, and on an absent registry while
+    a login is stored). With ``credential_id`` the account is pinned to that
+    database credential; many pins may coexist, but pinning the same
+    credential id twice is refused.
     """
     _require_valid_id(account_id)
     if kind not in (KIND_API_KEY, KIND_OPENCODE_DB):

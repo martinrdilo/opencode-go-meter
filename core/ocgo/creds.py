@@ -169,6 +169,20 @@ def list_db_credentials() -> list[DbCredential]:
     return credentials
 
 
+def has_stored_login() -> bool:
+    """True when a login source exists: the OCGO_TOKEN override or database rows.
+
+    Rows count regardless of expiry: an expired login still drives the seeded
+    default's refresh messaging.
+    """
+    if os.environ.get(_ENV_TOKEN, "").strip():
+        return True
+    try:
+        return bool(list_db_credentials())
+    except CredentialError:
+        return False
+
+
 def _metadata_strings(value: object) -> tuple[str | None, str | None]:
     """Extract ``(email, org_name)`` from a credential ``value`` payload.
 

@@ -620,6 +620,82 @@ class ListDbCredentialsTests(EnvTestCase):
         self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
 
 
+class HasStoredLoginTests(EnvTestCase):
+    """``has_stored_login`` backs the seeded-default registry entry."""
+
+    def test_env_token_is_a_stored_login(self):
+        self._env(OCGO_TOKEN="env-token-123456", OCGO_DB=str(self.tmp / "nope.db"))
+        self.assertTrue(creds.has_stored_login())
+
+    def test_blank_env_tokens_are_not_a_stored_login(self):
+        self._env(OCGO_TOKEN="", OCGO_DB=str(self.tmp / "nope.db"))
+        self.assertFalse(creds.has_stored_login())
+        self._env(OCGO_TOKEN="   ", OCGO_DB=str(self.tmp / "nope.db"))
+        self.assertFalse(creds.has_stored_login())
+
+    def test_missing_database_is_not_a_stored_login(self):
+        self._env(OCGO_DB=str(self.tmp / "nope.db"))
+        self.assertFalse(creds.has_stored_login())
+
+    def test_unreadable_database_is_not_a_stored_login(self):
+        db = self.tmp / "opencode.db"
+        db.write_text("this is not a database", encoding="utf-8")
+        self._env(OCGO_DB=str(db))
+        self.assertFalse(creds.has_stored_login())
+
+    def test_active_database_row_is_a_stored_login(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-1",
+                    "opencode",
+                    "Default",
+                    json.dumps({"access": "tok-abcdefgh"}),
+                    1,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertTrue(creds.has_stored_login())
+
+    def test_expired_database_row_is_still_a_stored_login(self):
+        now_ms = int(time.time() * 1000)
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-1",
+                    "opencode",
+                    "Default",
+                    json.dumps({"access": "tok-abcdefgh", "expires": now_ms - 1}),
+                    0,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertTrue(creds.has_stored_login())
+
+    def test_empty_database_has_no_stored_login(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(db, [])
+        self._env(OCGO_DB=str(db))
+        self.assertFalse(creds.has_stored_login())
+
+    def test_other_integrations_are_not_a_stored_login(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [("cred-google", "google", "Google", json.dumps({"access": "g"}), 1, 300)],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertFalse(creds.has_stored_login())
+
+
 class DefaultPathTests(unittest.TestCase):
     def test_xdg_data_home_wins(self):
         with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=True):
