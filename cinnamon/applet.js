@@ -12,7 +12,6 @@ const Util = imports.misc.util;
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
-const GObject = imports.gi.GObject;
 const Pango = imports.gi.Pango;
 const St = imports.gi.St;
 
@@ -62,42 +61,47 @@ function logError(message, error) {
 // component: same style classes and the same title/description accessors.
 // The extra 'confirm-dialog-title'/'run-dialog-description' classes are what
 // the 5.4 theme styles (the message-dialog-* ones exist only from 6.4).
-const MessageContent = GObject.registerClass(
-class MessageContent extends St.BoxLayout {
-    _init(params = {}) {
-        super._init({
-            style_class: 'message-dialog-content',
-            vertical: true,
-            x_expand: true,
-        });
-        this._titleLabel = new St.Label({style_class: 'message-dialog-title'});
-        this._titleLabel.add_style_class_name('confirm-dialog-title');
-        this._descriptionLabel = new St.Label({style_class: 'message-dialog-description'});
-        this._descriptionLabel.add_style_class_name('run-dialog-description');
-        this._descriptionLabel.clutter_text.line_wrap = true;
-        this._descriptionLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-        this.add_child(this._titleLabel);
-        this.add_child(this._descriptionLabel);
-        this.title = params.title || '';
-        this.description = params.description || '';
-    }
+//
+// A factory, not a GObject subclass: re-importing applet.js (ReloadXlet) must
+// not re-register a GObject type name — 'Type name ... is already registered'
+// fails the import and kills the reload — so the component is a plain box
+// with title/description accessor properties.
+function MessageContent(params = {}) {
+    const content = new St.BoxLayout({
+        style_class: 'message-dialog-content',
+        vertical: true,
+        x_expand: true,
+    });
+    const titleLabel = new St.Label({style_class: 'message-dialog-title'});
+    titleLabel.add_style_class_name('confirm-dialog-title');
+    const descriptionLabel = new St.Label({style_class: 'message-dialog-description'});
+    descriptionLabel.add_style_class_name('run-dialog-description');
+    descriptionLabel.clutter_text.line_wrap = true;
+    descriptionLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+    content.add_child(titleLabel);
+    content.add_child(descriptionLabel);
 
-    get title() {
-        return this._titleLabel.text;
-    }
-
-    set title(value) {
-        this._titleLabel.set_text(value || '');
-    }
-
-    get description() {
-        return this._descriptionLabel.text;
-    }
-
-    set description(value) {
-        this._descriptionLabel.set_text(value || '');
-    }
-});
+    let titleText = '';
+    let descriptionText = '';
+    Object.defineProperty(content, 'title', {
+        get: () => titleText,
+        set: value => {
+            titleText = value || '';
+            titleLabel.set_text(titleText);
+        },
+    });
+    Object.defineProperty(content, 'description', {
+        get: () => descriptionText,
+        set: value => {
+            descriptionText = value || '';
+            descriptionLabel.set_text(descriptionText);
+        },
+    });
+    // Seed the accessors from the parameters, like the 6.4 component does.
+    content.title = params.title || '';
+    content.description = params.description || '';
+    return content;
+}
 
 function parseDate(value) {
     if (typeof value !== 'string' || value.trim() === '')
