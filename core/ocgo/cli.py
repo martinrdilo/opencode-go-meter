@@ -304,7 +304,10 @@ def cmd_account_add(args: argparse.Namespace) -> int:
         try:
             creds.resolve_credential()
         except creds.CredentialError as exc:
-            return _fail(exc)
+            return _fail(
+                f"{exc} For an API key instead: ocgo account add "
+                f"{account_id} --label <label> (no --from-db)."
+            )
         try:
             accounts.add_account(
                 account_id, label, kind=accounts.KIND_OPENCODE_DB
