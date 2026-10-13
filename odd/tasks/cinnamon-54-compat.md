@@ -1,8 +1,9 @@
 # Feature: cinnamon-54-compat — Cinnamon 5.4 (Linux Mint 21) compatibility
 
-**Status**: T1–T5 done — T6 in progress (PR #2)
+**Status**: Complete — T1–T6 done; PR #2 open (merge is the user's call)
 **Repo**: `opencode-go-meter`
-**Branch**: `fix/cinnamon-54-compat` (from `main` @ `6c0ad65`)
+**Branch**: `fix/cinnamon-54-compat` (from `main` @ `6c0ad65`; tracks `origin`)
+**PR**: https://github.com/martinrdilo/opencode-go-meter/pull/2
 **Created**: 2026-10-13
 
 ## Objective
@@ -51,9 +52,9 @@ Full API audit of `cinnamon/applet.js` (main revision) against the Cinnamon
 
 `Dialog.MessageDialogContent` is the only 5.4 breakage; the reporter's warning
 about further 6.x-only APIs is covered by this audit — none found. The
-independent verifier re-ran this audit exhaustively (every declaration and
-namespaced member) and confirmed the verifier also re-confirmed the premise
-directly: `js/ui/dialog.js` 404 at 5.2.9/5.4.13/6.0.0/6.2.0/6.2.9, 200 at 6.4.0.
+independent verifier re-ran the audit exhaustively (every declaration and
+namespaced member) and re-confirmed the premise directly: `js/ui/dialog.js` 404
+at 5.2.9/5.4.13/6.0.0/6.2.0/6.2.9, 200 at 6.4.0.
 
 `cinnamon-version` semantics (js/ui/extension.js, 5.4.13): `versionCheck(required,
 current)` returns true when `current` is >= ANY listed entry, and an incompatible
@@ -178,10 +179,15 @@ Out of scope:
   `imports.lang` caught with the new breadcrumb, `let` evasion observed as
   documented); NIT-3 (no `leightweight` restyle) accepted and documented in
   Decisions; NIT-4 (this doc said "three sites" for main — it is two, the third
-  is PR #1's) fixed with this commit. Verifier also noted the guard runs in CI
-  (`.github/workflows/test.yml` → `make check-gnome check-cinnamon`).
-- [ ] **T6 — PR #2** *(route: parent; branch-pr skill)*. Push, open the PR,
-  record it here; note the PR #1 rebase follow-up.
+  is PR #1's) fixed in the docs commit. Verifier also noted the guard runs in
+  CI (`.github/workflows/test.yml` → `make check-gnome check-cinnamon`).
+- [x] **T6 — PR #2** *(route: parent; branch-pr skill)*. DONE 2026-10-13:
+  pushed `fix/cinnamon-54-compat` (now tracking `origin`) and opened PR #2 —
+  https://github.com/martinrdilo/opencode-go-meter/pull/2 (label `bug`; no
+  linked issue — the repo has no issue-first flow, documented in the PR body,
+  same as PR #1). CI (`test.yml`: `make test` + `make check-gnome
+  check-cinnamon`) runs on the PR. Merge and the PR #1 rebase follow-up remain
+  the user's calls.
 
 ## Acceptance criteria
 
@@ -227,7 +233,12 @@ Out of scope:
   (applet + both replaced dialogs render, screenshots kept in
   `/tmp/opencode/cinnamon-test/`); independent verifier `verified with
   findings` (4 NITs, none above NIT): NIT-1/NIT-2 fixed in `e419b66` and
-  re-checked, NIT-3 accepted/documented, NIT-4 fixed in docs. Next: T6 (PR).
+  re-checked, NIT-3 accepted/documented, NIT-4 fixed in docs. Next: T6.
+- 2026-10-13 — T6 done: pushed the branch and opened PR #2
+  (https://github.com/martinrdilo/opencode-go-meter/pull/2, label `bug`).
+  Remaining (user-owned): merge; then rebase #1 and re-apply the fix to its
+  third dialog site. Sandbox harness left running at
+  `/tmp/opencode/cinnamon-test` for inspection.
 
 ---
 
