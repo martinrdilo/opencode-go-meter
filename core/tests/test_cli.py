@@ -1701,6 +1701,21 @@ class RefreshAccountTests(AccountCliTestCase):
         self.assertIn("no secret found", data["last_error"])
         self.assertIsNotNone(fmt.parse_iso(data["last_error_at"]))
 
+    def test_refresh_db_credential_failure_records_last_error(self):
+        self._isolate(login=True)
+        good = good_cache_data()
+        cache.save(good)
+        error = creds.CredentialError(creds.NO_CREDENTIAL_MESSAGE)
+        with mock.patch.object(cli.creds, "resolve_credential", side_effect=error):
+            code, _out, err = run_cli(["refresh"])
+        self.assertEqual(code, 1)
+        self.assertIn("No OpenCode credential found.", err)
+        data = cache.load()
+        self.assertEqual(data["windows"], good["windows"])
+        self.assertEqual(data["fetched_at"], good["fetched_at"])
+        self.assertEqual(data["last_error"], str(error))
+        self.assertIsNotNone(fmt.parse_iso(data["last_error_at"]))
+
     def test_refresh_account_and_all_are_exclusive(self):
         self._isolate()
         self.assertEqual(run_cli(["refresh", "--account", "work", "--all"])[0], 2)
@@ -1863,6 +1878,26 @@ class PinnedRefreshTests(AccountCliTestCase):
         self.assertIn("account 'pin':", err)
         self.assertIn("no longer exists", err)
         self.assertIn("cred-42", err)
+
+    def test_dangling_pinned_failure_records_last_error(self):
+        self._isolate(login=True)
+        self._seed()
+        good = good_cache_data()
+        cache.save(good, cache.cache_path("pin"))
+        error = creds.CredentialError(
+            "The OpenCode credential 'cred-42' no longer exists in the local "
+            "database — remove this account or sign in again in OpenCode."
+        )
+        with mock.patch.object(cli.creds, "resolve_credential", side_effect=error):
+            code, _out, err = run_cli(["refresh", "--account", "pin"])
+        self.assertEqual(code, 1)
+        self.assertIn("account 'pin':", err)
+        self.assertIn("no longer exists", err)
+        data = cache.load(cache.cache_path("pin"))
+        self.assertEqual(data["windows"], good["windows"])
+        self.assertEqual(data["fetched_at"], good["fetched_at"])
+        self.assertEqual(data["last_error"], str(error))
+        self.assertIsNotNone(fmt.parse_iso(data["last_error_at"]))
 
     def test_all_refresh_continues_past_a_dangling_pin(self):
         db = write_credential_db(

@@ -194,8 +194,10 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
             payload = api.fetch_zen_status(token)
             data = api.to_cache_schema_zen(payload, now=now)
     except (creds.CredentialError, accounts.AccountError) as exc:
-        if not is_db:
-            _record_refresh_failure(exc, now, path)
+        # Recorded for every kind: the GUIs surface last_error in the popup,
+        # and a lost or expired login must explain itself (no-op without a
+        # prior cache — last good values are never invented).
+        _record_refresh_failure(exc, now, path)
         return False, str(exc)
     except api.ApiError as exc:
         _record_refresh_failure(exc, now, path)
