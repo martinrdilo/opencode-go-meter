@@ -637,6 +637,13 @@ class HasStoredLoginTests(EnvTestCase):
         self._env(OCGO_DB=str(self.tmp / "nope.db"))
         self.assertFalse(creds.has_stored_login())
 
+    def test_label_less_schema_still_counts_as_a_stored_login(self):
+        # The probe must not depend on the listing query's `label` column.
+        db = self.tmp / "opencode.db"
+        _write_db(db, [("opencode", json.dumps({"access": "tok-abcdefgh"}))])
+        self._env(OCGO_DB=str(db))
+        self.assertTrue(creds.has_stored_login())
+
     def test_unreadable_database_is_not_a_stored_login(self):
         db = self.tmp / "opencode.db"
         db.write_text("this is not a database", encoding="utf-8")

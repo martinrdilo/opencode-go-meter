@@ -2295,6 +2295,35 @@ class FreshEnvironmentTests(AccountCliTestCase):
         self.assertIn(cli.NO_ACCOUNTS_MESSAGE, err)
         self.assertIn("no accounts configured", err)
 
+    def test_label_less_database_seeds_the_default(self):
+        # A login DB without the listing's `label` column still holds a login.
+        import sqlite3
+
+        db = self.tmp / "opencode.db"
+        connection = sqlite3.connect(db)
+        connection.execute(
+            "CREATE TABLE credential ("
+            "id TEXT PRIMARY KEY, "
+            "integration_id TEXT NOT NULL, "
+            "value TEXT NOT NULL, "
+            "active INTEGER NOT NULL DEFAULT 0, "
+            "time_updated INTEGER NOT NULL DEFAULT 0)"
+        )
+        connection.execute(
+            "INSERT INTO credential "
+            "(id, integration_id, value, active, time_updated) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("cred-1", "opencode", json.dumps({"access": TOKEN}), 0, 1),
+        )
+        connection.commit()
+        connection.close()
+        self._isolate(OCGO_DB=str(db))
+        code, out, err = run_cli(["account", "list"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("* default", out)
+        self.assertIn("opencode-db", out)
+
 
 class DbKindTests(AccountCliTestCase):
     def _credential(self):
