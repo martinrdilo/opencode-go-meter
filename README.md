@@ -49,7 +49,7 @@ API-key accounts show the meters only — the console API rejects API keys for b
 
 ## Accounts
 
-A fresh install uses your local OpenCode login (read **read-only**). The add flow offers both kinds: OpenCode logins — one per credential stored by `opencode auth login` (`ocgo account discover` lists them) — and API-key accounts from the OpenCode console (`oc_sk_…`). A login is either **auto** (follows the credential OpenCode marks active via `opencode auth switch`) or **pinned** to one stored credential; every login shows its own meters and credits, independent of which credential OpenCode is using. `--from-db` registers the stored login and fails when there is none; for an API key omit it and pass the id and label directly: `ocgo account add <id> --label "<label>"`. Switch between accounts or replace keys:
+A fresh install starts from what OpenCode already has: when a login is stored locally, the seeded `default` account uses it (read **read-only**); with API keys only, the meter starts empty (`No accounts configured`), and adding one from the settings registers the key account under any free id, including `default`. The add flow offers both kinds: OpenCode logins — one per credential stored by `opencode auth login` (`ocgo account discover` lists them) — and API-key accounts from the OpenCode console (`oc_sk_…`). A login is either **auto** (follows the credential OpenCode marks active via `opencode auth switch`) or **pinned** to one stored credential; every login shows its own meters and credits, independent of which credential OpenCode is using. `--from-db` registers the stored login and fails when there is none; for an API key omit it and pass the id and label directly: `ocgo account add <id> --label "<label>"`. Switch between accounts or replace keys:
 
 ```bash
 ocgo account discover                              # list the OpenCode logins stored locally
@@ -58,7 +58,7 @@ ocgo account add work --from-db --credential Work  # pin a specific stored login
 ocgo account add temp --label "Temp"               # API key: prompted hidden, validated against the API
 ocgo account activate-in-opencode work             # make a pinned login OpenCode's active account
 ocgo account use work                              # switch the account shown by the app
-ocgo account set-key temp                          # replace / rotate a key
+ocgo account set-key temp                          # replace / rotate a key, or convert a login to an API key
 ocgo account remove temp                           # remove an account
 ocgo refresh --all                                 # refresh every account
 ```

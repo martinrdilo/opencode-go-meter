@@ -51,6 +51,7 @@ _LIST_QUERY = (
     "SELECT id, label, active, value FROM credential "
     "WHERE integration_id = 'opencode' ORDER BY time_updated DESC"
 )
+_EXISTS_QUERY = "SELECT 1 FROM credential WHERE integration_id = 'opencode' LIMIT 1"
 
 
 def _missing_credential_message(credential_id: str) -> str:
@@ -167,6 +168,28 @@ def list_db_credentials() -> list[DbCredential]:
             )
         )
     return credentials
+
+
+def has_stored_login() -> bool:
+    """True when a login exists: the OCGO_TOKEN override or any database row.
+
+    The database check only asks whether an ``opencode`` row exists, on
+    stable columns — a schema without the listing's ``label`` reads the same
+    way. Rows count regardless of expiry: an expired login still drives the
+    seeded default's refresh messaging.
+    """
+    if os.environ.get(_ENV_TOKEN, "").strip():
+        return True
+    db_path = Path(os.environ.get(_ENV_DB) or default_db_path()).expanduser()
+    if not db_path.is_file():
+        return False
+    uri = Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            row = connection.execute(_EXISTS_QUERY).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 def _metadata_strings(value: object) -> tuple[str | None, str | None]:

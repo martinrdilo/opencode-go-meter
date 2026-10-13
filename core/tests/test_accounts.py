@@ -102,6 +102,16 @@ class AccountsTestCase(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data), encoding="utf-8")
 
+    def use_stored_login(self, token="oc_login_token_abcdefghij"):
+        """Make ``creds.has_stored_login()`` true via the OCGO_TOKEN override.
+
+        Tests that pin the seeded default account need this: without a stored
+        login an absent registry materializes empty instead of seeded.
+        """
+        patcher = mock.patch.dict(os.environ, {"OCGO_TOKEN": token})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def argv_log(self) -> str:
         log = self.secrets / "argv.log"
         return log.read_text(encoding="utf-8") if log.exists() else ""
@@ -167,6 +177,7 @@ class IdValidationTests(AccountsTestCase):
         self.assertEqual(accounts.validate_account_id("default"), "default")
 
     def test_add_accepts_default_id(self):
+        self.use_stored_login()
         accounts.remove_account("default")  # writes the empty v2 registry
         account = accounts.add_account("default", "My login")
         self.assertEqual(account.id, "default")
@@ -194,7 +205,27 @@ class RegistryTests(AccountsTestCase):
     def test_missing_registry_returns_none(self):
         self.assertIsNone(accounts.load_registry())
 
-    def test_only_default_without_registry(self):
+    def test_no_registry_without_login_lists_nothing(self):
+        entries, active = accounts.list_accounts()
+        self.assertEqual(entries, [])
+        self.assertIsNone(active)
+        self.assertIsNone(accounts.get_active_id())
+
+    def test_no_registry_without_login_add_writes_only_the_new_account(self):
+        account = accounts.add_account("personal", "Personal")
+        self.assertEqual(
+            account, accounts.Account("personal", "Personal", "api-key", None)
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["personal"])
+        self.assertEqual(active, "personal")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 3)
+        self.assertEqual(registry["active"], "personal")
+        self.assertEqual([entry["id"] for entry in registry["accounts"]], ["personal"])
+
+    def test_only_default_without_registry_when_a_login_is_stored(self):
+        self.use_stored_login()
         entries, active = accounts.list_accounts()
         self.assertEqual(active, "default")
         self.assertEqual([account.id for account in entries], ["default"])
@@ -203,6 +234,7 @@ class RegistryTests(AccountsTestCase):
         self.assertEqual(accounts.get_active_id(), "default")
 
     def test_add_account_round_trip(self):
+        self.use_stored_login()
         account = accounts.add_account("work", "Work")
         self.assertEqual(account, accounts.Account("work", "Work", "api-key", None))
         entries, active = accounts.list_accounts()
@@ -210,6 +242,7 @@ class RegistryTests(AccountsTestCase):
         self.assertEqual(active, "default")
 
     def test_add_account_keeps_hint(self):
+        self.use_stored_login()
         account = accounts.add_account("work", "  Work  ", hint="oc_sk_…abcd")
         self.assertEqual(account.label, "Work")
         self.assertEqual(account.hint, "oc_sk_…abcd")
@@ -217,6 +250,7 @@ class RegistryTests(AccountsTestCase):
         self.assertEqual(entries[1].hint, "oc_sk_…abcd")
 
     def test_add_preserves_order_and_active(self):
+        self.use_stored_login()
         accounts.add_account("one", "One")
         accounts.set_active("one")
         accounts.add_account("two", "Two")
@@ -391,6 +425,7 @@ class RegistryTests(AccountsTestCase):
         self.assertIsNone(accounts.load_registry())
 
     def test_set_active_default_without_registry_materializes_registry(self):
+        self.use_stored_login()
         accounts.set_active("default")
         registry = accounts.load_registry()
         self.assertEqual(registry["version"], 3)
@@ -400,12 +435,14 @@ class RegistryTests(AccountsTestCase):
         )
 
     def test_set_active_default_switches_back(self):
+        self.use_stored_login()
         accounts.add_account("work", "Work")
         accounts.set_active("work")
         accounts.set_active("default")
         self.assertEqual(accounts.get_active_id(), "default")
 
     def test_remove_account_cleans_registry_and_file_secret(self):
+        self.use_stored_login()
         accounts.add_account("work", "Work")
         accounts.store_secret("work", _SECRET, backend="file")
         accounts.remove_account("work")
@@ -415,12 +452,14 @@ class RegistryTests(AccountsTestCase):
         self.assertFalse(accounts.secret_file_path("work").exists())
 
     def test_remove_active_resets_to_default(self):
+        self.use_stored_login()
         accounts.add_account("work", "Work")
         accounts.set_active("work")
         accounts.remove_account("work")
         self.assertEqual(accounts.get_active_id(), "default")
 
     def test_remove_seeded_default_writes_empty_registry(self):
+        self.use_stored_login()
         accounts.remove_account("default")
         registry = accounts.load_registry()
         self.assertEqual(registry["version"], 3)
@@ -435,6 +474,7 @@ class RegistryTests(AccountsTestCase):
             accounts.remove_account("ghost")
 
     def test_remove_aborts_when_secret_delete_fails(self):
+        self.use_stored_login()
         accounts.add_account("work", "Work")
         accounts.keys_dir().write_text("obstructed", encoding="utf-8")
         before = accounts.registry_path().read_text(encoding="utf-8")
@@ -445,6 +485,7 @@ class RegistryTests(AccountsTestCase):
         self.assertEqual([account.id for account in entries], ["default", "work"])
 
     def test_update_hint(self):
+        self.use_stored_login()
         accounts.add_account("work", "Work")
         updated = accounts.update_hint("work", "oc_sk_…abcd")
         self.assertEqual(updated.hint, "oc_sk_…abcd")
@@ -456,8 +497,10 @@ class RegistryTests(AccountsTestCase):
             accounts.update_hint("ghost", "x")
 
     def test_update_hint_rejects_default(self):
-        with self.assertRaises(accounts.AccountError):
+        self.use_stored_login()
+        with self.assertRaises(accounts.AccountError) as caught:
             accounts.update_hint("default", "x")
+        self.assertIn("no hint", str(caught.exception))
 
 
 class RegistryV2Tests(AccountsTestCase):
@@ -703,7 +746,9 @@ class AddAccountKindTests(AccountsTestCase):
         self.assertEqual([entry["id"] for entry in registry["accounts"]], ["default"])
 
     def test_add_db_kind_refused_without_registry(self):
-        # An absent registry materializes the seeded default opencode-db entry.
+        # With a login stored, an absent registry materializes the seeded
+        # default opencode-db entry, occupying the singular auto slot.
+        self.use_stored_login()
         with self.assertRaises(accounts.AccountError) as caught:
             accounts.add_account("login", "Login", kind=accounts.KIND_OPENCODE_DB)
         self.assertEqual(
@@ -713,6 +758,7 @@ class AddAccountKindTests(AccountsTestCase):
         self.assertIsNone(accounts.load_registry())
 
     def test_add_db_kind_after_removing_default(self):
+        self.use_stored_login()
         accounts.remove_account("default")  # writes the empty v2 registry
         account = accounts.add_account(
             "login", "Login", kind=accounts.KIND_OPENCODE_DB
@@ -805,6 +851,7 @@ class RegistryV3Tests(AccountsTestCase):
         self.assertEqual(accounts.load_registry()["version"], 3)
 
     def test_seeded_default_is_auto(self):
+        self.use_stored_login()
         entries, _active = accounts.list_accounts()
         self.assertEqual(entries[0].id, "default")
         self.assertIsNone(entries[0].credential_id)
@@ -968,6 +1015,7 @@ class RegistryV3Tests(AccountsTestCase):
         self.assertEqual(registry["accounts"][0]["credential_id"], "cred-2")
 
     def test_add_pinned_while_the_auto_login_exists(self):
+        self.use_stored_login()
         account = accounts.add_account(
             "personal",
             "Personal",
@@ -1074,6 +1122,120 @@ class RegistryV3Tests(AccountsTestCase):
         self.assertIsNone(registry["active"])
 
 
+class ConvertToApiKeyTests(AccountsTestCase):
+    """``convert_to_api_key`` replaces a login entry with an api-key entry."""
+
+    def test_converts_the_seeded_default(self):
+        self.use_stored_login()
+        account = accounts.convert_to_api_key("default", "oc_sk_…abcd")
+        self.assertEqual(
+            account, accounts.Account("default", "Default", "api-key", "oc_sk_…abcd")
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["default"])
+        self.assertEqual(active, "default")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 3)
+        self.assertEqual(registry["active"], "default")
+        stored = registry["accounts"][0]
+        self.assertEqual(stored["kind"], "api-key")
+        self.assertEqual(stored["hint"], "oc_sk_…abcd")
+        self.assertNotIn("credential_id", stored)
+
+    def test_conversion_drops_a_pinned_credential_id(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "pin",
+                "accounts": [
+                    {
+                        "id": "pin",
+                        "label": "Pinned login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-42",
+                    }
+                ],
+            }
+        )
+        account = accounts.convert_to_api_key("pin", "oc_sk_…abcd")
+        self.assertIsNone(account.credential_id)
+        self.assertEqual(account.label, "Pinned login")
+        stored = accounts.load_registry()["accounts"][0]
+        self.assertNotIn("credential_id", stored)
+        # The freed pin lets another account bind the same credential again.
+        other = accounts.add_account(
+            "pin2",
+            "Pin2",
+            kind=accounts.KIND_OPENCODE_DB,
+            credential_id="cred-42",
+        )
+        self.assertEqual(other.credential_id, "cred-42")
+
+    def test_conversion_keeps_label_and_active(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None},
+                    {
+                        "id": "login",
+                        "label": "My login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    },
+                ],
+            }
+        )
+        account = accounts.convert_to_api_key("login", "oc_sk_…abcd")
+        self.assertEqual(account.label, "My login")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["active"], "work")
+        self.assertEqual(
+            [entry["kind"] for entry in registry["accounts"]],
+            ["api-key", "api-key"],
+        )
+
+    def test_api_key_account_is_refused(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None}
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("work", "oc_sk_…abcd")
+        self.assertEqual(
+            str(caught.exception), "account 'work' is not an OpenCode login"
+        )
+        registry = accounts.load_registry()
+        self.assertEqual(registry["accounts"][0]["kind"], "api-key")
+        self.assertIsNone(registry["accounts"][0]["hint"])
+
+    def test_missing_account_is_refused(self):
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("ghost", "oc_sk_…abcd")
+        self.assertEqual(str(caught.exception), "account 'ghost' does not exist")
+        self.assertIsNone(accounts.load_registry())
+
+    def test_invalid_id_is_refused(self):
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("Bad", "oc_sk_…abcd")
+        self.assertIn("invalid account id", str(caught.exception))
+        self.assertIsNone(accounts.load_registry())
+
+    def test_empty_hint_is_refused(self):
+        self.use_stored_login()
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("default", "   ")
+        self.assertIn("hint", str(caught.exception))
+        self.assertIsNone(accounts.load_registry())
+
+
 class KeyringSecretTests(AccountsTestCase):
     def test_secret_tool_detection(self):
         self.assertFalse(accounts.secret_available())
@@ -1097,6 +1259,7 @@ class KeyringSecretTests(AccountsTestCase):
         self.assertEqual(accounts.read_secret("work"), _SECRET)
 
     def test_argv_never_contains_the_secret(self):
+        self.use_stored_login()
         self.use_fake_tool()
         accounts.add_account("work", "Work")
         hint = accounts.store_secret("work", _SECRET)
