@@ -1,11 +1,11 @@
 # Feature: applet-ux-fixes — second report round (Cinnamon)
 
-**Status**: T1–T5 done + parent verification done — T6 (independent verifier)
-was launched and CANCELLED by the runtime before delivering a verdict; T7 (PR)
-pending. All gates and live passes are green; the verifier is an optional
-extra layer for this medium-risk round.
+**Status**: Complete — T1–T7 done; PR #4 open (merge is the user's call).
+T6 (independent verifier) was cancelled by the runtime; optional relaunch on
+request. All gates and live passes are green.
 **Repo**: `opencode-go-meter`
-**Branch**: `fix/applet-ux-fixes` (from `main` @ `2829e25`)
+**Branch**: `fix/applet-ux-fixes` (from `main` @ `2829e25`; tracks `origin`)
+**PR**: https://github.com/martinrdilo/opencode-go-meter/pull/4
 **Created**: 2026-10-13
 
 ## Objective
@@ -124,7 +124,11 @@ Fix the four issues of the second field report (Mint 21 / Cinnamon 5.4.13):
   2026-10-13 and **CANCELLED by the runtime before delivering a verdict**.
   Optional for this medium-risk round (gate requires writer self-verification
   + parent spot checks, both done). Can be relaunched on request.
-- [ ] **T7 — PR #4** *(route: parent; branch-pr skill)*.
+- [x] **T7 — PR #4** *(route: parent; branch-pr skill)*. DONE 2026-10-13:
+  pushed and opened PR #4 — https://github.com/martinrdilo/opencode-go-meter/pull/4 (label `bug`; no linked issue — no
+  issue-first flow, documented in the body). CI runs on it. Merge is the
+  user's call; residuals: the field crash root cause (pending the reporter's
+  5.4 logs), GNOME parity, the popup item note.
 
 ## Acceptance criteria
 
@@ -165,7 +169,7 @@ PR with documented size exception.
   reload verified.
 - 2026-10-13 — Parent verification: static gates green; 5.4-theme screenshot
   captured (presentable); field-case screenshot reviewed. T6 verifier
-  cancelled by the runtime — T7 (PR #4) next.
+  cancelled by the runtime. T7: PR #4 opened — https://github.com/martinrdilo/opencode-go-meter/pull/4.
 
 ---
 
