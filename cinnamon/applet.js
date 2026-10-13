@@ -1419,16 +1419,43 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     // Settings-dialog entry point for "Make active in OpenCode…". Mirrors the
-    // Remove button's handling: one accounts dialog at a time, silent no-op
-    // when the selected account is not a pinned login, then the shared
-    // confirmation flow (same as the popup submenu item).
+    // Remove button's handling: one accounts dialog at a time; a pinned login
+    // goes to the shared confirmation flow (same as the popup submenu item),
+    // anything else gets an explainer instead of a silent no-op.
     on_accounts_activate() {
         if (this._accountsDialog)
             return;
         const account = this._selectedComboAccount();
-        if (!this._isPinnedLogin(account))
+        if (!this._isPinnedLogin(account)) {
+            this._openActivateExplainer(account);
             return;
+        }
         this._confirmActivateInOpencode(account);
+    }
+
+    // Explains "Make active in OpenCode…" when it does not apply: only a
+    // pinned OpenCode login can become the credential OpenCode itself uses.
+    _openActivateExplainer(account) {
+        const dialog = this._openAccountsDialog();
+        const lead = account
+            ? `The selected account '${account.label}' is not a pinned OpenCode login. `
+            : 'No account is selected above. ';
+        dialog.contentLayout.add_child(new MessageContent({
+            title: 'Make active in OpenCode',
+            description: lead
+                + 'This action makes a pinned OpenCode login the credential OpenCode '
+                + 'itself uses for new sessions. It needs a pinned login — add one with '
+                + '"Add / replace key…" (type "OpenCode login", pick a specific credential).',
+        }));
+        dialog.setButtons([
+            {
+                label: 'OK',
+                action: () => dialog.close(),
+                key: Clutter.KEY_Escape,
+                default: true,
+            },
+        ]);
+        dialog.open();
     }
 
     _confirmActivateInOpencode(account) {
