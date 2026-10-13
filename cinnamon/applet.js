@@ -60,6 +60,8 @@ function logError(message, error) {
 // Cinnamon 6.4 added imports.ui.dialog (MessageDialogContent); Cinnamon 5.4
 // (Linux Mint 21) has no such module. This local replacement mirrors the 6.4
 // component: same style classes and the same title/description accessors.
+// The extra 'confirm-dialog-title'/'run-dialog-description' classes are what
+// the 5.4 theme styles (the message-dialog-* ones exist only from 6.4).
 const MessageContent = GObject.registerClass(
 class MessageContent extends St.BoxLayout {
     _init(params = {}) {
@@ -69,7 +71,9 @@ class MessageContent extends St.BoxLayout {
             x_expand: true,
         });
         this._titleLabel = new St.Label({style_class: 'message-dialog-title'});
+        this._titleLabel.add_style_class_name('confirm-dialog-title');
         this._descriptionLabel = new St.Label({style_class: 'message-dialog-description'});
+        this._descriptionLabel.add_style_class_name('run-dialog-description');
         this._descriptionLabel.clutter_text.line_wrap = true;
         this._descriptionLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         this.add_child(this._titleLabel);
@@ -1016,6 +1020,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     _openAccountsDialog() {
         const dialog = new ModalDialog.ModalDialog();
+        // Uniform breathing room between the dialog's rows on both themes
+        // (5.4's modal-dialog-content-box sets no spacing).
+        setBoxSpacing(dialog.contentLayout, 6);
         this._accountsDialog = dialog;
         dialog.connect('destroy', () => {
             if (this._accountsDialog === dialog)
@@ -1043,9 +1050,19 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _statusLabel() {
-        const label = new St.Label({text: ''});
+        const label = new St.Label({text: '', style_class: 'run-dialog-description'});
         label.clutter_text.line_wrap = true;
         return label;
+    }
+
+    // Status line shared by the account dialogs: neutral/pending text plain,
+    // failure text in the theme's error color (styled on 5.4 and 6.4).
+    _setStatus(label, text, failed) {
+        label.set_text(text);
+        if (failed)
+            label.add_style_class_name('error');
+        else
+            label.remove_style_class_name('error');
     }
 
     on_accounts_apply() {
@@ -1100,12 +1117,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         GLib.chmod(script, 0o755);
                         if (!Util.spawn(['x-terminal-emulator', '-e', script]))
                             throw new Error('x-terminal-emulator could not be started');
-                        status.set_text('Terminal opened — complete the login in your ' +
-                            'browser, then press Refresh.');
+                        this._setStatus(status, 'Terminal opened — complete the login in ' +
+                            'your browser, then press Refresh.', false);
                     } catch (error) {
                         logError('could not open the login terminal', error);
-                        status.set_text('Could not open a terminal — run this command: ' +
-                            'opencode auth login');
+                        this._setStatus(status, 'Could not open a terminal — run this ' +
+                            'command: opencode auth login', true);
                     }
                 });
                 helperButtons.add_child(loginButton);
@@ -1118,7 +1135,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 can_focus: true,
             });
             refreshButton.connect('clicked', () => {
-                status.set_text('Reloading accounts and credentials…');
+                this._setStatus(status, 'Reloading accounts and credentials…', false);
                 this._loadAccounts(() => {
                     if (this._removed)
                         return;
@@ -1132,14 +1149,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         helper.visible = true;
                         helperLabel.set_text('Could not read the OpenCode credential store. '
                             + truncate(this._credentialsError, MAX_WARNING_CHARS));
-                        status.set_text('Could not reload the OpenCode credential store.');
+                        this._setStatus(status,
+                            'Could not reload the OpenCode credential store.', true);
                     } else if ((this._credentials || []).length === 0) {
                         helper.visible = true;
                         helperLabel.set_text('No OpenCode login found on this machine.');
-                        status.set_text('Still no OpenCode login found on this machine.');
+                        this._setStatus(status,
+                            'Still no OpenCode login found on this machine.', false);
                     } else {
                         helper.visible = false;
-                        status.set_text('Credentials reloaded.');
+                        this._setStatus(status, 'Credentials reloaded.', false);
                     }
                 });
             });
@@ -1174,17 +1193,18 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         // Credential combo: a themed button opening a popup menu (the
         // in-process Cinnamon combo pattern; modal dialogs can host popups).
+        // Both button classes: 'dialog-button' styles inside the 6.4 dialog,
+        // 'modal-dialog-button' is the 5.4 theme's dialog button. The text is
+        // St.Button's own label — the theme styles it with the button; a plain
+        // child St.Label inherits no color and renders invisible on 6.4.
         let selectedCredential = choices.length > 0 ? choices[0] : null;
         const combo = new St.Button({
-            style_class: 'dialog-button',
+            style_class: 'dialog-button modal-dialog-button',
             reactive: true,
             can_focus: true,
             x_expand: true,
+            label: selectedCredential ? selectedCredential.label : 'No credentials found',
         });
-        const comboLabel = new St.Label({
-            text: selectedCredential ? selectedCredential.label : 'No credentials found',
-        });
-        combo.add_child(comboLabel);
         const credentialMenu = new PopupMenu.PopupMenu(combo, St.Side.TOP);
         const menuManager = new PopupMenu.PopupMenuManager({actor: combo});
         Main.uiGroup.add_actor(credentialMenu.actor);
@@ -1200,16 +1220,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 const item = new PopupMenu.PopupMenuItem(choice.label);
                 item.connect('activate', () => {
                     selectedCredential = choice;
-                    comboLabel.set_text(choice.label);
+                    combo.label = choice.label;
                 });
                 credentialMenu.addMenuItem(item);
             }
             if (!fresh.some(choice => selectedCredential &&
                     choice.credentialId === selectedCredential.credentialId))
                 selectedCredential = fresh.length > 0 ? fresh[0] : null;
-            comboLabel.set_text(selectedCredential
+            combo.label = selectedCredential
                 ? selectedCredential.label
-                : 'No credentials found');
+                : 'No credentials found';
         };
         populateCredentialChoices();
         const credentialRow = this._labeledRow('Credential', combo);
@@ -1243,7 +1263,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             const key = fromDb ? '' : keyEntry.get_text();
             const error = accountFormError(accountId, key, fromDb);
             if (error) {
-                status.set_text(error);
+                this._setStatus(status, error, true);
                 return;
             }
             let args;
@@ -1253,7 +1273,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // Without --credential the account follows the active
                 // OpenCode credential (the auto entry).
                 if (!selectedCredential) {
-                    status.set_text('No OpenCode credentials are available to add.');
+                    this._setStatus(status,
+                        'No OpenCode credentials are available to add.', true);
                     return;
                 }
                 args = ['account', 'add', accountId, '--from-db'];
@@ -1272,7 +1293,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     : `Replacing the key for '${accountId}'…`;
             }
             this._setDialogButtonEnabled(confirmInfo.button, false);
-            status.set_text(pendingText);
+            this._setStatus(status, pendingText, false);
             this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
                 if (this._removed)
                     return;
@@ -1284,7 +1305,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 keyEntry.set_text('');
                 if (ok) {
                     const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join(' ');
-                    status.set_text(summary || `Account '${accountId}' updated.`);
+                    this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
                     closeTimerId = Mainloop.timeout_add(1200, () => {
                         closeTimerId = 0;
                         if (this._accountsDialog === dialog)
@@ -1292,10 +1313,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         return false;
                     });
                 } else {
-                    status.set_text(this._failureMessage(
+                    this._setStatus(status, this._failureMessage(
                         fromDb ? 'could not add the OpenCode login account'
                             : 'could not update the account',
-                        stderr, stdout));
+                        stderr, stdout), true);
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 }
             });
@@ -1361,7 +1382,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             label: 'Remove',
             action: () => {
                 this._setDialogButtonEnabled(confirmInfo.button, false);
-                status.set_text('Removing…');
+                this._setStatus(status, 'Removing…', false);
                 this._runAccountCommand(['account', 'remove', account.id], null, (ok, stdout, stderr) => {
                     if (this._removed)
                         return;
@@ -1373,8 +1394,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     }
                     if (closed)
                         return;
-                    status.set_text(this._failureMessage(
-                        'could not remove the account', stderr, stdout));
+                    this._setStatus(status, this._failureMessage(
+                        'could not remove the account', stderr, stdout), true);
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 });
             },
@@ -1433,7 +1454,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             label: 'Make active',
             action: () => {
                 this._setDialogButtonEnabled(confirmInfo.button, false);
-                status.set_text('Switching the active OpenCode credential…');
+                this._setStatus(status, 'Switching the active OpenCode credential…', false);
                 this._runAccountCommand(
                     ['account', 'activate-in-opencode', account.id], null,
                     (ok, stdout, stderr) => {
@@ -1446,8 +1467,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         if (ok) {
                             const summary = [stdout.trim(), stderr.trim()]
                                 .filter(Boolean).join(' ');
-                            status.set_text(summary ||
-                                `Account '${account.id}' is now active in OpenCode.`);
+                            this._setStatus(status, summary ||
+                                `Account '${account.id}' is now active in OpenCode.`, false);
                             closeTimerId = Mainloop.timeout_add(1200, () => {
                                 closeTimerId = 0;
                                 if (this._accountsDialog === dialog)
@@ -1456,9 +1477,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                             });
                             return;
                         }
-                        status.set_text(this._failureMessage(
+                        this._setStatus(status, this._failureMessage(
                             'could not make the account active in OpenCode',
-                            stderr, stdout));
+                            stderr, stdout), true);
                         this._setDialogButtonEnabled(confirmInfo.button, true);
                     });
             },
