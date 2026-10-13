@@ -1102,7 +1102,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             // 5.4 themes, 'dialog-button' on 6.4 themes.
             const helperButtons = new St.BoxLayout();
             setBoxSpacing(helperButtons, 6);
-            if (!this._credentialsError) {
+            // Offered whenever no credentials were discovered, including when
+            // the store itself could not be read: "opencode auth login" is
+            // what creates (or repairs) it.
+            if (noCredentials) {
                 const loginButton = new St.Button({
                     style_class: 'modal-dialog-button dialog-button',
                     label: 'Log in with OpenCode…',
@@ -1139,11 +1142,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 this._loadAccounts(() => {
                     if (this._removed)
                         return;
-                    // The refresh updates this dialog in place: destroying it
-                    // (or letting it be collected after a close) aborts
-                    // Cinnamon with a clutter_actor_dispose assertion when the
-                    // dialog holds focusable children, so it is never torn
-                    // down while the applet lives.
+                    // The refresh updates this dialog in place: a
+                    // destroy-and-recreate cycle proved fragile while this was
+                    // developed and the root cause is not settled, so the open
+                    // dialog is reused instead of torn down.
                     populateCredentialChoices();
                     if (this._credentialsError) {
                         helper.visible = true;
