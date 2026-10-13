@@ -1,8 +1,7 @@
-// OpenCode Go Meter — Cinnamon panel applet (Cinnamon 6.4, legacy imports).
+// OpenCode Go Meter — Cinnamon panel applet (Cinnamon 5.4+, legacy imports).
 // Reads the ocgo cache written by the core CLI; it never touches credentials.
 
 const Applet = imports.ui.applet;
-const Dialog = imports.ui.dialog;
 const ModalDialog = imports.ui.modalDialog;
 const PopupMenu = imports.ui.popupMenu;
 const RadioButton = imports.ui.radioButton;
@@ -12,6 +11,8 @@ const Util = imports.misc.util;
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const GObject = imports.gi.GObject;
+const Pango = imports.gi.Pango;
 const St = imports.gi.St;
 
 const CACHE_DIR = 'ocgo';
@@ -52,6 +53,44 @@ const COLORS = {
 function logError(message, error) {
     console.error(`[opencode-go-meter] ${message}${error ? `: ${error}` : ''}`);
 }
+
+// Cinnamon 6.4 added imports.ui.dialog (MessageDialogContent); Cinnamon 5.4
+// (Linux Mint 21) has no such module. This local replacement mirrors the 6.4
+// component: same style classes and the same title/description accessors.
+const MessageContent = GObject.registerClass(
+class MessageContent extends St.BoxLayout {
+    _init(params = {}) {
+        super._init({
+            style_class: 'message-dialog-content',
+            vertical: true,
+            x_expand: true,
+        });
+        this._titleLabel = new St.Label({style_class: 'message-dialog-title'});
+        this._descriptionLabel = new St.Label({style_class: 'message-dialog-description'});
+        this._descriptionLabel.clutter_text.line_wrap = true;
+        this._descriptionLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        this.add_child(this._titleLabel);
+        this.add_child(this._descriptionLabel);
+        this.title = params.title || '';
+        this.description = params.description || '';
+    }
+
+    get title() {
+        return this._titleLabel.text;
+    }
+
+    set title(value) {
+        this._titleLabel.set_text(value || '');
+    }
+
+    get description() {
+        return this._descriptionLabel.text;
+    }
+
+    set description(value) {
+        this._descriptionLabel.set_text(value || '');
+    }
+});
 
 function parseDate(value) {
     if (typeof value !== 'string' || value.trim() === '')
@@ -794,7 +833,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             closed = true;
         });
 
-        const content = new Dialog.MessageDialogContent({
+        const content = new MessageContent({
             title: 'Add / replace account key',
             description: 'API-key accounts from the OpenCode console. The key is sent to '
                 + 'the ocgo CLI and is never stored by the applet.',
@@ -937,7 +976,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             closed = true;
         });
 
-        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+        dialog.contentLayout.add_child(new MessageContent({
             title: `Remove account '${account.label}'?`,
             description: removeConfirmBody(account.kind),
         }));

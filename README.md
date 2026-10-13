@@ -32,6 +32,8 @@ make install-cinnamon
 
 Then right-click the panel → **Add applets to the panel** → **OpenCode Go Meter**.
 
+The applet supports Cinnamon 5.4 and newer (Linux Mint 21 and up).
+
 The installers only create symlinks (no sudo), are safe to re-run, and uninstall with `make uninstall` / `make uninstall-cinnamon` — they remove only links pointing into this repo.
 
 ## Usage
@@ -47,7 +49,7 @@ API-key accounts show the meters only — the console API rejects API keys for b
 
 ## Accounts
 
-A fresh install uses your local OpenCode login (read **read-only**). The add flow offers both kinds — the OpenCode login (the default when none is registered; sign in with `opencode auth login` first if you are logged out) and API-key accounts from the OpenCode console (`oc_sk_…`). Switch between accounts or replace keys:
+A fresh install uses your local OpenCode login (read **read-only**). The add flow offers both kinds — the OpenCode login (the default when none is registered; sign in with `opencode auth login` first if you are logged out) and API-key accounts from the OpenCode console (`oc_sk_…`). `--from-db` registers that stored login and fails when there is none; for an API key omit it and pass the id and label directly: `ocgo account add <id> --label "<label>"`. Switch between accounts or replace keys:
 
 ```bash
 ocgo account add personal --from-db    # register the local OpenCode login (no API key)
