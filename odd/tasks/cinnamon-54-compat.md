@@ -1,6 +1,6 @@
 # Feature: cinnamon-54-compat — Cinnamon 5.4 (Linux Mint 21) compatibility
 
-**Status**: In progress — T1 recon done; T2–T6 pending
+**Status**: In progress — T1–T4 done; T5–T6 pending
 **Repo**: `opencode-go-meter`
 **Branch**: `fix/cinnamon-54-compat` (from `main` @ `6c0ad65`)
 **Created**: 2026-10-13
@@ -76,8 +76,10 @@ Out of scope:
 
 - GNOME extension; spices distribution.
 - Editing the open PR #1 branch (`feat/multi-oauth-accounts`) — after this PR
-  merges, that branch needs a rebase that re-applies the fix to its three
-  dialog sites (follow-up, user-driven).
+  merges, that branch needs a rebase that (a) re-applies the fix to its three
+  dialog sites and (b) keeps the pinned-credential (`--credential`) failure free
+  of the API-key hint: the hint must merge into the generated branch's
+  `credential_id is None` guard only (follow-up, user-driven).
 - Live verification on a real 5.4 session: this machine's nested harness runs
   Cinnamon 6.4; the Mint 21 check is a user-side residual (documented).
 
@@ -93,10 +95,13 @@ Out of scope:
   rendering is unchanged by construction. `GObject.registerClass` works on
   gjs >= 1.62 (Mint 21 ships 1.72).
 - The static guard is an allowlist, not a banlist: a new `imports.ui.<module>`
-  must be added consciously after checking the 5.4 sources.
-- CLI: append the API-key form only to the auto (`--from-db`, no `--credential`)
-  no-credential failure — not to pinned-credential errors; the existing message
-  prefix stays (several tests rely on it).
+  must be added consciously after checking the 5.4 sources. Anchored to
+  `const X = imports.<module>;` declarations so module names in comments do not
+  trip it.
+- CLI: the hint is appended on the (only) `--from-db` credential failure path of
+  this branch; it therefore also reaches the expired-credential failure, which
+  stays actionable. The existing message prefix is preserved (several tests
+  assert it).
 - Live verification here: nested Cinnamon 6.4 session (no-regression proof);
   real 5.4 behavior is the user's Mint 21 residual.
 - Delivery: single PR; forecast ≈ 150 authored lines (< 400 budget). Strategy
@@ -111,21 +116,44 @@ Out of scope:
 ## Tasks
 
 - [x] **T1 — Recon + feature doc** *(route: parent, inline evidence batch)*.
-  DONE 2026-10-13. Evidence tables above; branch seeded from `main` @ `6c0ad65`.
-- [ ] **T2 — Applet compat fix** *(route: delegated writer; surfaces:
-  `cinnamon/applet.js`, `cinnamon/metadata.json`)*. Replace the 6.4-only dialog
-  import/component with the local `MessageContent`; declare `cinnamon-version`.
-  Checks: `node --check`, `check_applet.py`, `make test`, grep for `Dialog.`
-  (zero matches).
-- [ ] **T3 — Static guard** *(route: delegated writer; surface:
-  `cinnamon/scripts/check_applet.py`)*. Import allowlist for the 5.4 floor +
-  negative probe in a /tmp copy.
-- [ ] **T4 — CLI hint + core test + README** *(route: delegated writer;
+  DONE 2026-10-13, commit `4ef6f2b`. Evidence tables above; branch seeded from
+  `main` @ `6c0ad65`.
+- [x] **T2 — Applet compat fix** *(route: delegated writer; surfaces:
+  `cinnamon/applet.js`, `cinnamon/metadata.json`)*. DONE 2026-10-13, commit
+  `b9fd1b4` (+44/−4). Diff as designed: header `5.4+`, both `Dialog` usages
+  replaced by the local `MessageContent`, `cinnamon-version: ["5.4"]`. Checks
+  observed: `node --check` OK; `check_applet.py` ok; metadata JSON parses;
+  anchored grep for the removed module → no matches; `make test` 326 OK (one
+  pre-existing flake seen: `test_add_from_db_accepts_and_ignores_store`, GC
+  ResourceWarning timing on Python 3.14 — baseline flaked once too, re-runs
+  green). Assessment: medium / under_budget (`executable_change`) → writer
+  self-verification + parent spot check (re-ran `node --check`,
+  `check_applet.py`, the anchored grep).
+- [x] **T3 — Static guard** *(route: delegated writer, same session; surface:
+  `cinnamon/scripts/check_applet.py`)*. DONE 2026-10-13, commit `b3545ac`
+  (+39/−1): docstring rule, `ALLOWED_UI_MODULES` / `ALLOWED_MISC_MODULES` /
+  `IMPORT_DECL_RE` / `_allowed_import()`, main() loop. Checks observed:
+  `py_compile` OK; repo run ok (13 declared imports pass); negative probe in
+  `/tmp/opencode/negcheck` — control exit 0, injected `imports.ui.dialog` exit 1
+  with the allowlist message; bonus: the comment mention of the module in
+  `applet.js` does not trip the guard. Assessment: **high** / high_risk
+  (`process_boundary`) → writer self-verification + independent verification,
+  satisfied by the T5 whole-range verifier (covers this frozen diff
+  explicitly); parent spot check re-ran the repo check and the negative probe.
+- [x] **T4 — CLI hint + core test + README** *(route: delegated writer;
   surfaces: `core/ocgo/cli.py`, `core/tests/test_cli.py`, `README.md`)*.
-  Test-first: observed RED → GREEN.
+  DONE 2026-10-13, commits `581d6fd` (cli + test) and `cb9c472` (README).
+  Test-first with observed RED (`For an API key instead: …` missing) then GREEN
+  (7 from-db tests OK; full suite 326 OK). No `--credential` selector exists on
+  this branch (feature-branch-only), so the auto case is the only failure path
+  and the hint is appended there — it therefore also lands on the
+  expired-credential failure (kept, actionable). Assessment: medium /
+  under_budget (`executable_change`) → writer self-verification + parent spot
+  check (re-ran the 7 from-db tests).
 - [ ] **T5 — Verification** *(route: parent + independent verifier)*. Static
   gates, nested Cinnamon 6.4 live pass (applet + dialogs), independent
-  read-only verification of the whole diff; assessments recorded per task.
+  read-only verification of the whole range (`6c0ad65..HEAD`, explicitly
+  covering the T3 guard diff); assessments recorded per task.
 - [ ] **T6 — PR #2** *(route: parent; branch-pr skill)*. Push, open the PR,
   record it here; note the PR #1 rebase follow-up.
 
@@ -134,17 +162,17 @@ Out of scope:
 - On a real Cinnamon 5.4.13 session (user, Mint 21): applet appears in the
   panel, settings open, and the add/remove/activate dialogs render — user-side
   residual.
-- Nested Cinnamon 6.4 session (this machine): applet loads; the three dialogs
-  render with unchanged content (screenshots).
+- Nested Cinnamon 6.4 session (this machine): applet loads; the dialogs render
+  with unchanged content (screenshots).
 - `make check-cinnamon` fails on `imports.ui.dialog` (negative probe) and
   passes on the repo.
-- `make test` green; a new test proves the `--from-db` API-key hint.
+- `make test` green; the `--from-db` hint is proven by a test.
 - `metadata.json` declares `["5.4"]`; README states the 5.4+ support and the
   API-key form.
 
 ## Checks
 
-- `make test` — core suite (regression + new hint test).
+- `make test` — core suite (regression + hint test).
 - `make check-cinnamon` + negative probe (copied tree in `/tmp/opencode`).
 - `node --check cinnamon/applet.js`.
 - Nested session live run (recipe in `odd/tasks/cinnamon-applet.md` →
@@ -152,14 +180,24 @@ Out of scope:
 
 ## Forecast
 
-≈ 150 authored lines: applet ~+45/−4; check_applet ~+45; cli ~+8; tests ~+30;
-README ~+8; metadata +1. Under the 400-line budget → single PR.
+≈ 150 authored lines: applet ~+45/−4; check_applet ~+40; cli ~+4; tests ~+4;
+README ~+3; metadata +1. Under the 400-line budget → single PR.
 
 ## Progress log
 
 - 2026-10-13 — Feature opened from `main` @ `6c0ad65`. T1 recon: 5.4.13 API
   audit (dialog module is the only breakage), `cinnamon-version` semantics,
   guard + CLI-hint design, branch `fix/cinnamon-54-compat`.
+- 2026-10-13 — T2 closed (`b9fd1b4`): the applet no longer depends on
+  `imports.ui.dialog`; metadata declares 5.4+. Assessment medium/under_budget.
+  Next: T3.
+- 2026-10-13 — T3 closed (`b3545ac`): import allowlist guard with a working
+  negative probe. Assessment high/process_boundary → independent verification
+  deferred to the T5 range verifier. Next: T4.
+- 2026-10-13 — T4 closed (`581d6fd`, `cb9c472`): the CLI now points API-key
+  users at the right form on `--from-db` failures; README documents 5.4+ and
+  the two add forms. Assessment medium/under_budget. Next: T5 (static gates +
+  nested 6.4 live + independent verifier).
 
 ---
 
