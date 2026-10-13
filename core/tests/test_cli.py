@@ -744,6 +744,10 @@ class AccountAddFromDbTests(AccountCliTestCase):
         self.assertEqual(code, 1)
         self.assertIn("No OpenCode credential found", err)
         self.assertIn("Open OpenCode once", err)
+        self.assertIn(
+            "For an API key instead: ocgo account add login --label <label> (no --from-db).",
+            err,
+        )
         self.assertEqual(accounts.load_registry()["accounts"], [])
 
     def test_add_from_db_expired_credential_fails(self):
