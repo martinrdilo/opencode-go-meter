@@ -1,6 +1,7 @@
 # Feature: login-flow-ux — third field-report round (Cinnamon: guided login + dialog UX)
 
 **Status**: In progress — field reports 3 + 3b triaged. **Two functional bugs confirmed**: (1) accounts dialog cannot reopen after close on Cinnamon 5.4 (root cause confirmed in Cinnamon sources); (2) "Log in with OpenCode…" silently no-ops on the field machine (cause under isolation; robust relaunch + fallbacks planned). T1 mostly done (code/version analysis); harness re-run pending; T2–T7 next.
+**Handoff**: execution continues in a **fresh session**; the full cycle is pre-authorized through **merge to main** (the user tests on Mint afterwards). The nested test harness is down — rebuild per `odd/tasks/cinnamon-applet.md` (section "Nested test harness").
 **Repo**: `opencode-go-meter`
 **Branch**: `fix/login-flow-ux` (from `main` @ `0eadac1`)
 **Created**: 2026-10-13
