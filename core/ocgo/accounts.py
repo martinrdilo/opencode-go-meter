@@ -352,6 +352,31 @@ def update_hint(account_id: str, hint: str | None) -> Account:
     raise AccountError(f"account '{account_id}' does not exist")
 
 
+def convert_to_api_key(account_id: str, hint: str) -> Account:
+    """Replace an opencode-db account with an api-key account.
+
+    The id, label, and active state are kept; a pinned ``credential_id`` (v3)
+    is dropped, freeing the login slot. ``hint`` must come from
+    :func:`store_secret`; the caller stores the secret and this writes the
+    registry once.
+    """
+    _require_valid_id(account_id)
+    if not isinstance(hint, str) or not hint.strip():
+        raise AccountError("the account hint must be a non-empty string")
+    registry = _effective_registry()
+    for entry in registry["accounts"]:
+        if entry["id"] != account_id:
+            continue
+        if entry["kind"] != KIND_OPENCODE_DB:
+            raise AccountError(f"account '{account_id}' is not an OpenCode login")
+        entry["kind"] = KIND_API_KEY
+        entry["hint"] = hint.strip()
+        entry.pop("credential_id", None)
+        _save_registry(registry)
+        return _account_from_entry(entry)
+    raise AccountError(f"account '{account_id}' does not exist")
+
+
 def secret_available() -> bool:
     """True when ``secret-tool`` is resolvable on PATH."""
     return shutil.which(_SECRET_TOOL) is not None

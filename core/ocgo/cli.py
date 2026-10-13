@@ -428,15 +428,23 @@ def cmd_account_set_key(args: argparse.Namespace) -> int:
     )
     if account is None:
         return _fail(f"account '{account_id}' does not exist")
-    if account.kind == accounts.KIND_OPENCODE_DB:
-        return _fail(
-            f"account '{account_id}' uses the OpenCode login; "
-            "there is no API key to set"
-        )
 
     key = _read_api_key().strip()
     if not key:
         return _fail("no API key provided")
+
+    if account.kind == accounts.KIND_OPENCODE_DB:
+        try:
+            hint = accounts.store_secret(account_id, key, backend=args.store)
+            accounts.convert_to_api_key(account_id, hint)
+        except accounts.AccountError as exc:
+            return _fail(exc)
+        print(
+            f"Account '{account_id}' now uses a stored API key "
+            f"({hint}; OpenCode login replaced)."
+        )
+        return 0
+
     no_subscription = False
     try:
         api.fetch_zen_status(key)

@@ -997,14 +997,93 @@ class AccountSetKeyTests(AccountCliTestCase):
         self.assertEqual(code, 0)
         fetch.assert_called_once_with(_OTHER_KEY)
 
-    def test_set_key_refuses_db_accounts(self):
+    def test_set_key_converts_a_db_account(self):
         self._isolate()
         self._seed_db_account()
-        with mock.patch.object(cli, "_read_api_key") as read:
+        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+            code, out, err = run_cli(["account", "set-key", "login"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("now uses a stored API key", out)
+        self.assertIn("OpenCode login replaced", out)
+        self.assertNotIn(_ZEN_KEY, out + err)
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["login"])
+        self.assertEqual(entries[0].kind, "api-key")
+        self.assertEqual(entries[0].label, "Login")
+        self.assertEqual(entries[0].hint, creds.mask_token(_ZEN_KEY))
+        self.assertEqual(active, "login")
+        self.assertEqual(accounts.read_secret("login"), _ZEN_KEY)
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 3)
+        self.assertEqual(registry["active"], "login")
+        self.assertEqual(registry["accounts"][0]["kind"], "api-key")
+        self.assertNotIn("credential_id", registry["accounts"][0])
+
+    def test_set_key_conversion_honors_the_file_backend(self):
+        self._isolate()
+        self._seed_db_account()
+        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+            code, _out, _err = run_cli(
+                ["account", "set-key", "login", "--store", "file"]
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(accounts.secret_file_path("login").is_file())
+        self.assertEqual(accounts.read_secret("login"), _ZEN_KEY)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual(entries[0].hint, creds.mask_token(_ZEN_KEY))
+
+    def test_set_key_conversion_requires_a_key(self):
+        self._isolate()
+        self._seed_db_account()
+        with mock.patch.object(cli, "_read_api_key", return_value="   "):
             code, _out, err = run_cli(["account", "set-key", "login"])
         self.assertEqual(code, 1)
-        self.assertIn("uses the OpenCode login", err)
-        read.assert_not_called()
+        self.assertIn("no API key provided", err)
+        entries, _active = accounts.list_accounts()
+        self.assertEqual(entries[0].kind, "opencode-db")
+        self.assertFalse(accounts.has_secret("login"))
+
+    def test_set_key_conversion_frees_the_login_slot(self):
+        self._isolate(login=True)
+        accounts.remove_account("default")
+        code, _out, _err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 0)
+        code, _out, err = run_cli(["account", "add", "x2", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("an OpenCode login account already exists: 'login'", err)
+        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+            code, _out, _err = run_cli(["account", "set-key", "login"])
+        self.assertEqual(code, 0)
+        code, out, err = run_cli(["account", "add", "x2", "--from-db"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("Added account 'x2' (OpenCode login)", out)
+
+    def test_set_key_conversion_drops_a_pinned_credential(self):
+        self._isolate()
+        self._seed_empty_registry()
+        accounts.add_account(
+            "pin", "Pin", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-42"
+        )
+        with mock.patch.object(cli, "_read_api_key", return_value=_ZEN_KEY):
+            code, out, err = run_cli(["account", "set-key", "pin"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn("OpenCode login replaced", out)
+        entries, active = accounts.list_accounts()
+        self.assertEqual(entries[0].kind, "api-key")
+        self.assertIsNone(entries[0].credential_id)
+        self.assertEqual(active, "pin")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 3)
+        self.assertNotIn("credential_id", registry["accounts"][0])
+        # The freed pin lets the same database credential be bound again.
+        accounts.add_account(
+            "pin2", "Pin2", kind=accounts.KIND_OPENCODE_DB, credential_id="cred-42"
+        )
+        entries, _active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["pin", "pin2"])
 
     def test_set_key_unknown_account_fails(self):
         self._isolate()

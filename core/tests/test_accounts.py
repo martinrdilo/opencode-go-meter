@@ -1122,6 +1122,120 @@ class RegistryV3Tests(AccountsTestCase):
         self.assertIsNone(registry["active"])
 
 
+class ConvertToApiKeyTests(AccountsTestCase):
+    """``convert_to_api_key`` replaces a login entry with an api-key entry."""
+
+    def test_converts_the_seeded_default(self):
+        self.use_stored_login()
+        account = accounts.convert_to_api_key("default", "oc_sk_…abcd")
+        self.assertEqual(
+            account, accounts.Account("default", "Default", "api-key", "oc_sk_…abcd")
+        )
+        entries, active = accounts.list_accounts()
+        self.assertEqual([entry.id for entry in entries], ["default"])
+        self.assertEqual(active, "default")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["version"], 3)
+        self.assertEqual(registry["active"], "default")
+        stored = registry["accounts"][0]
+        self.assertEqual(stored["kind"], "api-key")
+        self.assertEqual(stored["hint"], "oc_sk_…abcd")
+        self.assertNotIn("credential_id", stored)
+
+    def test_conversion_drops_a_pinned_credential_id(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "pin",
+                "accounts": [
+                    {
+                        "id": "pin",
+                        "label": "Pinned login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                        "credential_id": "cred-42",
+                    }
+                ],
+            }
+        )
+        account = accounts.convert_to_api_key("pin", "oc_sk_…abcd")
+        self.assertIsNone(account.credential_id)
+        self.assertEqual(account.label, "Pinned login")
+        stored = accounts.load_registry()["accounts"][0]
+        self.assertNotIn("credential_id", stored)
+        # The freed pin lets another account bind the same credential again.
+        other = accounts.add_account(
+            "pin2",
+            "Pin2",
+            kind=accounts.KIND_OPENCODE_DB,
+            credential_id="cred-42",
+        )
+        self.assertEqual(other.credential_id, "cred-42")
+
+    def test_conversion_keeps_label_and_active(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None},
+                    {
+                        "id": "login",
+                        "label": "My login",
+                        "kind": "opencode-db",
+                        "hint": None,
+                    },
+                ],
+            }
+        )
+        account = accounts.convert_to_api_key("login", "oc_sk_…abcd")
+        self.assertEqual(account.label, "My login")
+        registry = accounts.load_registry()
+        self.assertEqual(registry["active"], "work")
+        self.assertEqual(
+            [entry["kind"] for entry in registry["accounts"]],
+            ["api-key", "api-key"],
+        )
+
+    def test_api_key_account_is_refused(self):
+        self.write_registry(
+            {
+                "version": 3,
+                "active": "work",
+                "accounts": [
+                    {"id": "work", "label": "Work", "kind": "api-key", "hint": None}
+                ],
+            }
+        )
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("work", "oc_sk_…abcd")
+        self.assertEqual(
+            str(caught.exception), "account 'work' is not an OpenCode login"
+        )
+        registry = accounts.load_registry()
+        self.assertEqual(registry["accounts"][0]["kind"], "api-key")
+        self.assertIsNone(registry["accounts"][0]["hint"])
+
+    def test_missing_account_is_refused(self):
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("ghost", "oc_sk_…abcd")
+        self.assertEqual(str(caught.exception), "account 'ghost' does not exist")
+        self.assertIsNone(accounts.load_registry())
+
+    def test_invalid_id_is_refused(self):
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("Bad", "oc_sk_…abcd")
+        self.assertIn("invalid account id", str(caught.exception))
+        self.assertIsNone(accounts.load_registry())
+
+    def test_empty_hint_is_refused(self):
+        self.use_stored_login()
+        with self.assertRaises(accounts.AccountError) as caught:
+            accounts.convert_to_api_key("default", "   ")
+        self.assertIn("hint", str(caught.exception))
+        self.assertIsNone(accounts.load_registry())
+
+
 class KeyringSecretTests(AccountsTestCase):
     def test_secret_tool_detection(self):
         self.assertFalse(accounts.secret_available())
