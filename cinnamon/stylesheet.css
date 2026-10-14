@@ -1,0 +1,13 @@
+/* Helper-button rows inside the account dialogs. The .modal-dialog-button-box
+   class is deliberate: Mint-Y (Cinnamon 5.4, Linux Mint 21) scopes its dialog
+   button chrome to `.modal-dialog-button-box .modal-dialog-button`, so a
+   button placed in dialog content only gets the theme's look when an ancestor
+   carries that class. The xlet stylesheet is loaded after the theme but loses
+   equal-specificity ties, hence the second class to outrank the box rule. */
+.modal-dialog-button-box.ocgo-helper-buttons {
+    spacing: 6px;
+    margin: 0;
+    padding: 6px 0 0 0;
+    border: none;
+    background-color: transparent;
+}

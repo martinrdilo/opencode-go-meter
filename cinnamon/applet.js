@@ -24,6 +24,8 @@ const TICK_SECONDS = 30;
 const AMBER_AT = 50;
 const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
+const LOGIN_POLL_SECONDS = 4;
+const LOGIN_POLL_TICKS = 75; // ~5 minutes
 
 const ACCOUNTS_SCHEMA = 2;
 const DISCOVER_SCHEMA = 1;
@@ -182,6 +184,20 @@ function resolveExecutable(path) {
     if (!path.includes('/'))
         return GLib.find_program_in_path(path);
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
+}
+
+// Candidates to open a terminal running the login script, in order. The
+// portable Debian/Mint interface comes first; the rest cover common terminals
+// with their native syntax. Only a candidate whose binary resolves is tried.
+function loginTerminalCandidates(script) {
+    return [
+        {binary: 'x-terminal-emulator', args: ['-e', 'sh', script]},
+        {binary: 'gnome-terminal', args: ['--', 'sh', script]},
+        {binary: 'mate-terminal', args: ['-x', 'sh', script]},
+        {binary: 'xfce4-terminal', args: ['-x', 'sh', script]},
+        {binary: 'konsole', args: ['-e', 'sh', script]},
+        {binary: 'xterm', args: ['-e', 'sh', script]},
+    ];
 }
 
 function percentText(percent) {
@@ -705,10 +721,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             submenu.addMenuItem(item);
         }
 
-        // Make active in OpenCode: only meaningful for a pinned login; the
-        // target is the account the applet currently shows (the selected one).
+        // Use in OpenCode: only meaningful for a pinned login; the target is
+        // the account the applet currently shows (the selected one).
         submenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        const activateItem = new PopupMenu.PopupMenuItem('Make active in OpenCode');
+        const activateItem = new PopupMenu.PopupMenuItem('Use in OpenCode');
         activateItem.setSensitive(activateTarget !== null);
         if (activateTarget) {
             activateItem.connect('activate', () => {
@@ -739,8 +755,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         return this._isPinnedLogin(account) ? account : null;
     }
 
-    // A pinned OpenCode login: the only kind "Make active in OpenCode" applies
-    // to (auto logins follow OpenCode by definition; API keys are not logins).
+    // A pinned OpenCode login: the only kind "Use in OpenCode" applies to
+    // (auto logins follow OpenCode by definition; API keys are not logins).
     _isPinnedLogin(account) {
         return !!account && account.kind === KIND_OPENCODE_DB &&
             !!account.credential_id;
@@ -796,6 +812,30 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         return (this._accounts || []).some(
             account => account.kind === KIND_OPENCODE_DB &&
                 !account.credential_id);
+    }
+
+    // A binding can only succeed when a discovered credential exists: the auto
+    // binding resolves the active credential, so it is only offered while the
+    // store actually holds one (an auto account without any credential
+    // dead-ends on '--from-db').
+    _hasBindableLogin(choices) {
+        if (choices.some(choice => choice.credentialId !== null))
+            return true;
+        return !this._hasAutoLogin() && (this._credentials || []).length > 0;
+    }
+
+    // First free account-id suggestion for the add dialog: 'work', then
+    // 'work-2'…'work-99'. Empty when every candidate is taken.
+    _suggestedAccountId() {
+        const used = new Set((this._accounts || []).map(account => account.id));
+        if (!used.has('work'))
+            return 'work';
+        for (let index = 2; index <= 99; index++) {
+            const candidate = `work-${index}`;
+            if (!used.has(candidate))
+                return candidate;
+        }
+        return '';
     }
 
     // -- accounts ------------------------------------------------------------
@@ -1037,11 +1077,57 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         // (5.4's modal-dialog-content-box sets no spacing).
         setBoxSpacing(dialog.contentLayout, 6);
         this._accountsDialog = dialog;
+        // Per-dialog cleanups hang off this explicit lifecycle instead of the
+        // 'destroy' signal alone: Cinnamon 5.4's close() never destroys the
+        // dialog and never emits 'destroy'. This handler stays as the backstop
+        // for paths that destroy the group directly (the applet teardown).
+        dialog._ocgoCleanups = [];
+        dialog._ocgoDisposed = false;
         dialog.connect('destroy', () => {
+            dialog._ocgoDisposed = true;
             if (this._accountsDialog === dialog)
                 this._accountsDialog = null;
+            this._runDialogCleanups(dialog);
         });
         return dialog;
+    }
+
+    _runDialogCleanups(dialog) {
+        const cleanups = dialog._ocgoCleanups || [];
+        dialog._ocgoCleanups = [];
+        for (const cleanup of cleanups) {
+            try {
+                cleanup();
+            } catch (error) {
+                logError('account dialog cleanup failed', error);
+            }
+        }
+    }
+
+    // Single close path for every account dialog. The cleanups run before the
+    // close because Cinnamon 5.4 never emits 'destroy' on close.
+    _closeAccountsDialog(dialog) {
+        if (!dialog)
+            return;
+        if (this._accountsDialog === dialog)
+            this._accountsDialog = null;
+        this._runDialogCleanups(dialog);
+        try {
+            dialog.close();
+        } catch (error) {
+            logError('could not close the account dialog', error);
+        }
+        // Cinnamon 5.4 (Linux Mint 21): close() only fades and hides the dialog —
+        // it never destroys it nor emits 'destroy', so without this the hidden
+        // actor (and its lightbox) would leak on every open/close cycle, and the
+        // 6.4 auto-destroy ('_destroyOnClose' default true) must not be repeated.
+        if (!dialog._ocgoDisposed && dialog._destroyOnClose !== true) {
+            try {
+                dialog.destroy();
+            } catch (error) {
+                logError('could not destroy the account dialog', error);
+            }
+        }
     }
 
     _setDialogButtonEnabled(button, enabled) {
@@ -1052,6 +1138,39 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             button.remove_style_pseudo_class('insensitive');
         else
             button.add_style_pseudo_class('insensitive');
+    }
+
+    // RadioButtonGroup (byte-identical on 5.4 and 6.4) keeps its options in a
+    // private list and has no per-option API: reach the option's actor to
+    // disable it, degrading to a normal option when the shape changes.
+    // reactive=false alone does not block keyboard activation: St.Button still
+    // emits 'clicked' on Space/Return on both versions, while focus navigation
+    // gates on can_focus, so the disabled option must also leave the focus
+    // chain. When the option being disabled currently holds key focus, move
+    // focus to an enabled option of the same group so the keyboard cannot
+    // strand on an insensitive actor.
+    _setRadioOptionEnabled(group, id, enabled) {
+        try {
+            const entry = (group._buttons || []).find(item => item && item.id === id);
+            const actor = entry && entry.button ? entry.button.actor : null;
+            if (!actor)
+                return;
+            actor.reactive = enabled;
+            actor.can_focus = enabled;
+            if (enabled)
+                actor.remove_style_pseudo_class('insensitive');
+            else
+                actor.add_style_pseudo_class('insensitive');
+            if (!enabled && actor.has_key_focus()) {
+                const other = (group._buttons || []).find(item =>
+                    item && item.button && item.button.actor !== actor &&
+                    item.button.actor.reactive);
+                if (other)
+                    other.button.actor.grab_key_focus();
+            }
+        } catch (error) {
+            logError('could not update the type option state', error);
+        }
     }
 
     _labeledRow(text, child) {
@@ -1078,12 +1197,73 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             label.remove_style_class_name('error');
     }
 
+    // Writes the login helper script to the per-user runtime directory
+    // (XDG_RUNTIME_DIR, 0700). The world-writable temp dir would let a symlink
+    // planted at the fixed filename redirect file_set_contents, so the script
+    // lives where only the user can write. The script runs through 'sh', so
+    // the executable bit is best-effort only.
+    _writeLoginScript() {
+        const dir = GLib.get_user_runtime_dir();
+        try {
+            // Best-effort: if this fails, file_set_contents below fails too
+            // and the caller falls back to the clipboard command.
+            GLib.mkdir_with_parents(dir, 0o700);
+        } catch (error) {
+            logError('could not prepare the login script directory', error);
+        }
+        const script = GLib.build_filenamev([dir, 'ocgo-opencode-login.sh']);
+        const resolved = GLib.find_program_in_path('opencode');
+        const command = resolved
+            ? `'${resolved.replace(/'/g, "'\\''")}'`
+            : 'opencode';
+        const contents = `#!/bin/sh\n${command} auth login\n`
+            + 'printf "\\nLogin finished. You can close this window.\\n"\nread -r _\n';
+        if (!GLib.file_set_contents(script, contents))
+            throw new Error('could not write the login script');
+        try {
+            GLib.chmod(script, 0o755);
+        } catch (error) {
+            logError('could not mark the login script executable', error);
+        }
+        return script;
+    }
+
+    // Tries the terminal candidates in order and returns the binary that
+    // started, or null when none did. Util.spawn returns a pid when the
+    // binary resolves and undefined when it does not; a started terminal can
+    // still die silently (D-Bus activation), so the return value is never
+    // treated as proof the window appeared.
+    _launchLoginTerminal(script) {
+        for (const candidate of loginTerminalCandidates(script)) {
+            if (!GLib.find_program_in_path(candidate.binary))
+                continue;
+            try {
+                if (Util.spawn([candidate.binary, ...candidate.args]))
+                    return candidate.binary;
+            } catch (error) {
+                logError(`could not start ${candidate.binary}`, error);
+            }
+        }
+        return null;
+    }
+
+    // Best-effort clipboard fallback: the terminal can die silently, so the
+    // manual command is what guarantees the user can finish the login.
+    _copyLoginCommand() {
+        try {
+            St.Clipboard.get_default().set_text(
+                St.ClipboardType.CLIPBOARD, 'opencode auth login');
+        } catch (error) {
+            logError('could not copy the login command', error);
+        }
+    }
+
     on_accounts_apply() {
         if (this._accountsDialog)
             return;
         const dialog = this._openAccountsDialog();
         let closed = false;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             closed = true;
         });
 
@@ -1096,113 +1276,135 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         // First-run affordance: with no discovered OpenCode login (or an
         // unreadable credential store) the "OpenCode login" type can only
-        // dead-end, so the browser login path is offered up front.
+        // dead-end, so the browser login path is offered up front. The block
+        // is always built and hidden while credentials are available, so the
+        // Refresh button and the login poll update this dialog in place.
         const noCredentials = (this._credentials || []).length === 0;
-        if (noCredentials || this._credentialsError) {
-            const helper = new St.BoxLayout({vertical: true, x_expand: true});
-            setBoxSpacing(helper, 4);
-            const helperLabel = new St.Label({
-                text: this._credentialsError
-                    ? 'Could not read the OpenCode credential store. '
-                        + truncate(this._credentialsError, MAX_WARNING_CHARS)
-                    : 'No OpenCode login found on this machine.',
-            });
-            helperLabel.clutter_text.line_wrap = true;
-            helperLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-            helper.add_child(helperLabel);
+        const helper = new St.BoxLayout({vertical: true, x_expand: true});
+        setBoxSpacing(helper, 4);
+        const helperLabel = new St.Label({
+            text: this._credentialsError
+                ? 'Could not read the OpenCode credential store. '
+                    + truncate(this._credentialsError, MAX_WARNING_CHARS)
+                : 'No OpenCode login found on this machine. Log in below, or add an API-key account.',
+        });
+        helperLabel.clutter_text.line_wrap = true;
+        helperLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        helper.add_child(helperLabel);
 
-            // Both button classes: 'modal-dialog-button' styles on Cinnamon
-            // 5.4 themes, 'dialog-button' on 6.4 themes.
-            const helperButtons = new St.BoxLayout();
-            setBoxSpacing(helperButtons, 6);
-            // Offered whenever no credentials were discovered, including when
-            // the store itself could not be read: "opencode auth login" is
-            // what creates (or repairs) it.
-            if (noCredentials) {
-                const loginButton = new St.Button({
-                    style_class: 'modal-dialog-button dialog-button',
-                    label: 'Log in with OpenCode…',
-                    reactive: true,
-                    can_focus: true,
-                });
-                loginButton.connect('clicked', () => {
-                    try {
-                        const script = GLib.build_filenamev(
-                            [GLib.get_tmp_dir(), 'ocgo-opencode-login.sh']);
-                        GLib.file_set_contents(script, '#!/bin/sh\nopencode auth login\nprintf "\\nLogin finished — you can close this window.\\n"\nread -r _\n');
-                        GLib.chmod(script, 0o755);
-                        if (!Util.spawn(['x-terminal-emulator', '-e', script]))
-                            throw new Error('x-terminal-emulator could not be started');
-                        this._setStatus(status, 'Terminal opened — complete the login in ' +
-                            'your browser, then press Refresh.', false);
-                    } catch (error) {
-                        logError('could not open the login terminal', error);
-                        this._setStatus(status, 'Could not open a terminal — run this ' +
-                            'command: opencode auth login', true);
-                    }
-                });
-                helperButtons.add_child(loginButton);
+        // Both button classes: 'modal-dialog-button' styles on Cinnamon
+        // 5.4 themes, 'dialog-button' on 6.4 themes.
+        const helperButtons = new St.BoxLayout({
+            style_class: 'modal-dialog-button-box ocgo-helper-buttons',
+        });
+        setBoxSpacing(helperButtons, 6);
+        // Always offered: "opencode auth login" creates (or repairs) the
+        // credential store, and it is also the recovery path when the store
+        // itself could not be read.
+        const loginButton = new St.Button({
+            style_class: 'modal-dialog-button dialog-button',
+            label: 'Log in with OpenCode…',
+            reactive: true,
+            can_focus: true,
+        });
+        loginButton.connect('clicked', () => {
+            let script = null;
+            try {
+                script = this._writeLoginScript();
+            } catch (error) {
+                logError('could not prepare the login script', error);
             }
+            if (!script) {
+                this._copyLoginCommand();
+                this._setStatus(status, 'Could not prepare the login. '
+                    + '"opencode auth login" is on your clipboard — paste it '
+                    + 'into a terminal, then press Refresh.', true);
+                return;
+            }
+            const terminal = this._launchLoginTerminal(script);
+            // Always copied: a spawned terminal can die silently (D-Bus
+            // activation) and its exit status is not trustworthy, so the
+            // manual command is the guaranteed fallback.
+            this._copyLoginCommand();
+            if (terminal) {
+                this._setStatus(status, 'Terminal opened — complete the login '
+                    + 'in your browser. If no window appeared, the command is '
+                    + 'on your clipboard.', false);
+            } else {
+                this._setStatus(status, 'Could not open a terminal. '
+                    + '"opencode auth login" is on your clipboard — paste it '
+                    + 'into a terminal, then press Refresh.', true);
+            }
+            startLoginPoll();
+        });
+        helperButtons.add_child(loginButton);
 
-            const refreshButton = new St.Button({
-                style_class: 'modal-dialog-button dialog-button',
-                label: 'Refresh',
-                reactive: true,
-                can_focus: true,
+        const refreshButton = new St.Button({
+            style_class: 'modal-dialog-button dialog-button',
+            label: 'Refresh',
+            reactive: true,
+            can_focus: true,
+        });
+        refreshButton.connect('clicked', () => {
+            this._setStatus(status, 'Reloading accounts and credentials…', false);
+            this._loadAccounts(() => {
+                if (this._removed)
+                    return;
+                // The refresh updates this dialog in place: a
+                // destroy-and-recreate cycle proved fragile while this was
+                // developed and the root cause is not settled, so the open
+                // dialog is reused instead of torn down.
+                refreshGuidedState();
+                if (this._credentialsError) {
+                    helper.visible = true;
+                    helperLabel.set_text('Could not read the OpenCode credential store. '
+                        + truncate(this._credentialsError, MAX_WARNING_CHARS));
+                    this._setStatus(status,
+                        'Could not reload the OpenCode credential store.', true);
+                } else if ((this._credentials || []).length === 0) {
+                    helper.visible = true;
+                    helperLabel.set_text('No OpenCode login found on this machine. '
+                        + 'Log in below, or add an API-key account.');
+                    this._setStatus(status, 'No new credentials found yet.', false);
+                } else {
+                    helper.visible = false;
+                    this._setStatus(status, 'Credentials reloaded.', false);
+                }
             });
-            refreshButton.connect('clicked', () => {
-                this._setStatus(status, 'Reloading accounts and credentials…', false);
-                this._loadAccounts(() => {
-                    if (this._removed)
-                        return;
-                    // The refresh updates this dialog in place: a
-                    // destroy-and-recreate cycle proved fragile while this was
-                    // developed and the root cause is not settled, so the open
-                    // dialog is reused instead of torn down.
-                    populateCredentialChoices();
-                    if (this._credentialsError) {
-                        helper.visible = true;
-                        helperLabel.set_text('Could not read the OpenCode credential store. '
-                            + truncate(this._credentialsError, MAX_WARNING_CHARS));
-                        this._setStatus(status,
-                            'Could not reload the OpenCode credential store.', true);
-                    } else if ((this._credentials || []).length === 0) {
-                        helper.visible = true;
-                        helperLabel.set_text('No OpenCode login found on this machine.');
-                        this._setStatus(status,
-                            'Still no OpenCode login found on this machine.', false);
-                    } else {
-                        helper.visible = false;
-                        this._setStatus(status, 'Credentials reloaded.', false);
-                    }
-                });
-            });
-            helperButtons.add_child(refreshButton);
+        });
+        helperButtons.add_child(refreshButton);
 
-            helper.add_child(helperButtons);
-            dialog.contentLayout.add_child(helper);
-        }
+        helper.add_child(helperButtons);
+        dialog.contentLayout.add_child(helper);
+        helper.visible = noCredentials || !!this._credentialsError;
 
         const idEntry = new St.Entry({hint_text: 'e.g. work', x_expand: true});
+        idEntry.set_text(this._suggestedAccountId());
         const labelEntry = new St.Entry({hint_text: 'optional', x_expand: true});
         const keyEntry = new St.Entry({hint_text: 'oc_sk_…', x_expand: true});
         keyEntry.clutter_text.set_password_char('\u25cf');
 
-        // The "OpenCode login" type stays available while no auto (unpinned)
-        // login is registered yet, or while at least one discovered credential
-        // is not registered as a pinned login. Otherwise only API keys remain.
+        // Both types are always listed: the "OpenCode login" type is disabled
+        // (via _setRadioOptionEnabled) when no binding can succeed — no
+        // discovered credential is free to bind and the auto entry cannot
+        // resolve one either — so the dead end is visible up front instead of
+        // failing on submit.
         const choices = this._credentialChoices();
-        const allowLogin = !this._hasAutoLogin() ||
-            choices.some(choice => choice.credentialId !== null);
+        const allowLogin = this._hasBindableLogin(choices);
         const typeChooser = new RadioButton.RadioButtonGroup();
-        if (allowLogin)
-            typeChooser.addButton(KIND_OPENCODE_DB, 'OpenCode login');
+        typeChooser.addButton(KIND_OPENCODE_DB, 'OpenCode login');
         typeChooser.addButton(KIND_API_KEY, 'API key');
-        // With no discovered credential to bind, default to the API key so
-        // the first submit can succeed instead of dead-ending on --from-db.
-        typeChooser.setActive(allowLogin && !noCredentials ? KIND_OPENCODE_DB : KIND_API_KEY);
+        this._setRadioOptionEnabled(typeChooser, KIND_OPENCODE_DB, allowLogin);
+        typeChooser.setActive(allowLogin ? KIND_OPENCODE_DB : KIND_API_KEY);
 
         dialog.contentLayout.add_child(this._labeledRow('Account id', idEntry));
+        const idHint = new St.Label({
+            text: 'Just a name for this account here — it does not need to match '
+                + 'anything in OpenCode.',
+        });
+        idHint.clutter_text.line_wrap = true;
+        idHint.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        dialog.contentLayout.add_child(idHint);
         dialog.contentLayout.add_child(this._labeledRow('Label (optional)', labelEntry));
         dialog.contentLayout.add_child(this._labeledRow('Type', typeChooser.actor));
 
@@ -1247,10 +1449,85 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 : 'No credentials found';
         };
         populateCredentialChoices();
+        // Recomputes the guided state in place after a reload (the Refresh
+        // button and the login poll): the login type depends on whether a
+        // bindable credential exists, and the combo must follow the fresh
+        // credential list.
+        const refreshGuidedState = () => {
+            const fresh = this._credentialChoices();
+            const freshAllowLogin = this._hasBindableLogin(fresh);
+            this._setRadioOptionEnabled(typeChooser, KIND_OPENCODE_DB, freshAllowLogin);
+            // The reload can remove the last bindable credential while the
+            // login type is active: keeping it selected would submit from the
+            // disabled type, so fall back to the API-key type.
+            if (!freshAllowLogin && selectedType() === KIND_OPENCODE_DB)
+                typeChooser.setActive(KIND_API_KEY);
+            populateCredentialChoices();
+            return {allowLogin: freshAllowLogin, choices: fresh};
+        };
+
+        // Detection poll: after a login attempt, watch the credential store
+        // for a credential id that was not there when the button was clicked
+        // (~5 minutes). It updates the dialog in place and stops on detection,
+        // timeout, or dialog close (through the cleanups).
+        let loginPollId = 0;
+        let loginPollTicks = 0;
+        let loginPollSerial = 0;
+        const stopLoginPoll = () => {
+            if (loginPollId) {
+                Mainloop.source_remove(loginPollId);
+                loginPollId = 0;
+            }
+        };
+        dialog._ocgoCleanups.push(stopLoginPoll);
+        const startLoginPoll = () => {
+            if (loginPollId)
+                return; // one poll at a time
+            const serial = ++loginPollSerial;
+            const baseline = new Set(
+                (this._credentials || []).map(credential => credential.id));
+            loginPollTicks = 0;
+            loginPollId = Mainloop.timeout_add_seconds(LOGIN_POLL_SECONDS, () => {
+                if (this._removed || closed) {
+                    loginPollId = 0;
+                    return false;
+                }
+                loginPollTicks += 1;
+                const lastTick = loginPollTicks >= LOGIN_POLL_TICKS;
+                this._loadAccounts(() => {
+                    if (this._removed || closed || serial !== loginPollSerial)
+                        return; // closed, or a newer poll replaced this one
+                    const detected = (this._credentials || []).some(
+                        credential => !baseline.has(credential.id));
+                    if (detected) {
+                        stopLoginPoll();
+                        helper.visible = true;
+                        helperLabel.set_text('OpenCode login detected.');
+                        refreshGuidedState();
+                        this._setStatus(status, 'OpenCode login detected — '
+                            + 'the login can be added now.', false);
+                        return;
+                    }
+                    if (lastTick) {
+                        stopLoginPoll();
+                        this._setStatus(status, 'Still no OpenCode login detected — '
+                            + 'finish the login, then press Refresh.', false);
+                    }
+                });
+                if (lastTick)
+                    loginPollId = 0;
+                return !lastTick;
+            });
+        };
+
         const credentialRow = this._labeledRow('Credential', combo);
+        // Same class trick as the helper row: the combo button needs the
+        // theme's dialog-button chrome as a descendant of the box class.
+        credentialRow.add_style_class_name('modal-dialog-button-box');
+        credentialRow.add_style_class_name('ocgo-helper-buttons');
         credentialRow.visible = false;
         dialog.contentLayout.add_child(credentialRow);
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             // Guarded like the applet's own menu manager: 5.4 and 6.4 both
             // expose destroy(), but never trust the class shape here.
             if (menuManager && typeof menuManager.destroy === 'function')
@@ -1266,7 +1543,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.contentLayout.add_child(status);
 
         let closeTimerId = 0;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             if (closeTimerId) {
                 Mainloop.source_remove(closeTimerId);
                 closeTimerId = 0;
@@ -1291,9 +1568,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // The CLI registers an OpenCode login; no key, no stdin.
                 // Without --credential the account follows the active
                 // OpenCode credential (the auto entry).
-                if (!selectedCredential) {
-                    this._setStatus(status,
-                        'No OpenCode credentials are available to add.', true);
+                // Backstop only: the login type is disabled when no
+                // credential is bindable, so this submit cannot normally run.
+                // The auto entry (credentialId null) needs at least one
+                // credential in the store to resolve, so it counts as missing
+                // when the store is empty.
+                if (!selectedCredential ||
+                        (selectedCredential.credentialId === null &&
+                            (this._credentials || []).length === 0)) {
+                    this._setStatus(status, 'No OpenCode login found — use '
+                        + '"Log in with OpenCode…" or the API key type.', true);
                     return;
                 }
                 args = ['account', 'add', accountId, '--from-db'];
@@ -1327,8 +1611,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
                     closeTimerId = Mainloop.timeout_add(1200, () => {
                         closeTimerId = 0;
-                        if (this._accountsDialog === dialog)
-                            dialog.close();
+                        this._closeAccountsDialog(dialog);
                         return false;
                     });
                 } else {
@@ -1349,7 +1632,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.setButtons([
             {
                 label: 'Cancel',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
             },
             confirmInfo,
@@ -1374,7 +1657,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         typeChooser.connect('radio-changed', () => updateTypeState());
         updateTypeState();
         dialog.setInitialKeyFocus(idEntry);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
     on_accounts_remove() {
@@ -1385,7 +1673,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             return;
         const dialog = this._openAccountsDialog();
         let closed = false;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             closed = true;
         });
 
@@ -1408,7 +1696,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     if (ok) {
                         this._loadAccounts();
                         if (!closed)
-                            dialog.close();
+                            this._closeAccountsDialog(dialog);
                         return;
                     }
                     if (closed)
@@ -1423,15 +1711,20 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.setButtons([
             {
                 label: 'Cancel',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
             },
             confirmInfo,
         ]);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
-    // Settings-dialog entry point for "Make active in OpenCode…". Mirrors the
+    // Settings-dialog entry point for "Use in OpenCode…". Mirrors the
     // Remove button's handling: one accounts dialog at a time; a pinned login
     // goes to the shared confirmation flow (same as the popup submenu item),
     // anything else gets an explainer instead of a silent no-op.
@@ -1446,29 +1739,35 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._confirmActivateInOpencode(account);
     }
 
-    // Explains "Make active in OpenCode…" when it does not apply: only a
-    // pinned OpenCode login can become the credential OpenCode itself uses.
+    // Explains "Use in OpenCode…" when it does not apply: only a pinned
+    // OpenCode login can become the credential OpenCode itself uses.
     _openActivateExplainer(account) {
         const dialog = this._openAccountsDialog();
         const lead = account
             ? `The selected account '${account.label}' is not a pinned OpenCode login. `
             : 'No account is selected above. ';
         dialog.contentLayout.add_child(new MessageContent({
-            title: 'Make active in OpenCode',
+            title: 'Use in OpenCode',
             description: lead
-                + 'This action makes a pinned OpenCode login the credential OpenCode '
-                + 'itself uses for new sessions. It needs a pinned login — add one with '
-                + '"Add / replace key…" (type "OpenCode login", pick a specific credential).',
+                + 'This action points OpenCode itself at a pinned login from this '
+                + 'machine\'s credential store, so new OpenCode sessions use it. Add a '
+                + 'pinned login with "Add / replace key…" (type "OpenCode login", pick '
+                + 'a specific credential).',
         }));
         dialog.setButtons([
             {
                 label: 'OK',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
                 default: true,
             },
         ]);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
     _confirmActivateInOpencode(account) {
@@ -1476,20 +1775,21 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             return;
         const dialog = this._openAccountsDialog();
         let closed = false;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             closed = true;
         });
 
         dialog.contentLayout.add_child(new MessageContent({
-            title: `Make '${account.label}' active in OpenCode?`,
-            description: 'OpenCode will use this account for new sessions.',
+            title: `Use '${account.label}' in OpenCode?`,
+            description: 'OpenCode will use this login for new sessions. '
+                + 'The applet keeps showing the account selected in the menu.',
         }));
 
         const status = this._statusLabel();
         dialog.contentLayout.add_child(status);
 
         let closeTimerId = 0;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             if (closeTimerId) {
                 Mainloop.source_remove(closeTimerId);
                 closeTimerId = 0;
@@ -1497,10 +1797,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
 
         const confirmInfo = {
-            label: 'Make active',
+            label: 'Use in OpenCode',
             action: () => {
                 this._setDialogButtonEnabled(confirmInfo.button, false);
-                this._setStatus(status, 'Switching the active OpenCode credential…', false);
+                this._setStatus(status, 'Pointing OpenCode at this login…', false);
                 this._runAccountCommand(
                     ['account', 'activate-in-opencode', account.id], null,
                     (ok, stdout, stderr) => {
@@ -1514,17 +1814,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                             const summary = [stdout.trim(), stderr.trim()]
                                 .filter(Boolean).join(' ');
                             this._setStatus(status, summary ||
-                                `Account '${account.id}' is now active in OpenCode.`, false);
+                                `Account '${account.id}' is now OpenCode's login.`, false);
                             closeTimerId = Mainloop.timeout_add(1200, () => {
                                 closeTimerId = 0;
-                                if (this._accountsDialog === dialog)
-                                    dialog.close();
+                                this._closeAccountsDialog(dialog);
                                 return false;
                             });
                             return;
                         }
                         this._setStatus(status, this._failureMessage(
-                            'could not make the account active in OpenCode',
+                            'could not set the OpenCode login',
                             stderr, stdout), true);
                         this._setDialogButtonEnabled(confirmInfo.button, true);
                     });
@@ -1534,12 +1833,17 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.setButtons([
             {
                 label: 'Cancel',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
             },
             confirmInfo,
         ]);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
     _failureMessage(fallback, stderr, stdout) {
@@ -1548,7 +1852,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         // dialog's own affordances instead.
         if (detail.includes('No OpenCode credential found')) {
             detail = 'No OpenCode login found on this machine — use '
-                + '"Log in with OpenCode…" or switch the type to API key.';
+                + '"Log in with OpenCode…" or the API key type.';
         }
         return detail || fallback;
     }
