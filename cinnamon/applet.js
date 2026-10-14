@@ -721,10 +721,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             submenu.addMenuItem(item);
         }
 
-        // Make active in OpenCode: only meaningful for a pinned login; the
-        // target is the account the applet currently shows (the selected one).
+        // Use in OpenCode: only meaningful for a pinned login; the target is
+        // the account the applet currently shows (the selected one).
         submenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        const activateItem = new PopupMenu.PopupMenuItem('Make active in OpenCode');
+        const activateItem = new PopupMenu.PopupMenuItem('Use in OpenCode');
         activateItem.setSensitive(activateTarget !== null);
         if (activateTarget) {
             activateItem.connect('activate', () => {
@@ -755,8 +755,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         return this._isPinnedLogin(account) ? account : null;
     }
 
-    // A pinned OpenCode login: the only kind "Make active in OpenCode" applies
-    // to (auto logins follow OpenCode by definition; API keys are not logins).
+    // A pinned OpenCode login: the only kind "Use in OpenCode" applies to
+    // (auto logins follow OpenCode by definition; API keys are not logins).
     _isPinnedLogin(account) {
         return !!account && account.kind === KIND_OPENCODE_DB &&
             !!account.credential_id;
@@ -1667,7 +1667,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.open();
     }
 
-    // Settings-dialog entry point for "Make active in OpenCode…". Mirrors the
+    // Settings-dialog entry point for "Use in OpenCode…". Mirrors the
     // Remove button's handling: one accounts dialog at a time; a pinned login
     // goes to the shared confirmation flow (same as the popup submenu item),
     // anything else gets an explainer instead of a silent no-op.
@@ -1682,19 +1682,20 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._confirmActivateInOpencode(account);
     }
 
-    // Explains "Make active in OpenCode…" when it does not apply: only a
-    // pinned OpenCode login can become the credential OpenCode itself uses.
+    // Explains "Use in OpenCode…" when it does not apply: only a pinned
+    // OpenCode login can become the credential OpenCode itself uses.
     _openActivateExplainer(account) {
         const dialog = this._openAccountsDialog();
         const lead = account
             ? `The selected account '${account.label}' is not a pinned OpenCode login. `
             : 'No account is selected above. ';
         dialog.contentLayout.add_child(new MessageContent({
-            title: 'Make active in OpenCode',
+            title: 'Use in OpenCode',
             description: lead
-                + 'This action makes a pinned OpenCode login the credential OpenCode '
-                + 'itself uses for new sessions. It needs a pinned login — add one with '
-                + '"Add / replace key…" (type "OpenCode login", pick a specific credential).',
+                + 'This action points OpenCode itself at a pinned login from this '
+                + 'machine\'s credential store, so new OpenCode sessions use it. Add a '
+                + 'pinned login with "Add / replace key…" (type "OpenCode login", pick '
+                + 'a specific credential).',
         }));
         dialog.setButtons([
             {
@@ -1717,8 +1718,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
 
         dialog.contentLayout.add_child(new MessageContent({
-            title: `Make '${account.label}' active in OpenCode?`,
-            description: 'OpenCode will use this account for new sessions.',
+            title: `Use '${account.label}' in OpenCode?`,
+            description: 'OpenCode will use this login for new sessions. '
+                + 'The applet keeps showing the account selected in the menu.',
         }));
 
         const status = this._statusLabel();
@@ -1733,10 +1735,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
 
         const confirmInfo = {
-            label: 'Make active',
+            label: 'Use in OpenCode',
             action: () => {
                 this._setDialogButtonEnabled(confirmInfo.button, false);
-                this._setStatus(status, 'Switching the active OpenCode credential…', false);
+                this._setStatus(status, 'Pointing OpenCode at this login…', false);
                 this._runAccountCommand(
                     ['account', 'activate-in-opencode', account.id], null,
                     (ok, stdout, stderr) => {
@@ -1750,7 +1752,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                             const summary = [stdout.trim(), stderr.trim()]
                                 .filter(Boolean).join(' ');
                             this._setStatus(status, summary ||
-                                `Account '${account.id}' is now active in OpenCode.`, false);
+                                `Account '${account.id}' is now OpenCode's login.`, false);
                             closeTimerId = Mainloop.timeout_add(1200, () => {
                                 closeTimerId = 0;
                                 this._closeAccountsDialog(dialog);
@@ -1759,7 +1761,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                             return;
                         }
                         this._setStatus(status, this._failureMessage(
-                            'could not make the account active in OpenCode',
+                            'could not set the OpenCode login',
                             stderr, stdout), true);
                         this._setDialogButtonEnabled(confirmInfo.button, true);
                     });

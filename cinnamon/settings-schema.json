@@ -52,8 +52,8 @@
     },
     "accounts-activate-button": {
         "type": "button",
-        "description": "Make a pinned OpenCode login active in OpenCode…",
+        "description": "Use the selected login in OpenCode…",
         "callback": "on_accounts_activate",
-        "tooltip": "Make the account selected above the active credential in OpenCode, so OpenCode uses it for new sessions. Only pinned OpenCode logins are eligible; anything else opens a short explainer."
+        "tooltip": "Point OpenCode itself at the selected pinned OpenCode login, so new OpenCode sessions use it. Only pinned OpenCode logins are eligible; anything else opens a short explainer."
     }
 }
