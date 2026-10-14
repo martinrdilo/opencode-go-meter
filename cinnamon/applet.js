@@ -814,6 +814,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 !account.credential_id);
     }
 
+    // A binding can only succeed when a discovered credential exists: the auto
+    // binding resolves the active credential, so it is only offered while the
+    // store actually holds one (an auto account without any credential
+    // dead-ends on '--from-db').
+    _hasBindableLogin(choices) {
+        if (choices.some(choice => choice.credentialId !== null))
+            return true;
+        return !this._hasAutoLogin() && (this._credentials || []).length > 0;
+    }
+
     // First free account-id suggestion for the add dialog: 'work', then
     // 'work-2'…'work-99'. Empty when every candidate is taken.
     _suggestedAccountId() {
@@ -1133,6 +1143,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     // RadioButtonGroup (byte-identical on 5.4 and 6.4) keeps its options in a
     // private list and has no per-option API: reach the option's actor to
     // disable it, degrading to a normal option when the shape changes.
+    // reactive=false alone does not block keyboard activation: St.Button still
+    // emits 'clicked' on Space/Return on both versions, while focus navigation
+    // gates on can_focus, so the disabled option must also leave the focus
+    // chain. When the option being disabled currently holds key focus, move
+    // focus to an enabled option of the same group so the keyboard cannot
+    // strand on an insensitive actor.
     _setRadioOptionEnabled(group, id, enabled) {
         try {
             const entry = (group._buttons || []).find(item => item && item.id === id);
@@ -1140,10 +1156,18 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             if (!actor)
                 return;
             actor.reactive = enabled;
+            actor.can_focus = enabled;
             if (enabled)
                 actor.remove_style_pseudo_class('insensitive');
             else
                 actor.add_style_pseudo_class('insensitive');
+            if (!enabled && actor.has_key_focus()) {
+                const other = (group._buttons || []).find(item =>
+                    item && item.button && item.button.actor !== actor &&
+                    item.button.actor.reactive);
+                if (other)
+                    other.button.actor.grab_key_focus();
+            }
         } catch (error) {
             logError('could not update the type option state', error);
         }
@@ -1329,6 +1353,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         'Could not reload the OpenCode credential store.', true);
                 } else if ((this._credentials || []).length === 0) {
                     helper.visible = true;
+                    helperLabel.set_text('No OpenCode login found on this machine. '
+                        + 'Log in below, or add an API-key account.');
                     this._setStatus(status, 'No new credentials found yet.', false);
                 } else {
                     helper.visible = false;
@@ -1349,11 +1375,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         keyEntry.clutter_text.set_password_char('\u25cf');
 
         // Both types are always listed: the "OpenCode login" type is disabled
-        // (via _setRadioOptionEnabled) when no discovered credential is free
-        // to bind, so the no-credentials dead end is visible up front instead
-        // of failing on submit.
+        // (via _setRadioOptionEnabled) when no binding can succeed — no
+        // discovered credential is free to bind and the auto entry cannot
+        // resolve one either — so the dead end is visible up front instead of
+        // failing on submit.
         const choices = this._credentialChoices();
-        const allowLogin = choices.some(choice => choice.credentialId !== null);
+        const allowLogin = this._hasBindableLogin(choices);
         const typeChooser = new RadioButton.RadioButtonGroup();
         typeChooser.addButton(KIND_OPENCODE_DB, 'OpenCode login');
         typeChooser.addButton(KIND_API_KEY, 'API key');
@@ -1418,8 +1445,13 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         // credential list.
         const refreshGuidedState = () => {
             const fresh = this._credentialChoices();
-            const freshAllowLogin = fresh.some(choice => choice.credentialId !== null);
+            const freshAllowLogin = this._hasBindableLogin(fresh);
             this._setRadioOptionEnabled(typeChooser, KIND_OPENCODE_DB, freshAllowLogin);
+            // The reload can remove the last bindable credential while the
+            // login type is active: keeping it selected would submit from the
+            // disabled type, so fall back to the API-key type.
+            if (!freshAllowLogin && selectedType() === KIND_OPENCODE_DB)
+                typeChooser.setActive(KIND_API_KEY);
             populateCredentialChoices();
             return {allowLogin: freshAllowLogin, choices: fresh};
         };
@@ -1528,7 +1560,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // OpenCode credential (the auto entry).
                 // Backstop only: the login type is disabled when no
                 // credential is bindable, so this submit cannot normally run.
-                if (!selectedCredential) {
+                // The auto entry (credentialId null) needs at least one
+                // credential in the store to resolve, so it counts as missing
+                // when the store is empty.
+                if (!selectedCredential ||
+                        (selectedCredential.credentialId === null &&
+                            (this._credentials || []).length === 0)) {
                     this._setStatus(status, 'No OpenCode login found — use '
                         + '"Log in with OpenCode…" or the API key type.', true);
                     return;
