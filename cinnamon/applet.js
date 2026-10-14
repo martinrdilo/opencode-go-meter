@@ -24,6 +24,8 @@ const TICK_SECONDS = 30;
 const AMBER_AT = 50;
 const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
+const LOGIN_POLL_SECONDS = 4;
+const LOGIN_POLL_TICKS = 75; // ~5 minutes
 
 const ACCOUNTS_SCHEMA = 2;
 const DISCOVER_SCHEMA = 1;
@@ -182,6 +184,20 @@ function resolveExecutable(path) {
     if (!path.includes('/'))
         return GLib.find_program_in_path(path);
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
+}
+
+// Candidates to open a terminal running the login script, in order. The
+// portable Debian/Mint interface comes first; the rest cover common terminals
+// with their native syntax. Only a candidate whose binary resolves is tried.
+function loginTerminalCandidates(script) {
+    return [
+        {binary: 'x-terminal-emulator', args: ['-e', 'sh', script]},
+        {binary: 'gnome-terminal', args: ['--', 'sh', script]},
+        {binary: 'mate-terminal', args: ['-x', 'sh', script]},
+        {binary: 'xfce4-terminal', args: ['-x', 'sh', script]},
+        {binary: 'konsole', args: ['-e', 'sh', script]},
+        {binary: 'xterm', args: ['-e', 'sh', script]},
+    ];
 }
 
 function percentText(percent) {
@@ -1157,6 +1173,57 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             label.remove_style_class_name('error');
     }
 
+    // Writes the login helper script to a stable temp path. The script runs
+    // through 'sh', so the executable bit is best-effort only.
+    _writeLoginScript() {
+        const script = GLib.build_filenamev(
+            [GLib.get_tmp_dir(), 'ocgo-opencode-login.sh']);
+        const resolved = GLib.find_program_in_path('opencode');
+        const command = resolved
+            ? `'${resolved.replace(/'/g, "'\\''")}'`
+            : 'opencode';
+        const contents = `#!/bin/sh\n${command} auth login\n`
+            + 'printf "\\nLogin finished. You can close this window.\\n"\nread -r _\n';
+        if (!GLib.file_set_contents(script, contents))
+            throw new Error('could not write the login script');
+        try {
+            GLib.chmod(script, 0o755);
+        } catch (error) {
+            logError('could not mark the login script executable', error);
+        }
+        return script;
+    }
+
+    // Tries the terminal candidates in order and returns the binary that
+    // started, or null when none did. Util.spawn returns a pid when the
+    // binary resolves and undefined when it does not; a started terminal can
+    // still die silently (D-Bus activation), so the return value is never
+    // treated as proof the window appeared.
+    _launchLoginTerminal(script) {
+        for (const candidate of loginTerminalCandidates(script)) {
+            if (!GLib.find_program_in_path(candidate.binary))
+                continue;
+            try {
+                if (Util.spawn([candidate.binary, ...candidate.args]))
+                    return candidate.binary;
+            } catch (error) {
+                logError(`could not start ${candidate.binary}`, error);
+            }
+        }
+        return null;
+    }
+
+    // Best-effort clipboard fallback: the terminal can die silently, so the
+    // manual command is what guarantees the user can finish the login.
+    _copyLoginCommand() {
+        try {
+            St.Clipboard.get_default().set_text(
+                St.ClipboardType.CLIPBOARD, 'opencode auth login');
+        } catch (error) {
+            logError('could not copy the login command', error);
+        }
+    }
+
     on_accounts_apply() {
         if (this._accountsDialog)
             return;
@@ -1205,20 +1272,34 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             can_focus: true,
         });
         loginButton.connect('clicked', () => {
+            let script = null;
             try {
-                const script = GLib.build_filenamev(
-                    [GLib.get_tmp_dir(), 'ocgo-opencode-login.sh']);
-                GLib.file_set_contents(script, '#!/bin/sh\nopencode auth login\nprintf "\\nLogin finished — you can close this window.\\n"\nread -r _\n');
-                GLib.chmod(script, 0o755);
-                if (!Util.spawn(['x-terminal-emulator', '-e', script]))
-                    throw new Error('x-terminal-emulator could not be started');
-                this._setStatus(status, 'Terminal opened — complete the login in ' +
-                    'your browser, then press Refresh.', false);
+                script = this._writeLoginScript();
             } catch (error) {
-                logError('could not open the login terminal', error);
-                this._setStatus(status, 'Could not open a terminal — run this ' +
-                    'command: opencode auth login', true);
+                logError('could not prepare the login script', error);
             }
+            if (!script) {
+                this._copyLoginCommand();
+                this._setStatus(status, 'Could not prepare the login. '
+                    + '"opencode auth login" is on your clipboard — paste it '
+                    + 'into a terminal, then press Refresh.', true);
+                return;
+            }
+            const terminal = this._launchLoginTerminal(script);
+            // Always copied: a spawned terminal can die silently (D-Bus
+            // activation) and its exit status is not trustworthy, so the
+            // manual command is the guaranteed fallback.
+            this._copyLoginCommand();
+            if (terminal) {
+                this._setStatus(status, 'Terminal opened — complete the login '
+                    + 'in your browser. If no window appeared, the command is '
+                    + 'on your clipboard.', false);
+            } else {
+                this._setStatus(status, 'Could not open a terminal. '
+                    + '"opencode auth login" is on your clipboard — paste it '
+                    + 'into a terminal, then press Refresh.', true);
+            }
+            startLoginPoll();
         });
         helperButtons.add_child(loginButton);
 
@@ -1340,6 +1421,61 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             populateCredentialChoices();
             return {allowLogin: freshAllowLogin, choices: fresh};
         };
+
+        // Detection poll: after a login attempt, watch the credential store
+        // for a credential id that was not there when the button was clicked
+        // (~5 minutes). It updates the dialog in place and stops on detection,
+        // timeout, or dialog close (through the cleanups).
+        let loginPollId = 0;
+        let loginPollTicks = 0;
+        let loginPollSerial = 0;
+        const stopLoginPoll = () => {
+            if (loginPollId) {
+                Mainloop.source_remove(loginPollId);
+                loginPollId = 0;
+            }
+        };
+        dialog._ocgoCleanups.push(stopLoginPoll);
+        const startLoginPoll = () => {
+            if (loginPollId)
+                return; // one poll at a time
+            const serial = ++loginPollSerial;
+            const baseline = new Set(
+                (this._credentials || []).map(credential => credential.id));
+            loginPollTicks = 0;
+            loginPollId = Mainloop.timeout_add_seconds(LOGIN_POLL_SECONDS, () => {
+                if (this._removed || closed) {
+                    loginPollId = 0;
+                    return false;
+                }
+                loginPollTicks += 1;
+                const lastTick = loginPollTicks >= LOGIN_POLL_TICKS;
+                this._loadAccounts(() => {
+                    if (this._removed || closed || serial !== loginPollSerial)
+                        return; // closed, or a newer poll replaced this one
+                    const detected = (this._credentials || []).some(
+                        credential => !baseline.has(credential.id));
+                    if (detected) {
+                        stopLoginPoll();
+                        helper.visible = true;
+                        helperLabel.set_text('OpenCode login detected.');
+                        refreshGuidedState();
+                        this._setStatus(status, 'OpenCode login detected — '
+                            + 'the login can be added now.', false);
+                        return;
+                    }
+                    if (lastTick) {
+                        stopLoginPoll();
+                        this._setStatus(status, 'Still no OpenCode login detected — '
+                            + 'finish the login, then press Refresh.', false);
+                    }
+                });
+                if (lastTick)
+                    loginPollId = 0;
+                return !lastTick;
+            });
+        };
+
         const credentialRow = this._labeledRow('Credential', combo);
         credentialRow.visible = false;
         dialog.contentLayout.add_child(credentialRow);
