@@ -1260,7 +1260,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         // Both button classes: 'modal-dialog-button' styles on Cinnamon
         // 5.4 themes, 'dialog-button' on 6.4 themes.
-        const helperButtons = new St.BoxLayout();
+        const helperButtons = new St.BoxLayout({
+            style_class: 'modal-dialog-button-box ocgo-helper-buttons',
+        });
         setBoxSpacing(helperButtons, 6);
         // Always offered: "opencode auth login" creates (or repairs) the
         // credential store, and it is also the recovery path when the store
@@ -1477,6 +1479,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         };
 
         const credentialRow = this._labeledRow('Credential', combo);
+        // Same class trick as the helper row: the combo button needs the
+        // theme's dialog-button chrome as a descendant of the box class.
+        credentialRow.add_style_class_name('modal-dialog-button-box');
+        credentialRow.add_style_class_name('ocgo-helper-buttons');
         credentialRow.visible = false;
         dialog.contentLayout.add_child(credentialRow);
         dialog._ocgoCleanups.push(() => {
