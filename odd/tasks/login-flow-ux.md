@@ -1,6 +1,6 @@
 # Feature: login-flow-ux — third field-report round (Cinnamon: guided login + dialog UX)
 
-**Status**: T1–T6 done — independent verifier: PASS WITH FINDINGS (2 MINOR + 4 NIT), all actionable ones fixed (`a6e19b1`, `c11cc47`) and re-checked live. T7 in progress — PR #5 open (CI watch), merge pending.
+**Status**: Complete — T1–T7 done; PR #5 merged to `main` (`5abd2c9`, 2026-10-14); the reporter retests on Mint next.
 **Handoff**: execution continues in this session; the full cycle is pre-authorized through **merge to main** (the user tests on Mint afterwards).
 **Repo**: `opencode-go-meter`
 **Branch**: `fix/login-flow-ux` (from `main` @ `0eadac1`)
@@ -69,7 +69,7 @@ Sources: Cinnamon `5.4-maintenance` (GitHub) vs local 6.4.13; Mint-Y `master.min
 - [x] **T4 — "Make active in OpenCode…" clarity** *(same session)*: DONE, commit `4d56f3b`. "Use in OpenCode" across schema/popup/dialog copy; explainer reworded; behavior unchanged. GNOME copy parity remains the documented follow-up.
 - [x] **T5 — Styling pass** *(same session)*: DONE, commit `d361413`. `cinnamon/stylesheet.css` (box-chrome override via second class) + `modal-dialog-button-box ocgo-helper-buttons` on the helper row and the credential row; the Mint-Y scoping mechanism is documented in the stylesheet comment. 6.4 live: buttons/combo carry visible chrome.
 - [x] **T6 — Verification** *(route: parent + independent verifier)*: DONE 2026-10-13. Gates green (`make test` 422, `make check-cinnamon`, `make check-gnome`, `node --check`, schema). Live 6.4: reopen cycles, guided state, login launch, 4 s auto-detect, guided add, refresh-selection fix. 5.4 behavior source-verified (contract above). Independent verifier (fresh read-only session, `d820325..HEAD`): PASS WITH FINDINGS — keyboard activation of the disabled type (`can_focus` fix), refresh leaving a dead-end selection (selection move + `_hasBindableLogin`), stale helper text after error→empty refresh, `/tmp` script symlink risk (runtime dir), ignored `open()` result (destroy on `false`); all fixed in `a6e19b1` + `c11cc47`; GNOME copy parity stays the documented follow-up.
-- [ ] **T7 — Delivery** *(route: parent; branch-pr)*: PR (single) + user retest on Mint.
+- [x] **T7 — Delivery** *(route: parent; branch-pr)*: PR #5 (single, size exception documented) → CI green → merged to `main`; user retests on Mint.
 
 ## Acceptance criteria
 
@@ -90,6 +90,7 @@ Sources: Cinnamon `5.4-maintenance` (GitHub) vs local 6.4.13; Mint-Y `master.min
 - 2026-10-13 — Fresh execution session: full API contract re-verified against 5.4/6.4 sources (above); design frozen; T2–T5 delegated to one writer; harness rebuilt for the live pass; T6/T7 next.
 - 2026-10-13 — T2–T5 closed by the writer (`6357c5a`, `c5dcce9`, `cb3169c`, `d361413`, `4d56f3b`; +379/−129 across applet.js, schema, stylesheet.css). Gates: `make test` 422 OK, `make check-cinnamon`, `node --check`, schema JSON. Writer smoke harness (46 checks, fake Cinnamon imports) green. Parent live pass on the 6.4 harness: reopen cycles ×3 ref-clean; guided no-credentials state; login terminal launched on the nested display; 4 s auto-detect updated the open dialog; guided add end-to-end. `review assess` over the range: high/unassessable (opencode runtime is not eligible for immutable receipt review; RDD off) → independent verifier launched for T6. Next: verifier verdict → T7 PR + merge.
 - 2026-10-13 — T6 closed: independent verifier PASS WITH FINDINGS; fixes `a6e19b1` (keyboard/refresh paths into the disabled login type; helper-text refresh) + `c11cc47` (runtime-dir script path; `open() === false` destroys the never-opened dialog) re-checked live (refresh moves the selection to API key; script lands in the runtime dir). Gates green after the fixes. The writer smoke harness is stale vs the corrected code (fake env lacks the new APIs: `get_user_runtime_dir`, `has_key_focus`); the live pass + gates carry the evidence. Next: T7 PR + merge.
+- 2026-10-14 — T7 closed: PR #5 merged to `main` (`5abd2c9`, merge commit; CI green). Branch `fix/login-flow-ux` kept (repo precedent). Reporter retest on Mint pending.
 
 ---
 
