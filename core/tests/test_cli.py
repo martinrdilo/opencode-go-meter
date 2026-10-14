@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from _support import temp_dir
+from _support import quarantine_gc_warnings, temp_dir
 from test_accounts import _fake_secret_tool_source
 
 from ocgo import __version__, accounts, api, cache, cli, creds
@@ -116,6 +116,10 @@ def auto_recharge_payload() -> dict:
 
 class CliTestCase(unittest.TestCase):
     def setUp(self):
+        # A leaked HTTPError fixture from another test can otherwise warn into
+        # this test's captured stderr; keep the quarantine ahead of
+        # unittest's blanket "default" filter (see _support).
+        quarantine_gc_warnings()
         self.tmp = Path(self.enterContext(temp_dir()))
 
     def _env(self, **values):
@@ -492,6 +496,17 @@ class AccountCliTestCase(CliTestCase):
             encoding="utf-8",
         )
 
+    def _auth_json_path(self) -> Path:
+        """The legacy store path under the isolated XDG data home."""
+        return Path(os.environ["XDG_DATA_HOME"]) / "opencode" / "auth.json"
+
+    def _write_legacy_auth(self, payload: dict) -> Path:
+        """Write the legacy XDG ``opencode/auth.json`` credential store."""
+        path = self._auth_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
 
 class FakeStdin(io.StringIO):
     def __init__(self, text: str, tty: bool = False):
@@ -779,6 +794,48 @@ class AccountAddFromDbTests(AccountCliTestCase):
         self.assertEqual(code, 1)
         self.assertIn("expired", err)
         self.assertIn("open OpenCode to refresh", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_add_from_db_expired_legacy_credential_fails(self):
+        expires = int(datetime.now(timezone.utc).timestamp() * 1000) - 1
+        self._isolate()  # OCGO_DB points at a missing file
+        self._write_legacy_auth(
+            {"opencode": {"type": "oauth", "access": TOKEN, "expires": expires}}
+        )
+        accounts.remove_account("default")
+        code, _out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("expired", err)
+        self.assertIn("open OpenCode to refresh", err)
+        self.assertEqual(accounts.load_registry()["accounts"], [])
+
+    def test_add_from_db_accepts_a_legacy_login(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        self._write_legacy_auth({"opencode": {"type": "oauth", "access": TOKEN}})
+        accounts.remove_account("default")
+        with mock.patch.object(cli, "_read_api_key") as read:
+            code, out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "Added account 'login' (OpenCode login)\n")
+        self.assertEqual(err, "")
+        read.assert_not_called()
+        entries, active = accounts.list_accounts()
+        self.assertEqual([account.id for account in entries], ["login"])
+        self.assertEqual(entries[0].kind, "opencode-db")
+        self.assertIsNone(entries[0].credential_id)
+        self.assertEqual(active, "login")
+        self.assertNotIn(TOKEN, out + err)
+
+    def test_add_from_db_rejects_a_malformed_legacy_store(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        path = self._auth_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        self._seed_empty_registry()
+        code, _out, err = run_cli(["account", "add", "login", "--from-db"])
+        self.assertEqual(code, 1)
+        self.assertIn("No OpenCode credential found", err)
+        self.assertIn("For an API key instead", err)
         self.assertEqual(accounts.load_registry()["accounts"], [])
 
     def test_add_from_db_accepts_and_ignores_store(self):
@@ -1355,10 +1412,37 @@ class AccountDiscoverTests(AccountCliTestCase):
                         "org_name": None,
                     },
                 ],
+                "store": {
+                    "db_path": str(db),
+                    "db_exists": True,
+                    "auth_json_path": str(self._auth_json_path()),
+                    "auth_json_exists": False,
+                    "auth_json_login": False,
+                    "has_login": True,
+                },
             },
         )
         self.assertNotIn(TOKEN, out)
         self.assertNotIn("other-secret-token", out)
+
+    def test_json_store_block_has_the_frozen_keys(self):
+        db = self._seed_credentials()
+        self._isolate(OCGO_DB=str(db))
+        code, out, _err = run_cli(["account", "discover", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(list(payload), ["schema", "credentials", "store"])
+        self.assertEqual(
+            list(payload["store"]),
+            [
+                "db_path",
+                "db_exists",
+                "auth_json_path",
+                "auth_json_exists",
+                "auth_json_login",
+                "has_login",
+            ],
+        )
 
     def test_text_lists_an_aligned_table(self):
         db = self._seed_credentials()
@@ -1375,6 +1459,7 @@ class AccountDiscoverTests(AccountCliTestCase):
         self.assertIn("yes", out)
         self.assertIn("no", out)
         self.assertIn("work@example.com", out)
+        self.assertIn(f"store: {db}", out)
         self.assertNotIn(TOKEN, out)
         self.assertNotIn("other-secret-token", out)
 
@@ -1384,7 +1469,7 @@ class AccountDiscoverTests(AccountCliTestCase):
         code, out, err = run_cli(["account", "discover"])
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
-        self.assertIn("no OpenCode credentials found", out)
+        self.assertIn(f"no OpenCode credentials found in {db}", out)
 
     def test_empty_database_json_lists_nothing(self):
         db = write_credential_db(self.tmp / "opencode.db", [])
@@ -1392,11 +1477,79 @@ class AccountDiscoverTests(AccountCliTestCase):
         code, out, err = run_cli(["account", "discover", "--json"])
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
-        self.assertEqual(json.loads(out), {"schema": 1, "credentials": []})
+        self.assertEqual(
+            json.loads(out),
+            {
+                "schema": 1,
+                "credentials": [],
+                "store": {
+                    "db_path": str(db),
+                    "db_exists": True,
+                    "auth_json_path": str(self._auth_json_path()),
+                    "auth_json_exists": False,
+                    "auth_json_login": False,
+                    "has_login": False,
+                },
+            },
+        )
 
-    def test_unreadable_database_fails_cleanly(self):
+    def test_missing_database_without_legacy_is_a_state_not_an_error(self):
         self._isolate()  # OCGO_DB points at a missing file
         code, out, err = run_cli(["account", "discover", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        payload = json.loads(out)
+        self.assertEqual(payload["schema"], 1)
+        self.assertEqual(payload["credentials"], [])
+        self.assertEqual(payload["store"]["db_path"], str(self.tmp / "missing.db"))
+        self.assertFalse(payload["store"]["db_exists"])
+        self.assertFalse(payload["store"]["auth_json_exists"])
+        self.assertFalse(payload["store"]["auth_json_login"])
+        self.assertFalse(payload["store"]["has_login"])
+
+    def test_missing_database_text_names_the_checked_path(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        code, out, err = run_cli(["account", "discover"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn(
+            f"no OpenCode credentials found in {self.tmp / 'missing.db'}", out
+        )
+
+    def test_missing_database_with_a_legacy_login_reports_it(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        auth = self._write_legacy_auth(
+            {"opencode": {"type": "oauth", "access": "legacy-access-token"}}
+        )
+        code, out, err = run_cli(["account", "discover", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        payload = json.loads(out)
+        self.assertEqual(payload["credentials"], [])
+        self.assertEqual(payload["store"]["auth_json_path"], str(auth))
+        self.assertTrue(payload["store"]["auth_json_exists"])
+        self.assertTrue(payload["store"]["auth_json_login"])
+        self.assertTrue(payload["store"]["has_login"])
+        self.assertNotIn("legacy-access-token", out)
+
+    def test_legacy_only_text_names_both_stores(self):
+        self._isolate()  # OCGO_DB points at a missing file
+        auth = self._write_legacy_auth(
+            {"opencode": {"type": "oauth", "access": "legacy-access-token"}}
+        )
+        code, out, err = run_cli(["account", "discover"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertIn(
+            f"no OpenCode credentials found in {self.tmp / 'missing.db'}", out
+        )
+        self.assertIn(f"legacy store: {auth}", out)
+
+    def test_corrupt_database_file_still_fails(self):
+        db = self.tmp / "opencode.db"
+        db.write_text("this is not a database", encoding="utf-8")
+        self._isolate(OCGO_DB=str(db))
+        code, out, err = run_cli(["account", "discover"])
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("No OpenCode credential found", err)

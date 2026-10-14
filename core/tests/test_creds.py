@@ -83,6 +83,14 @@ def _write_labelled_db(path: Path, rows: list[tuple]) -> None:
     connection.close()
 
 
+def _write_auth_json(root: Path, payload: object) -> Path:
+    """Write an XDG-style legacy ``opencode/auth.json`` under ``root``."""
+    path = root / "opencode" / "auth.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 class CredentialResolutionTests(EnvTestCase):
     def test_env_token_wins_over_db(self):
         db = self.tmp / "opencode.db"
@@ -418,6 +426,240 @@ class PinnedCredentialTests(EnvTestCase):
         self.assertEqual(credential.source, "OCGO_TOKEN environment")
 
 
+class LegacyAuthJsonTests(EnvTestCase):
+    """The legacy ``opencode/auth.json`` file backs the database up."""
+
+    def _legacy_only(self, payload: object) -> Path:
+        """An isolated XDG data home with auth.json and no database file."""
+        path = _write_auth_json(self.tmp, payload)
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        return path
+
+    def test_legacy_oauth_login_resolves_with_expiry(self):
+        expires = int(time.time() * 1000) + 3_600_000
+        self._legacy_only(
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": expires,
+                }
+            }
+        )
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "legacy-access-1")
+        self.assertEqual(credential.source, "OpenCode auth.json file")
+        self.assertEqual(credential.expires_ms, expires)
+        self.assertIsNotNone(credential.expires_at)
+
+    def test_legacy_api_login_resolves_without_expiry(self):
+        self._legacy_only({"opencode": {"type": "api", "key": "legacy-api-key-1"}})
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "legacy-api-key-1")
+        self.assertEqual(credential.source, "OpenCode auth.json file")
+        self.assertIsNone(credential.expires_ms)
+        self.assertIsNone(credential.expires_at)
+
+    def test_trailing_slash_in_the_key_is_tolerated(self):
+        self._legacy_only({"opencode/": {"type": "oauth", "access": "slash-access-1"}})
+        self.assertEqual(creds.resolve_credential().token, "slash-access-1")
+
+    def test_other_integrations_do_not_resolve(self):
+        self._legacy_only({"google": {"type": "oauth", "access": "google-token-1"}})
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_missing_file_keeps_the_database_error(self):
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_unreadable_path_keeps_the_database_error(self):
+        (self.tmp / "opencode" / "auth.json").mkdir(parents=True)
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_invalid_utf8_keeps_the_database_error(self):
+        path = self.tmp / "opencode" / "auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe{")
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_malformed_payloads_keep_the_database_error(self):
+        path = self.tmp / "opencode" / "auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        cases = {
+            "malformed json": "{not json",
+            "non-dict payload": json.dumps(["opencode"]),
+            "non-dict entry": json.dumps({"opencode": ["oauth"]}),
+            "unknown type": json.dumps(
+                {"opencode": {"type": "legacy", "access": "tok"}}
+            ),
+            "oauth without access": json.dumps({"opencode": {"type": "oauth"}}),
+            "oauth with non-string access": json.dumps(
+                {"opencode": {"type": "oauth", "access": 7}}
+            ),
+            "oauth with blank access": json.dumps(
+                {"opencode": {"type": "oauth", "access": "   "}}
+            ),
+            "api without key": json.dumps({"opencode": {"type": "api"}}),
+            "api with non-string key": json.dumps(
+                {"opencode": {"type": "api", "key": {"nested": "no"}}}
+            ),
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                path.write_text(text, encoding="utf-8")
+                with self.assertRaises(creds.CredentialError) as caught:
+                    creds.resolve_credential()
+                self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_database_wins_over_the_legacy_file(self):
+        db = self.tmp / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        _write_db(db, [("opencode", json.dumps({"access": "db-token-1"}))])
+        _write_auth_json(
+            self.tmp, {"opencode": {"type": "oauth", "access": "legacy-access-1"}}
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "db-token-1")
+        self.assertEqual(credential.source, "OpenCode local database")
+
+    def test_expired_database_row_falls_back_to_the_legacy_file(self):
+        now_ms = int(time.time() * 1000)
+        db = self.tmp / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        _write_db(
+            db,
+            [
+                (
+                    "opencode",
+                    json.dumps({"access": "db-token-1", "expires": now_ms - 1}),
+                )
+            ],
+        )
+        _write_auth_json(
+            self.tmp,
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": now_ms + 3_600_000,
+                }
+            },
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        credential = creds.resolve_credential(now_ms=now_ms)
+        self.assertEqual(credential.token, "legacy-access-1")
+        self.assertEqual(credential.source, "OpenCode auth.json file")
+
+    def test_expired_legacy_login_raises_the_expired_message(self):
+        now_ms = int(time.time() * 1000)
+        self._legacy_only(
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": now_ms - 1,
+                }
+            }
+        )
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(now_ms=now_ms)
+        self.assertEqual(str(caught.exception), creds.EXPIRED_MESSAGE)
+
+    def test_legacy_expiry_exactly_now_is_expired(self):
+        now_ms = 1_800_000_000_000
+        self._legacy_only(
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": now_ms,
+                }
+            }
+        )
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(now_ms=now_ms)
+        self.assertEqual(str(caught.exception), creds.EXPIRED_MESSAGE)
+
+    def test_expired_legacy_login_uses_the_clock_without_now(self):
+        self._legacy_only(
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": int(time.time() * 1000) - 60_000,
+                }
+            }
+        )
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential()
+        self.assertEqual(str(caught.exception), creds.EXPIRED_MESSAGE)
+
+    def test_expired_legacy_login_does_not_mask_a_valid_database_row(self):
+        db = self.tmp / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        _write_db(db, [("opencode", json.dumps({"access": "db-token-1"}))])
+        _write_auth_json(
+            self.tmp,
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": int(time.time() * 1000) - 1,
+                }
+            },
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "db-token-1")
+        self.assertEqual(credential.source, "OpenCode local database")
+
+    def test_legacy_login_with_malformed_expiry_still_resolves(self):
+        self._legacy_only(
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": "soon",
+                }
+            }
+        )
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "legacy-access-1")
+        self.assertIsNone(credential.expires_ms)
+
+    def test_pinned_lookup_never_falls_back_to_the_legacy_file(self):
+        self._legacy_only(
+            {"opencode": {"type": "oauth", "access": "legacy-access-1"}}
+        )
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(credential_id="ghost")
+        message = str(caught.exception)
+        self.assertIn("ghost", message)
+        self.assertIn("no longer exists", message)
+
+    def test_malformed_legacy_keeps_a_pinned_error_unchanged(self):
+        path = self.tmp / "opencode" / "auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(credential_id="ghost")
+        self.assertIn("ghost", str(caught.exception))
+        self.assertIn("no longer exists", str(caught.exception))
+
+
 class ListDbCredentialsTests(EnvTestCase):
     """``list_db_credentials`` exposes display metadata only."""
 
@@ -702,6 +944,124 @@ class HasStoredLoginTests(EnvTestCase):
         self._env(OCGO_DB=str(db))
         self.assertFalse(creds.has_stored_login())
 
+    def test_legacy_oauth_login_is_a_stored_login(self):
+        _write_auth_json(
+            self.tmp, {"opencode": {"type": "oauth", "access": "legacy-access-1"}}
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        self.assertTrue(creds.has_stored_login())
+
+    def test_legacy_api_login_is_a_stored_login(self):
+        _write_auth_json(self.tmp, {"opencode": {"type": "api", "key": "legacy-key-1"}})
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        self.assertTrue(creds.has_stored_login())
+
+    def test_expired_legacy_login_is_still_a_stored_login(self):
+        now_ms = int(time.time() * 1000)
+        _write_auth_json(
+            self.tmp,
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-access-1",
+                    "expires": now_ms - 1,
+                }
+            },
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        self.assertTrue(creds.has_stored_login())
+
+    def test_malformed_legacy_file_is_not_a_stored_login(self):
+        path = self.tmp / "opencode" / "auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        self.assertFalse(creds.has_stored_login())
+
+
+class StoreStatusTests(EnvTestCase):
+    """``store_status`` names the stores the applet/CLI looked at."""
+
+    _FIELDS = [
+        "db_path",
+        "db_exists",
+        "auth_json_path",
+        "auth_json_exists",
+        "auth_json_login",
+        "has_login",
+    ]
+
+    def test_nothing_present(self):
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        status = creds.store_status()
+        self.assertEqual(list(status), self._FIELDS)
+        self.assertEqual(
+            status["db_path"], str(self.tmp / "opencode" / "opencode.db")
+        )
+        self.assertFalse(status["db_exists"])
+        self.assertEqual(
+            status["auth_json_path"], str(self.tmp / "opencode" / "auth.json")
+        )
+        self.assertFalse(status["auth_json_exists"])
+        self.assertFalse(status["auth_json_login"])
+        self.assertFalse(status["has_login"])
+
+    def test_database_only(self):
+        db = self.tmp / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        _write_labelled_db(
+            db,
+            [("cred-1", "opencode", "Default", json.dumps({"access": "tok"}), 1, 100)],
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        status = creds.store_status()
+        self.assertEqual(status["db_path"], str(db))
+        self.assertTrue(status["db_exists"])
+        self.assertFalse(status["auth_json_exists"])
+        self.assertFalse(status["auth_json_login"])
+        self.assertTrue(status["has_login"])
+
+    def test_legacy_only(self):
+        _write_auth_json(self.tmp, {"opencode": {"type": "api", "key": "legacy-key-1"}})
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        status = creds.store_status()
+        self.assertFalse(status["db_exists"])
+        self.assertTrue(status["auth_json_exists"])
+        self.assertTrue(status["auth_json_login"])
+        self.assertTrue(status["has_login"])
+
+    def test_both_stores(self):
+        db = self.tmp / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        _write_db(db, [("opencode", json.dumps({"access": "db-token-1"}))])
+        _write_auth_json(
+            self.tmp, {"opencode": {"type": "oauth", "access": "legacy-access-1"}}
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        status = creds.store_status()
+        self.assertTrue(status["db_exists"])
+        self.assertTrue(status["auth_json_exists"])
+        self.assertTrue(status["auth_json_login"])
+        self.assertTrue(status["has_login"])
+
+    def test_env_token_only_counts_as_a_login(self):
+        self._env(XDG_DATA_HOME=str(self.tmp), OCGO_TOKEN="env-token-1")
+        status = creds.store_status()
+        self.assertFalse(status["db_exists"])
+        self.assertFalse(status["auth_json_exists"])
+        self.assertFalse(status["auth_json_login"])
+        self.assertTrue(status["has_login"])
+
+    def test_malformed_legacy_file_is_not_a_login(self):
+        path = self.tmp / "opencode" / "auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        status = creds.store_status()
+        self.assertTrue(status["auth_json_exists"])
+        self.assertFalse(status["auth_json_login"])
+        self.assertFalse(status["has_login"])
+
 
 class DefaultPathTests(unittest.TestCase):
     def test_xdg_data_home_wins(self):
@@ -715,6 +1075,21 @@ class DefaultPathTests(unittest.TestCase):
             self.assertEqual(
                 creds.default_db_path(),
                 Path("/home/tester/.local/share/opencode/opencode.db"),
+            )
+
+
+class AuthJsonPathTests(unittest.TestCase):
+    def test_xdg_data_home_wins(self):
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=True):
+            self.assertEqual(
+                creds.default_auth_json_path(), Path("/xdg/opencode/auth.json")
+            )
+
+    def test_home_fallback(self):
+        with mock.patch.dict(os.environ, {"HOME": "/home/tester"}, clear=True):
+            self.assertEqual(
+                creds.default_auth_json_path(),
+                Path("/home/tester/.local/share/opencode/auth.json"),
             )
 
 
