@@ -1037,11 +1037,57 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         // (5.4's modal-dialog-content-box sets no spacing).
         setBoxSpacing(dialog.contentLayout, 6);
         this._accountsDialog = dialog;
+        // Per-dialog cleanups hang off this explicit lifecycle instead of the
+        // 'destroy' signal alone: Cinnamon 5.4's close() never destroys the
+        // dialog and never emits 'destroy'. This handler stays as the backstop
+        // for paths that destroy the group directly (the applet teardown).
+        dialog._ocgoCleanups = [];
+        dialog._ocgoDisposed = false;
         dialog.connect('destroy', () => {
+            dialog._ocgoDisposed = true;
             if (this._accountsDialog === dialog)
                 this._accountsDialog = null;
+            this._runDialogCleanups(dialog);
         });
         return dialog;
+    }
+
+    _runDialogCleanups(dialog) {
+        const cleanups = dialog._ocgoCleanups || [];
+        dialog._ocgoCleanups = [];
+        for (const cleanup of cleanups) {
+            try {
+                cleanup();
+            } catch (error) {
+                logError('account dialog cleanup failed', error);
+            }
+        }
+    }
+
+    // Single close path for every account dialog. The cleanups run before the
+    // close because Cinnamon 5.4 never emits 'destroy' on close.
+    _closeAccountsDialog(dialog) {
+        if (!dialog)
+            return;
+        if (this._accountsDialog === dialog)
+            this._accountsDialog = null;
+        this._runDialogCleanups(dialog);
+        try {
+            dialog.close();
+        } catch (error) {
+            logError('could not close the account dialog', error);
+        }
+        // Cinnamon 5.4 (Linux Mint 21): close() only fades and hides the dialog —
+        // it never destroys it nor emits 'destroy', so without this the hidden
+        // actor (and its lightbox) would leak on every open/close cycle, and the
+        // 6.4 auto-destroy ('_destroyOnClose' default true) must not be repeated.
+        if (!dialog._ocgoDisposed && dialog._destroyOnClose !== true) {
+            try {
+                dialog.destroy();
+            } catch (error) {
+                logError('could not destroy the account dialog', error);
+            }
+        }
     }
 
     _setDialogButtonEnabled(button, enabled) {
@@ -1083,7 +1129,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             return;
         const dialog = this._openAccountsDialog();
         let closed = false;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             closed = true;
         });
 
@@ -1250,7 +1296,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         const credentialRow = this._labeledRow('Credential', combo);
         credentialRow.visible = false;
         dialog.contentLayout.add_child(credentialRow);
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             // Guarded like the applet's own menu manager: 5.4 and 6.4 both
             // expose destroy(), but never trust the class shape here.
             if (menuManager && typeof menuManager.destroy === 'function')
@@ -1266,7 +1312,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.contentLayout.add_child(status);
 
         let closeTimerId = 0;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             if (closeTimerId) {
                 Mainloop.source_remove(closeTimerId);
                 closeTimerId = 0;
@@ -1327,8 +1373,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
                     closeTimerId = Mainloop.timeout_add(1200, () => {
                         closeTimerId = 0;
-                        if (this._accountsDialog === dialog)
-                            dialog.close();
+                        this._closeAccountsDialog(dialog);
                         return false;
                     });
                 } else {
@@ -1349,7 +1394,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.setButtons([
             {
                 label: 'Cancel',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
             },
             confirmInfo,
@@ -1385,7 +1430,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             return;
         const dialog = this._openAccountsDialog();
         let closed = false;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             closed = true;
         });
 
@@ -1408,7 +1453,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     if (ok) {
                         this._loadAccounts();
                         if (!closed)
-                            dialog.close();
+                            this._closeAccountsDialog(dialog);
                         return;
                     }
                     if (closed)
@@ -1423,7 +1468,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.setButtons([
             {
                 label: 'Cancel',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
             },
             confirmInfo,
@@ -1463,7 +1508,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.setButtons([
             {
                 label: 'OK',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
                 default: true,
             },
@@ -1476,7 +1521,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             return;
         const dialog = this._openAccountsDialog();
         let closed = false;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             closed = true;
         });
 
@@ -1489,7 +1534,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.contentLayout.add_child(status);
 
         let closeTimerId = 0;
-        dialog.connect('destroy', () => {
+        dialog._ocgoCleanups.push(() => {
             if (closeTimerId) {
                 Mainloop.source_remove(closeTimerId);
                 closeTimerId = 0;
@@ -1517,8 +1562,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                                 `Account '${account.id}' is now active in OpenCode.`, false);
                             closeTimerId = Mainloop.timeout_add(1200, () => {
                                 closeTimerId = 0;
-                                if (this._accountsDialog === dialog)
-                                    dialog.close();
+                                this._closeAccountsDialog(dialog);
                                 return false;
                             });
                             return;
@@ -1534,7 +1578,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         dialog.setButtons([
             {
                 label: 'Cancel',
-                action: () => dialog.close(),
+                action: () => this._closeAccountsDialog(dialog),
                 key: Clutter.KEY_Escape,
             },
             confirmInfo,
