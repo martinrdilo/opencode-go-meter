@@ -1197,11 +1197,21 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             label.remove_style_class_name('error');
     }
 
-    // Writes the login helper script to a stable temp path. The script runs
-    // through 'sh', so the executable bit is best-effort only.
+    // Writes the login helper script to the per-user runtime directory
+    // (XDG_RUNTIME_DIR, 0700). The world-writable temp dir would let a symlink
+    // planted at the fixed filename redirect file_set_contents, so the script
+    // lives where only the user can write. The script runs through 'sh', so
+    // the executable bit is best-effort only.
     _writeLoginScript() {
-        const script = GLib.build_filenamev(
-            [GLib.get_tmp_dir(), 'ocgo-opencode-login.sh']);
+        const dir = GLib.get_user_runtime_dir();
+        try {
+            // Best-effort: if this fails, file_set_contents below fails too
+            // and the caller falls back to the clipboard command.
+            GLib.mkdir_with_parents(dir, 0o700);
+        } catch (error) {
+            logError('could not prepare the login script directory', error);
+        }
+        const script = GLib.build_filenamev([dir, 'ocgo-opencode-login.sh']);
         const resolved = GLib.find_program_in_path('opencode');
         const command = resolved
             ? `'${resolved.replace(/'/g, "'\\''")}'`
@@ -1647,7 +1657,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         typeChooser.connect('radio-changed', () => updateTypeState());
         updateTypeState();
         dialog.setInitialKeyFocus(idEntry);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
     on_accounts_remove() {
@@ -1701,7 +1716,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             },
             confirmInfo,
         ]);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
     // Settings-dialog entry point for "Use in OpenCode…". Mirrors the
@@ -1742,7 +1762,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 default: true,
             },
         ]);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
     _confirmActivateInOpencode(account) {
@@ -1813,7 +1838,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             },
             confirmInfo,
         ]);
-        dialog.open();
+        if (dialog.open() === false) {
+            // pushModal failed (another modal owns the screen): the dialog never
+            // opened, so close() would be a no-op on 6.4 — destroy directly; the
+            // guarded 'destroy' handler clears the reference and runs the cleanups.
+            dialog.destroy();
+        }
     }
 
     _failureMessage(fallback, stderr, stdout) {
