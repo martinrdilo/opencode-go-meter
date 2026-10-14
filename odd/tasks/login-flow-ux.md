@@ -1,6 +1,6 @@
 # Feature: login-flow-ux — third field-report round (Cinnamon: guided login + dialog UX)
 
-**Status**: T1–T6 done — independent verifier: PASS WITH FINDINGS (2 MINOR + 4 NIT), all actionable ones fixed (`a6e19b1`, `c11cc47`) and re-checked live. T7 (PR + merge) in progress.
+**Status**: T1–T6 done — independent verifier: PASS WITH FINDINGS (2 MINOR + 4 NIT), all actionable ones fixed (`a6e19b1`, `c11cc47`) and re-checked live. T7 in progress — PR #5 open (CI watch), merge pending.
 **Handoff**: execution continues in this session; the full cycle is pre-authorized through **merge to main** (the user tests on Mint afterwards).
 **Repo**: `opencode-go-meter`
 **Branch**: `fix/login-flow-ux` (from `main` @ `0eadac1`)
