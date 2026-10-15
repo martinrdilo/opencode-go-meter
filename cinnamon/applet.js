@@ -211,6 +211,25 @@ function stripToolToken(text) {
     return detail.replace(/\s{2,}/g, ' ').trim();
 }
 
+// One plain-language rewrite for CLI or cache failure details, shared by the
+// dialog failure path and the cached last_error render sites: strip the tool
+// token first, then map the known terminal-level messages to actionable
+// copy. Unknown details pass through token-stripped.
+function formatFailureDetail(text) {
+    let detail = stripToolToken(typeof text === 'string' ? text.trim() : '');
+    if (detail.includes('No OpenCode credential found')) {
+        detail = 'No OpenCode login found on this machine — use '
+            + '"Log in with OpenCode…" or the API key type.';
+    } else if (detail.includes('no OpenCode credential matches')) {
+        detail = 'That credential is no longer available — reload the list '
+            + 'and pick another one.';
+    } else if (detail.includes('no secret found for account')) {
+        detail = "The account's stored key is missing — add the key again "
+            + 'in settings.';
+    }
+    return detail;
+}
+
 // Candidates to run the OpenCode login, in order: the session PATH first
 // (like a terminal would), then the install locations the official
 // installers use — the desktop-session PATH normally misses ~/.opencode/bin.
@@ -604,7 +623,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 : '';
             if (lastError) {
                 const suffix = updated ? ` · data from ${updated}` : '';
-                lines.push(`Last refresh failed: ${truncate(lastError, MAX_WARNING_CHARS)}${suffix}`);
+                const detail = formatFailureDetail(lastError);
+                lines.push(`Last refresh failed: ${truncate(detail, MAX_WARNING_CHARS)}${suffix}`);
             }
         }
         // Discover failures are non-fatal: the auto path keeps working.
@@ -707,7 +727,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (lastError) {
             const ago = formatAgo(cache.fetched_at, now);
             const suffix = ago ? ` · data from ${ago}` : '';
-            const warning = `Last refresh failed: ${truncate(lastError, MAX_WARNING_CHARS)}${suffix}`;
+            const detail = formatFailureDetail(lastError);
+            const warning = `Last refresh failed: ${truncate(detail, MAX_WARNING_CHARS)}${suffix}`;
             this._warningItem.label.clutter_text.set_markup(
                 `<span foreground="${COLORS.amber}">${escapeMarkup(warning)}</span>`);
             this._warningItem.actor.visible = true;
@@ -2075,19 +2096,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _failureMessage(fallback, stderr, stdout) {
-        let detail = stripToolToken((stderr || stdout || '').trim());
-        // The raw NO_CREDENTIAL stderr assumes a terminal user; point at the
-        // dialog's own affordances instead.
-        if (detail.includes('No OpenCode credential found')) {
-            detail = 'No OpenCode login found on this machine — use '
-                + '"Log in with OpenCode…" or the API key type.';
-        } else if (detail.includes('no OpenCode credential matches')) {
-            // The CLI's discover hint names the tool; offer the same next
-            // step without the raw command.
-            detail = 'That credential is no longer available — reload the '
-                + 'list and pick another one.';
-        }
-        return detail || fallback;
+        return formatFailureDetail(stderr || stdout) || fallback;
     }
 
     _runAccountCommand(args, stdinText, callback) {

@@ -114,6 +114,30 @@ function truncate(text, max) {
     return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// One plain-language rewrite for a cached refresh failure: the Cinnamon
+// applet's helper mirrored locally (no cross-file import) — strip the tool
+// token first, then map the known terminal-level messages to actionable
+// copy. Unknown details pass through token-stripped.
+function formatFailureDetail(text) {
+    let detail = typeof text === 'string' ? text.trim() : '';
+    if (detail.includes('ocgo')) {
+        detail = detail.replace(/ocgo:\s*/g, ' ');
+        detail = detail.replace(/\(ocgo_[^)]*\)/g, '');
+        detail = detail.replace(/\s{2,}/g, ' ').trim();
+    }
+    if (detail.includes('No OpenCode credential found')) {
+        detail = 'No OpenCode login found on this machine — sign in again '
+            + 'in OpenCode.';
+    } else if (detail.includes('no OpenCode credential matches')) {
+        detail = 'That credential is no longer available — reload the list '
+            + 'and pick another one.';
+    } else if (detail.includes('no secret found for account')) {
+        detail = "The account's stored key is missing — add the key again "
+            + 'in settings.';
+    }
+    return detail;
+}
+
 function windowsOf(cache) {
     const windows = cache && typeof cache === 'object' ? cache.windows : null;
     if (!windows || typeof windows !== 'object' || Array.isArray(windows))
@@ -540,8 +564,9 @@ export default class OpenCodeGoMeterExtension extends Extension {
         if (lastError) {
             const ago = formatAgo(cache.fetched_at, now);
             const suffix = ago ? ` · data from ${ago}` : '';
+            const detail = formatFailureDetail(lastError);
             this._warningItem.label.text =
-                `Last refresh failed: ${truncate(lastError, MAX_WARNING_CHARS)}${suffix}`;
+                `Last refresh failed: ${truncate(detail, MAX_WARNING_CHARS)}${suffix}`;
             this._warningItem.visible = true;
         } else {
             this._warningItem.visible = false;
