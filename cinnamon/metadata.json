@@ -1,7 +1,7 @@
 {
   "uuid": "opencode-go-meter@martinrdilo",
   "name": "OpenCode Go Meter",
-  "description": "Shows OpenCode Go usage (rolling 5h, weekly, monthly) from the ocgo cache.",
+  "description": "Shows OpenCode Go usage (rolling 5h, weekly, monthly) from the local usage cache.",
   "icon": "utilities-system-monitor",
   "cinnamon-version": ["5.4"],
   "max-instances": 1

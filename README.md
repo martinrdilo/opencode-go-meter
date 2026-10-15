@@ -36,7 +36,16 @@ The applet supports Cinnamon 5.4 and newer (Linux Mint 21 and up).
 
 If the applet reports **OpenCode was not found** when you press *Log in with OpenCode…*, the desktop session cannot see your OpenCode install. Install OpenCode for that user, or run `opencode auth login` in a terminal where `opencode` works, then press Refresh in the applet.
 
-The installers only create symlinks (no sudo), are safe to re-run, and uninstall with `make uninstall` / `make uninstall-cinnamon` — they remove only links pointing into this repo.
+### Dependencies
+
+Both installers run a dependency check first:
+
+- **python3 3.10+** — required.
+- **libsecret-tools** — optional (the OS keyring). Without it the app stores API keys in a private local file that only your user can read. When it is missing, the check offers to install it with your consent; that is the only step that may ask for sudo.
+- **OpenCode CLI** — optional; only the *Log in with OpenCode…* button needs it. Install from https://opencode.ai.
+- **glib-compile-schemas** (`libglib2.0-bin` on Mint/Ubuntu) — needed by `make install` to compile the GNOME schema.
+
+Run the check alone with `make deps`, or skip it with `SKIP_DEPS=1 make install-cinnamon`. The installers only create symlinks, are safe to re-run, and uninstall with `make uninstall` / `make uninstall-cinnamon` — they remove only links pointing into this repo.
 
 ## Usage
 

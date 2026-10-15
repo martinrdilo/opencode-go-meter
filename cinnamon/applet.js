@@ -199,6 +199,44 @@ function resolveExecutable(path) {
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
 }
 
+// Deliberate copy: keep in sync with gnome/prefs.js and gnome/extension.js.
+// The CLI names itself in its output — `ocgo: ...` warning prefixes,
+// `(ocgo_…1234)` masked-key hints and config paths with an `ocgo` segment
+// (`~/.config/ocgo/...`); strip or neutralize every such occurrence so no
+// tool token reaches the UI. Clean strings pass through untouched.
+function stripToolToken(text) {
+    let detail = typeof text === 'string' ? text : '';
+    if (!detail.includes('ocgo'))
+        return detail;
+    detail = detail.replace(/ocgo:\s*/g, ' ');
+    detail = detail.replace(/\(ocgo_[^)]*\)/g, '');
+    // `... at <ocgo-path>` reads fine without the fragment; any other
+    // ocgo-bearing path (a token with a slash and the name) becomes a
+    // neutral reference.
+    detail = detail.replace(/\s+at\s+(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, '');
+    detail = detail.replace(/(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, 'its config file');
+    return detail.replace(/\s{2,}/g, ' ').trim();
+}
+
+// One plain-language rewrite for CLI or cache failure details, shared by the
+// dialog failure path and the cached last_error render sites: strip the tool
+// token first, then map the known terminal-level messages to actionable
+// copy. Unknown details pass through token-stripped.
+function formatFailureDetail(text) {
+    let detail = stripToolToken(typeof text === 'string' ? text.trim() : '');
+    if (detail.includes('No OpenCode credential found')) {
+        detail = 'No OpenCode login found on this machine — use '
+            + '"Log in with OpenCode…" or the API key type.';
+    } else if (detail.includes('no OpenCode credential matches')) {
+        detail = 'That credential is no longer available — reload the list '
+            + 'and pick another one.';
+    } else if (detail.includes('no secret found for account')) {
+        detail = "The account's stored key is missing — add the key again "
+            + 'in settings.';
+    }
+    return detail;
+}
+
 // Candidates to run the OpenCode login, in order: the session PATH first
 // (like a terminal would), then the install locations the official
 // installers use — the desktop-session PATH normally misses ~/.opencode/bin.
@@ -489,7 +527,6 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
         this.settings.bind('refresh-interval', 'refresh_interval', () => this._onRefreshIntervalChanged());
-        this.settings.bind('ocgo-path', 'ocgo_path', null);
         this.settings.bind('show-credits', 'show_credits', () => this._updateDisplay());
         this.settings.bind('active-account', 'active_account', () => this._onActiveAccountChanged());
 
@@ -593,7 +630,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 : '';
             if (lastError) {
                 const suffix = updated ? ` · data from ${updated}` : '';
-                lines.push(`Last refresh failed: ${truncate(lastError, MAX_WARNING_CHARS)}${suffix}`);
+                const detail = formatFailureDetail(lastError);
+                lines.push(`Last refresh failed: ${truncate(detail, MAX_WARNING_CHARS)}${suffix}`);
             }
         }
         // Discover failures are non-fatal: the auto path keeps working.
@@ -696,7 +734,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (lastError) {
             const ago = formatAgo(cache.fetched_at, now);
             const suffix = ago ? ` · data from ${ago}` : '';
-            const warning = `Last refresh failed: ${truncate(lastError, MAX_WARNING_CHARS)}${suffix}`;
+            const detail = formatFailureDetail(lastError);
+            const warning = `Last refresh failed: ${truncate(detail, MAX_WARNING_CHARS)}${suffix}`;
             this._warningItem.label.clutter_text.set_markup(
                 `<span foreground="${COLORS.amber}">${escapeMarkup(warning)}</span>`);
             this._warningItem.actor.visible = true;
@@ -941,8 +980,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (!binary) {
             this._finishAccountLoad(
                 generation, onComplete,
-                {parsed: null, errorMessage: 'ocgo not found', error: null},
-                {parsed: null, errorMessage: 'ocgo not found'});
+                {parsed: null, errorMessage: "The meter's helper is not installed — "
+                    + 're-run the installer, then restart Cinnamon.', error: null},
+                {parsed: null, errorMessage: "The meter's helper is not installed — "
+                    + 're-run the installer, then restart Cinnamon.'});
             return;
         }
         this._accountsLoading = true;
@@ -975,7 +1016,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _spawnAccountJson(binary, args, parser, callback) {
-        const command = `ocgo ${args[0]} ${args[1]}`;
+        const command = `${args[0]} ${args[1]}`;
         try {
             Util.spawnCommandLineAsyncIO(null, (stdout, stderr, exitCode) => {
                 if (this._removed) {
@@ -990,7 +1031,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 callback(parsed, parsed ? null : `unexpected ${command} output`);
             }, {argv: [binary, ...args]});
         } catch (error) {
-            callback(null, `could not start ${command}`, error);
+            callback(null, 'could not start the meter helper', error);
         }
     }
 
@@ -1299,7 +1340,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         } catch (error) {
             logError('could not prepare the login script directory', error);
         }
-        const script = GLib.build_filenamev([dir, 'ocgo-opencode-login.sh']);
+        const script = GLib.build_filenamev([dir, 'opencode-login.sh']);
         const command = resolvedBinary
             ? `'${resolvedBinary.replace(/'/g, "'\\''")}'`
             : 'opencode';
@@ -1371,8 +1412,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         const content = new MessageContent({
             title: 'Add / replace account key',
-            description: 'API-key accounts from the OpenCode console. The key is sent to '
-                + 'the ocgo CLI and is never stored by the applet.',
+            description: 'API-key accounts from the OpenCode console. The key is '
+                + 'verified with OpenCode and is never stored by the applet.',
         });
         dialog.contentLayout.add_child(content);
 
@@ -1786,7 +1827,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 if (useFileStore)
                     confirmInfo.button.label = 'Add / replace key';
                 if (ok) {
-                    const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join(' ');
+                    const summary = stripToolToken(
+                        [stdout.trim(), stderr.trim()].filter(Boolean).join(' '));
                     this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
                     closeTimerId = Mainloop.timeout_add(1200, () => {
                         closeTimerId = 0;
@@ -1802,8 +1844,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     confirmInfo.button.label = 'Store in a local file';
                     this._setStatus(status, 'The system keyring (libsecret-tools) '
                         + 'is not installed. Press "Store in a local file" to keep '
-                        + 'the key in ~/.config/ocgo/keys (readable only by you) — '
-                        + 'or install libsecret-tools and try again.', true);
+                        + 'the key in a private file that only your user can '
+                        + 'read — or install libsecret-tools and try again.', true);
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 } else {
                     this._setStatus(status, this._failureMessage(
@@ -1849,8 +1891,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             content.description = fromDb
                 ? 'Registers an OpenCode login. Pick the auto binding (follows ' +
                     'the active OpenCode credential) or a discovered credential.'
-                : 'API-key accounts from the OpenCode console. The key is sent to '
-                    + 'the ocgo CLI and is never stored by the applet.';
+                : 'API-key accounts from the OpenCode console. The key is '
+                    + 'verified with OpenCode and is never stored by the applet.';
             confirmInfo.button.label = fromDb ? 'Add account' : 'Add / replace key';
         };
         typeChooser.connect('radio-changed', () => updateTypeState());
@@ -2025,8 +2067,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         if (closed)
                             return;
                         if (ok) {
-                            const summary = [stdout.trim(), stderr.trim()]
-                                .filter(Boolean).join(' ');
+                            const summary = stripToolToken(
+                                [stdout.trim(), stderr.trim()].filter(Boolean).join(' '));
                             this._setStatus(status, summary ||
                                 `Account '${account.id}' is now OpenCode's login.`, false);
                             closeTimerId = Mainloop.timeout_add(1200, () => {
@@ -2061,20 +2103,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _failureMessage(fallback, stderr, stdout) {
-        let detail = (stderr || stdout || '').trim();
-        // The raw NO_CREDENTIAL stderr assumes a terminal user; point at the
-        // dialog's own affordances instead.
-        if (detail.includes('No OpenCode credential found')) {
-            detail = 'No OpenCode login found on this machine — use '
-                + '"Log in with OpenCode…" or the API key type.';
-        }
-        return detail || fallback;
+        return formatFailureDetail(stderr || stdout) || fallback;
     }
 
     _runAccountCommand(args, stdinText, callback) {
         const binary = this._ocgoPath();
         if (!binary) {
-            callback(false, '', 'ocgo not found; set the path in the applet settings');
+            callback(false, '', "The meter's helper is not installed — "
+                + 're-run the installer, then restart Cinnamon.');
             return;
         }
         try {
@@ -2087,7 +2123,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 input: stdinText === null ? null : `${stdinText}\n`,
             });
         } catch (error) {
-            callback(false, '', `could not start ocgo: ${error.message ?? error}`);
+            callback(false, '', `could not start the meter helper: ${error.message ?? error}`);
         }
     }
 
@@ -2124,13 +2160,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     // -- refresh -------------------------------------------------------------
 
-    // The configured path is authoritative: an unresolvable explicit path is an
-    // error, never a silent fallback. An empty setting falls back to
-    // ~/.local/bin/ocgo and then PATH, mirroring the GNOME extension.
+    // The helper is looked up at its standard install location and then on
+    // PATH, mirroring the GNOME extension. There is no user-facing override.
     _ocgoPath() {
-        const configured = typeof this.ocgo_path === 'string' ? this.ocgo_path.trim() : '';
-        if (configured)
-            return resolveExecutable(expandHome(configured));
         const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'ocgo']);
         if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
             return local;
