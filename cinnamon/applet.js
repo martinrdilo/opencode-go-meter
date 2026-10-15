@@ -199,15 +199,21 @@ function resolveExecutable(path) {
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
 }
 
-// The CLI names itself in its output — `ocgo: ...` warning prefixes and
-// `(ocgo_…1234)` masked-key hints; strip every such occurrence so no tool
-// token reaches the UI. Clean strings pass through untouched.
+// The CLI names itself in its output — `ocgo: ...` warning prefixes,
+// `(ocgo_…1234)` masked-key hints and config paths with an `ocgo` segment
+// (`~/.config/ocgo/...`); strip or neutralize every such occurrence so no
+// tool token reaches the UI. Clean strings pass through untouched.
 function stripToolToken(text) {
     let detail = typeof text === 'string' ? text : '';
     if (!detail.includes('ocgo'))
         return detail;
     detail = detail.replace(/ocgo:\s*/g, ' ');
     detail = detail.replace(/\(ocgo_[^)]*\)/g, '');
+    // `... at <ocgo-path>` reads fine without the fragment; any other
+    // ocgo-bearing path (a token with a slash and the name) becomes a
+    // neutral reference.
+    detail = detail.replace(/\s+at\s+(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, '');
+    detail = detail.replace(/(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, 'its config file');
     return detail.replace(/\s{2,}/g, ' ').trim();
 }
 

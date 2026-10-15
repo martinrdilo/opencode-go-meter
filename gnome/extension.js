@@ -116,13 +116,18 @@ function truncate(text, max) {
 
 // One plain-language rewrite for a cached refresh failure: the Cinnamon
 // applet's helper mirrored locally (no cross-file import) — strip the tool
-// token first, then map the known terminal-level messages to actionable
-// copy. Unknown details pass through token-stripped.
+// token and any ocgo-bearing config path first, then map the known
+// terminal-level messages to actionable copy. Unknown details pass through
+// sanitized.
 function formatFailureDetail(text) {
     let detail = typeof text === 'string' ? text.trim() : '';
     if (detail.includes('ocgo')) {
         detail = detail.replace(/ocgo:\s*/g, ' ');
         detail = detail.replace(/\(ocgo_[^)]*\)/g, '');
+        // `... at <ocgo-path>` reads fine without the fragment; any other
+        // ocgo-bearing path becomes a neutral reference.
+        detail = detail.replace(/\s+at\s+(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, '');
+        detail = detail.replace(/(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, 'its config file');
         detail = detail.replace(/\s{2,}/g, ' ').trim();
     }
     if (detail.includes('No OpenCode credential found')) {
