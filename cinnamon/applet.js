@@ -34,6 +34,10 @@ const KIND_OPENCODE_DB = 'opencode-db';
 const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
+// The CLI owns the full keyring error (core/ocgo/accounts.py); the applet
+// only matches this stable substring to offer the explicit file backend
+// instead of surfacing the CLI's terminal-level instruction.
+const SECRET_TOOL_UNAVAILABLE_MARKER = 'secret-tool is not available';
 
 const WINDOWS = [
     {key: 'rolling', label: 'Rolling usage', short: '5h'},
@@ -178,12 +182,47 @@ function expandHome(path) {
     return path;
 }
 
+// Display form of a credential-store path: a home prefix shortens to '~' so
+// the dialog line stays readable.
+function shortenHomePath(path) {
+    const home = GLib.get_home_dir();
+    if (home && path.startsWith(`${home}/`))
+        return `~${path.slice(home.length)}`;
+    return path;
+}
+
 function resolveExecutable(path) {
     if (!path)
         return null;
     if (!path.includes('/'))
         return GLib.find_program_in_path(path);
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
+}
+
+// Candidates to run the OpenCode login, in order: the session PATH first
+// (like a terminal would), then the install locations the official
+// installers use — the desktop-session PATH normally misses ~/.opencode/bin.
+const OPENCODE_BINARY_CANDIDATES = [
+    '~/.opencode/bin/opencode',
+    '~/.local/bin/opencode',
+    '~/bin/opencode',
+    '~/.bun/bin/opencode',
+    '~/.npm-global/bin/opencode',
+    '/usr/local/bin/opencode',
+    '/usr/bin/opencode',
+    '/snap/bin/opencode',
+];
+
+function resolveOpenCodeBinary() {
+    const onPath = GLib.find_program_in_path('opencode');
+    if (onPath)
+        return onPath;
+    for (const candidate of OPENCODE_BINARY_CANDIDATES) {
+        const resolved = resolveExecutable(expandHome(candidate));
+        if (resolved)
+            return resolved;
+    }
+    return null;
 }
 
 // Candidates to open a terminal running the login script, in order. The
@@ -322,6 +361,36 @@ function parseAccountList(text) {
     return {accounts, active};
 }
 
+// The discover payload's store block: where the CLI looked for a login and
+// whether it found one. All six fields must be present with their exact
+// types; anything missing or wrong sanitizes to null and callers fall back
+// to the credential list alone.
+function parseDiscoverStore(payload) {
+    if (!isObject(payload))
+        return null;
+    if (typeof payload.db_path !== 'string' || payload.db_path === '')
+        return null;
+    if (typeof payload.db_exists !== 'boolean')
+        return null;
+    if (typeof payload.auth_json_path !== 'string' ||
+            payload.auth_json_path === '')
+        return null;
+    if (typeof payload.auth_json_exists !== 'boolean')
+        return null;
+    if (typeof payload.auth_json_login !== 'boolean')
+        return null;
+    if (typeof payload.has_login !== 'boolean')
+        return null;
+    return {
+        db_path: payload.db_path,
+        db_exists: payload.db_exists,
+        auth_json_path: payload.auth_json_path,
+        auth_json_exists: payload.auth_json_exists,
+        auth_json_login: payload.auth_json_login,
+        has_login: payload.has_login,
+    };
+}
+
 function parseDiscoverJson(text) {
     if (typeof text !== 'string' || text.trim() === '')
         return null;
@@ -360,7 +429,10 @@ function parseDiscoverJson(text) {
                 : null,
         });
     }
-    return {credentials};
+    // Additive block (the payload keeps schema 1): a malformed or missing
+    // store block sanitizes to null, so the dialog degrades to the
+    // credential list alone.
+    return {credentials, store: parseDiscoverStore(payload.store)};
 }
 
 // Display-only suffix for a discovered credential: the email when present,
@@ -400,6 +472,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._activeAccountId = null;
         this._accounts = [];
         this._credentials = [];
+        this._store = null;
         this._accountsLoaded = false;
         this._accountsLoading = false;
         this._accountsError = null;
@@ -814,14 +887,22 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 !account.credential_id);
     }
 
-    // A binding can only succeed when a discovered credential exists: the auto
-    // binding resolves the active credential, so it is only offered while the
-    // store actually holds one (an auto account without any credential
-    // dead-ends on '--from-db').
+    // True when the CLI's store report says a login exists — a database row
+    // (listed or not) or the legacy auth.json — even when the discover
+    // listing is empty.
+    _storeHasLogin() {
+        return !!(this._store && this._store.has_login === true);
+    }
+
+    // A binding can only succeed when a login exists: the auto binding
+    // resolves the active credential (or the legacy auth.json login), so it
+    // is only offered while the store actually holds one (an auto account
+    // without any login dead-ends on '--from-db').
     _hasBindableLogin(choices) {
         if (choices.some(choice => choice.credentialId !== null))
             return true;
-        return !this._hasAutoLogin() && (this._credentials || []).length > 0;
+        return !this._hasAutoLogin() &&
+            ((this._credentials || []).length > 0 || this._storeHasLogin());
     }
 
     // First free account-id suggestion for the add dialog: 'work', then
@@ -927,6 +1008,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             // keeps the auto path working and the error surfaces in the
             // tooltip and the journal.
             this._credentials = credentials ? credentials.credentials : [];
+            // The store report rides with the credential list; on a discover
+            // failure (or an old CLI payload) it is null and the dialog falls
+            // back to the credential list alone.
+            this._store = credentials ? credentials.store : null;
             this._credentialsError = credentialsResult
                 ? credentialsResult.errorMessage
                 : null;
@@ -1201,8 +1286,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     // (XDG_RUNTIME_DIR, 0700). The world-writable temp dir would let a symlink
     // planted at the fixed filename redirect file_set_contents, so the script
     // lives where only the user can write. The script runs through 'sh', so
-    // the executable bit is best-effort only.
-    _writeLoginScript() {
+    // the executable bit is best-effort only. POSIX sh: it prepends the common
+    // OpenCode install dirs to PATH, runs the resolved binary (or a bare
+    // 'opencode' when none resolved) and reports the real exit status instead
+    // of claiming success.
+    _writeLoginScript(resolvedBinary) {
         const dir = GLib.get_user_runtime_dir();
         try {
             // Best-effort: if this fails, file_set_contents below fails too
@@ -1212,12 +1300,26 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             logError('could not prepare the login script directory', error);
         }
         const script = GLib.build_filenamev([dir, 'ocgo-opencode-login.sh']);
-        const resolved = GLib.find_program_in_path('opencode');
-        const command = resolved
-            ? `'${resolved.replace(/'/g, "'\\''")}'`
+        const command = resolvedBinary
+            ? `'${resolvedBinary.replace(/'/g, "'\\''")}'`
             : 'opencode';
-        const contents = `#!/bin/sh\n${command} auth login\n`
-            + 'printf "\\nLogin finished. You can close this window.\\n"\nread -r _\n';
+        const contents = '#!/bin/sh\n'
+            + 'PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$PATH"\n'
+            + 'export PATH\n'
+            + `${command} auth login\n`
+            + 'status=$?\n'
+            + 'if [ "$status" -eq 0 ]; then\n'
+            + '    printf "\\nLogin finished. You can close this window.\\n"\n'
+            + 'elif [ "$status" -eq 127 ]; then\n'
+            + '    printf "\\nOpenCode was not found. Install OpenCode for this '
+            + 'user, or run \\"opencode auth login\\" in a terminal where it '
+            + 'works, then press Refresh in the applet.\\n"\n'
+            + 'else\n'
+            + '    printf "\\nThe OpenCode login did not finish (exit code '
+            + '%s).\\n" "$status"\n'
+            + 'fi\n'
+            + 'printf "Press Enter to close this window.\\n"\n'
+            + 'read -r _\n';
         if (!GLib.file_set_contents(script, contents))
             throw new Error('could not write the login script');
         try {
@@ -1274,23 +1376,24 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
         dialog.contentLayout.add_child(content);
 
-        // First-run affordance: with no discovered OpenCode login (or an
+        // First-run affordance: with no discoverable OpenCode login (or an
         // unreadable credential store) the "OpenCode login" type can only
-        // dead-end, so the browser login path is offered up front. The block
-        // is always built and hidden while credentials are available, so the
-        // Refresh button and the login poll update this dialog in place.
-        const noCredentials = (this._credentials || []).length === 0;
+        // dead-end, so the login path and the API-key path are offered up
+        // front. The block is always built and hidden while a login is
+        // available; refreshGuidedState() owns its visibility and content.
         const helper = new St.BoxLayout({vertical: true, x_expand: true});
         setBoxSpacing(helper, 4);
-        const helperLabel = new St.Label({
-            text: this._credentialsError
-                ? 'Could not read the OpenCode credential store. '
-                    + truncate(this._credentialsError, MAX_WARNING_CHARS)
-                : 'No OpenCode login found on this machine. Log in below, or add an API-key account.',
-        });
+        const helperLabel = new St.Label({text: ''});
         helperLabel.clutter_text.line_wrap = true;
         helperLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         helper.add_child(helperLabel);
+        // Second line for the no-login state: the credential-store paths the
+        // CLI checked (the database, plus auth.json when the legacy file
+        // exists), so the empty state is self-diagnosable.
+        const storeLabel = new St.Label({text: ''});
+        storeLabel.clutter_text.line_wrap = true;
+        storeLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        helper.add_child(storeLabel);
 
         // Both button classes: 'modal-dialog-button' styles on Cinnamon
         // 5.4 themes, 'dialog-button' on 6.4 themes.
@@ -1308,9 +1411,22 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             can_focus: true,
         });
         loginButton.connect('clicked', () => {
+            // The desktop-session PATH normally misses the user's OpenCode
+            // install, so resolve the binary explicitly before anything runs.
+            const binary = resolveOpenCodeBinary();
+            if (!binary) {
+                // No script and no terminal: the login would only die with
+                // "command not found", so point at the manual path instead.
+                this._copyLoginCommand();
+                this._setStatus(status, 'OpenCode was not found on this '
+                    + 'machine. Install OpenCode, or run "opencode auth login" '
+                    + 'in a terminal where it works (the command is on your '
+                    + 'clipboard), then press Refresh.', true);
+                return;
+            }
             let script = null;
             try {
-                script = this._writeLoginScript();
+                script = this._writeLoginScript(binary);
             } catch (error) {
                 logError('could not prepare the login script', error);
             }
@@ -1353,21 +1469,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // The refresh updates this dialog in place: a
                 // destroy-and-recreate cycle proved fragile while this was
                 // developed and the root cause is not settled, so the open
-                // dialog is reused instead of torn down.
+                // dialog is reused instead of torn down. refreshGuidedState()
+                // owns the helper block (message, store paths, visibility).
                 refreshGuidedState();
                 if (this._credentialsError) {
-                    helper.visible = true;
-                    helperLabel.set_text('Could not read the OpenCode credential store. '
-                        + truncate(this._credentialsError, MAX_WARNING_CHARS));
                     this._setStatus(status,
                         'Could not reload the OpenCode credential store.', true);
-                } else if ((this._credentials || []).length === 0) {
-                    helper.visible = true;
-                    helperLabel.set_text('No OpenCode login found on this machine. '
-                        + 'Log in below, or add an API-key account.');
+                } else if ((this._credentials || []).length === 0 &&
+                        !this._storeHasLogin()) {
                     this._setStatus(status, 'No new credentials found yet.', false);
                 } else {
-                    helper.visible = false;
                     this._setStatus(status, 'Credentials reloaded.', false);
                 }
             });
@@ -1376,7 +1487,6 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         helper.add_child(helperButtons);
         dialog.contentLayout.add_child(helper);
-        helper.visible = noCredentials || !!this._credentialsError;
 
         const idEntry = new St.Entry({hint_text: 'e.g. work', x_expand: true});
         idEntry.set_text(this._suggestedAccountId());
@@ -1448,21 +1558,49 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 ? selectedCredential.label
                 : 'No credentials found';
         };
-        populateCredentialChoices();
+        // "Looked in: …" line for the no-login helper: the paths the CLI
+        // checked, with the home prefix shortened.
+        const storePathsMessage = () => {
+            let text = `Looked in: ${shortenHomePath(this._store.db_path)}`;
+            if (this._store.auth_json_exists)
+                text += ` and ${shortenHomePath(this._store.auth_json_path)}`;
+            return text;
+        };
         // Recomputes the guided state in place after a reload (the Refresh
-        // button and the login poll): the login type depends on whether a
-        // bindable credential exists, and the combo must follow the fresh
-        // credential list.
-        const refreshGuidedState = () => {
+        // button, the silent reload on open, and the login poll): the login
+        // type depends on whether a login is bindable, the combo must follow
+        // the fresh credential list, and the helper block (message, checked
+        // paths, visibility) reflects the fresh store. The optional override
+        // forces an explicit helper line and visibility (the poll's
+        // "detected" message).
+        const refreshGuidedState = (helperOverride = null) => {
             const fresh = this._credentialChoices();
             const freshAllowLogin = this._hasBindableLogin(fresh);
             this._setRadioOptionEnabled(typeChooser, KIND_OPENCODE_DB, freshAllowLogin);
-            // The reload can remove the last bindable credential while the
-            // login type is active: keeping it selected would submit from the
+            // The reload can remove the last bindable login while the login
+            // type is active: keeping it selected would submit from the
             // disabled type, so fall back to the API-key type.
             if (!freshAllowLogin && selectedType() === KIND_OPENCODE_DB)
                 typeChooser.setActive(KIND_API_KEY);
             populateCredentialChoices();
+
+            const noLogin = !this._credentialsError &&
+                (this._credentials || []).length === 0 && !this._storeHasLogin();
+            if (helperOverride !== null) {
+                helper.visible = true;
+                helperLabel.set_text(helperOverride);
+            } else if (this._credentialsError) {
+                helper.visible = true;
+                helperLabel.set_text('Could not read the OpenCode credential store. '
+                    + truncate(this._credentialsError, MAX_WARNING_CHARS));
+            } else {
+                helper.visible = noLogin;
+                helperLabel.set_text('No OpenCode login found on this machine. '
+                    + 'Log in below, or add an API-key account.');
+            }
+            // The checked paths ride under the no-login message only.
+            storeLabel.visible = helperOverride === null && noLogin && !!this._store;
+            storeLabel.set_text(storeLabel.visible ? storePathsMessage() : '');
             return {allowLogin: freshAllowLogin, choices: fresh};
         };
 
@@ -1486,6 +1624,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             const serial = ++loginPollSerial;
             const baseline = new Set(
                 (this._credentials || []).map(credential => credential.id));
+            // Legacy logins never appear in the credentials list: a login
+            // landing in auth.json is detected through has_login alone.
+            const baselineHasLogin = this._storeHasLogin();
             loginPollTicks = 0;
             loginPollId = Mainloop.timeout_add_seconds(LOGIN_POLL_SECONDS, () => {
                 if (this._removed || closed) {
@@ -1498,12 +1639,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     if (this._removed || closed || serial !== loginPollSerial)
                         return; // closed, or a newer poll replaced this one
                     const detected = (this._credentials || []).some(
-                        credential => !baseline.has(credential.id));
+                        credential => !baseline.has(credential.id)) ||
+                        (!baselineHasLogin && this._storeHasLogin());
                     if (detected) {
                         stopLoginPoll();
-                        helper.visible = true;
-                        helperLabel.set_text('OpenCode login detected.');
-                        refreshGuidedState();
+                        refreshGuidedState('OpenCode login detected.');
                         this._setStatus(status, 'OpenCode login detected — '
                             + 'the login can be added now.', false);
                         return;
@@ -1550,12 +1690,27 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }
         });
 
+        // Keyring-less fallback state (field report 4b): set when an API-key
+        // submit fails with SECRET_TOOL_UNAVAILABLE_MARKER, so the next confirm
+        // click re-runs the same command with '--store file'. A type switch
+        // clears it (updateTypeState); closing the dialog drops it with the
+        // closure.
+        let fileFallbackOffered = false;
+
         const selectedType = () => typeChooser.getActive();
+        // Initial guided state: helper visibility and message, checked
+        // paths, radio enablement and the combo all come from this one path.
+        refreshGuidedState();
 
         const submit = () => {
             const accountId = idEntry.get_text().trim();
             const label = labelEntry.get_text().trim();
             const fromDb = selectedType() === KIND_OPENCODE_DB;
+            // A pending keyring-less offer turns this submit into the file
+            // backend retry: same command, '--store file' instead of 'auto'
+            // (the CLI's deliberate explicit opt-in). Captured before the
+            // offer flag is consumed below.
+            const useFileStore = !fromDb && fileFallbackOffered;
             const key = fromDb ? '' : keyEntry.get_text();
             const error = accountFormError(accountId, key, fromDb);
             if (error) {
@@ -1570,12 +1725,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // OpenCode credential (the auto entry).
                 // Backstop only: the login type is disabled when no
                 // credential is bindable, so this submit cannot normally run.
-                // The auto entry (credentialId null) needs at least one
-                // credential in the store to resolve, so it counts as missing
-                // when the store is empty.
+                // The auto entry (credentialId null) needs a login in the
+                // store to resolve — a listed credential or the legacy
+                // auth.json login — so it counts as missing when the store
+                // holds neither.
                 if (!selectedCredential ||
                         (selectedCredential.credentialId === null &&
-                            (this._credentials || []).length === 0)) {
+                            (this._credentials || []).length === 0 &&
+                            !this._storeHasLogin())) {
                     this._setStatus(status, 'No OpenCode login found — use '
                         + '"Log in with OpenCode…" or the API key type.', true);
                     return;
@@ -1588,13 +1745,19 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 pendingText = `Adding the OpenCode login as '${accountId}'…`;
             } else {
                 const command = accountCommandFor(accountId, this._accounts);
-                args = ['account', command, accountId, '--store', 'auto'];
+                args = ['account', command, accountId, '--store',
+                    useFileStore ? 'file' : 'auto'];
                 if (command === 'add' && label)
                     args.push('--label', label);
-                pendingText = command === 'add'
-                    ? `Adding account '${accountId}'…`
-                    : `Replacing the key for '${accountId}'…`;
+                pendingText = useFileStore
+                    ? 'Storing the key in a local file…'
+                    : command === 'add'
+                        ? `Adding account '${accountId}'…`
+                        : `Replacing the key for '${accountId}'…`;
             }
+            // The offer is consumed by this run: the retry must take one
+            // click, and any later failure goes back to the normal branch.
+            fileFallbackOffered = false;
             this._setDialogButtonEnabled(confirmInfo.button, false);
             this._setStatus(status, pendingText, false);
             this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
@@ -1604,8 +1767,24 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     this._loadAccounts();
                 if (closed)
                     return;
-                // The key never stays in the entry beyond the command.
-                keyEntry.set_text('');
+                // The CLI's keyring-or-error contract is deliberate; the
+                // applet only offers the file backend when the failure names
+                // the missing secret-tool. stderr first, stdout as the
+                // fallback — the same detail _failureMessage picks.
+                const keyringMissing = !ok && !fromDb && !useFileStore &&
+                    (stderr || stdout || '').includes(SECRET_TOOL_UNAVAILABLE_MARKER);
+                if (!keyringMissing) {
+                    // The key never stays in the entry beyond the command.
+                    // Exception (field report 4b): a missing-keyring failure
+                    // keeps it, because the command did not complete and the
+                    // retry must not ask the user to paste it again.
+                    keyEntry.set_text('');
+                }
+                // A completed file-store retry (success or failure) ends the
+                // offer: the confirm button goes back to the API-key type's
+                // label, exactly as updateTypeState assigns it.
+                if (useFileStore)
+                    confirmInfo.button.label = 'Add / replace key';
                 if (ok) {
                     const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join(' ');
                     this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
@@ -1614,6 +1793,18 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         this._closeAccountsDialog(dialog);
                         return false;
                     });
+                } else if (keyringMissing) {
+                    // Two-step offer (field report 4b): keep the typed key,
+                    // explain without the CLI's terminal-level wording, and
+                    // let the next confirm click retry with '--store file'.
+                    // No close timer — the user decides.
+                    fileFallbackOffered = true;
+                    confirmInfo.button.label = 'Store in a local file';
+                    this._setStatus(status, 'The system keyring (libsecret-tools) '
+                        + 'is not installed. Press "Store in a local file" to keep '
+                        + 'the key in ~/.config/ocgo/keys (readable only by you) — '
+                        + 'or install libsecret-tools and try again.', true);
+                    this._setDialogButtonEnabled(confirmInfo.button, true);
                 } else {
                     this._setStatus(status, this._failureMessage(
                         fromDb ? 'could not add the OpenCode login account'
@@ -1640,6 +1831,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         const updateTypeState = () => {
             const fromDb = selectedType() === KIND_OPENCODE_DB;
+            // A type switch cancels a pending keyring-less offer: the
+            // type-driven label assignment below drops the
+            // 'Store in a local file' relabel too, and the offer's stale
+            // explanation must not survive pointing at a now-hidden key field.
+            if (fileFallbackOffered) {
+                fileFallbackOffered = false;
+                status.set_text('');
+            }
             keyRow.visible = !fromDb;
             credentialRow.visible = fromDb;
             if (fromDb)
@@ -1663,6 +1862,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             // guarded 'destroy' handler clears the reference and runs the cleanups.
             dialog.destroy();
         }
+        // Silent freshness reload: a login made outside the dialog (for
+        // example in a terminal) must not leave a stale "no login found"
+        // behind. No status change from this reload.
+        this._loadAccounts(() => {
+            if (closed)
+                return;
+            refreshGuidedState();
+        });
     }
 
     on_accounts_remove() {
@@ -1740,19 +1947,26 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     // Explains "Use in OpenCode…" when it does not apply: only a pinned
-    // OpenCode login can become the credential OpenCode itself uses.
+    // OpenCode login can become the credential OpenCode itself uses. Purpose
+    // first (two sentences at most), then the concrete next step.
     _openActivateExplainer(account) {
         const dialog = this._openAccountsDialog();
         const lead = account
             ? `The selected account '${account.label}' is not a pinned OpenCode login. `
             : 'No account is selected above. ';
+        const purpose = account
+            ? 'Use in OpenCode makes OpenCode itself use one of your pinned '
+                + 'logins for new OpenCode sessions; only pinned logins can be used.'
+            : 'Use in OpenCode makes OpenCode itself use one of your pinned '
+                + 'logins for new OpenCode sessions.';
+        const nextStep = account
+            ? 'Add one with "Add / replace key…" (type "OpenCode login", pick '
+                + 'a specific credential).'
+            : 'Select a pinned OpenCode login above first — or add one with '
+                + '"Add / replace key…" (type "OpenCode login").';
         dialog.contentLayout.add_child(new MessageContent({
             title: 'Use in OpenCode',
-            description: lead
-                + 'This action points OpenCode itself at a pinned login from this '
-                + 'machine\'s credential store, so new OpenCode sessions use it. Add a '
-                + 'pinned login with "Add / replace key…" (type "OpenCode login", pick '
-                + 'a specific credential).',
+            description: `${lead}${purpose} ${nextStep}`,
         }));
         dialog.setButtons([
             {

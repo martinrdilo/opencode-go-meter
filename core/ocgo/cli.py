@@ -521,10 +521,16 @@ def cmd_account_list(args: argparse.Namespace) -> int:
 
 
 def cmd_account_discover(args: argparse.Namespace) -> int:
+    store = creds.store_status()
     try:
         credentials = creds.list_db_credentials()
     except creds.CredentialError as exc:
-        return _fail(exc)
+        if store["db_exists"]:
+            # The file is there but unreadable: a genuine error.
+            return _fail(exc)
+        # A machine that never ran OpenCode has no database yet: that is a
+        # state for the caller and its store block to display, not a failure.
+        credentials = []
     if args.json:
         payload = {
             "schema": 1,
@@ -538,11 +544,15 @@ def cmd_account_discover(args: argparse.Namespace) -> int:
                 }
                 for credential in credentials
             ],
+            # Additive: existing consumers ignore the new key.
+            "store": store,
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
     if not credentials:
-        print("no OpenCode credentials found in the local database")
+        print(f"no OpenCode credentials found in {store['db_path']}")
+        if store["auth_json_exists"]:
+            print(f"legacy store: {store['auth_json_path']}")
         return 0
     id_width = max([len("ID")] + [len(credential.id) for credential in credentials])
     label_width = max(
@@ -556,6 +566,7 @@ def cmd_account_discover(args: argparse.Namespace) -> int:
             f"{credential.id:<{id_width}}  {credential.label:<{label_width}}  "
             f"{active:<6}  {email}"
         )
+    print(f"store: {store['db_path']}")
     return 0
 
 
