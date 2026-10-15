@@ -114,6 +114,7 @@ function truncate(text, max) {
     return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// Deliberate copy: keep in sync with cinnamon/applet.js and gnome/prefs.js.
 // One plain-language rewrite for a cached refresh failure: the Cinnamon
 // applet's helper mirrored locally (no cross-file import) — strip the tool
 // token and any ocgo-bearing config path first, then map the known

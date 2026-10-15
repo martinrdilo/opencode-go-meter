@@ -199,6 +199,7 @@ function resolveExecutable(path) {
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
 }
 
+// Deliberate copy: keep in sync with gnome/prefs.js and gnome/extension.js.
 // The CLI names itself in its output — `ocgo: ...` warning prefixes,
 // `(ocgo_…1234)` masked-key hints and config paths with an `ocgo` segment
 // (`~/.config/ocgo/...`); strip or neutralize every such occurrence so no
