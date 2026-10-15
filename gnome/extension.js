@@ -219,14 +219,6 @@ function creditValueStyle(styleClass) {
     return styleClass ? `ocgo-credit-value ${styleClass}` : 'ocgo-credit-value';
 }
 
-function resolveExecutable(path) {
-    if (!path)
-        return null;
-    if (!path.includes('/'))
-        return GLib.find_program_in_path(path);
-    return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
-}
-
 export default class OpenCodeGoMeterExtension extends Extension {
     enable() {
         try {
@@ -922,14 +914,9 @@ export default class OpenCodeGoMeterExtension extends Extension {
             });
     }
 
+    // The helper is looked up at its standard install location and then on
+    // PATH, mirroring the Cinnamon applet. There is no user-facing override.
     _ocgoPath() {
-        try {
-            const fromSetting = resolveExecutable(this._settings.get_string('ocgo-path').trim());
-            if (fromSetting)
-                return fromSetting;
-        } catch (error) {
-            logError('could not read ocgo-path', error);
-        }
         const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'ocgo']);
         if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
             return local;
@@ -944,7 +931,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
         try {
             const binary = this._ocgoPath();
             if (!binary) {
-                logError('ocgo not found; set ocgo-path in the extension settings');
+                logError('ocgo not found; skipping the refresh');
                 return;
             }
             this._refreshInProgress = true;

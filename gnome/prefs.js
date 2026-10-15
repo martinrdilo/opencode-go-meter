@@ -1,4 +1,4 @@
-// Preferences for OpenCode Go Meter: ocgo path, refresh interval, and accounts.
+// Preferences for OpenCode Go Meter: refresh interval, panel, and accounts.
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 import Adw from 'gi://Adw';
@@ -13,21 +13,7 @@ const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
 
-function resolveOcgoPath(settings) {
-    try {
-        const configured = settings.get_string('ocgo-path').trim();
-        if (configured) {
-            const resolved = configured.includes('/')
-                ? (GLib.file_test(configured, GLib.FileTest.IS_EXECUTABLE)
-                    ? configured
-                    : null)
-                : GLib.find_program_in_path(configured);
-            if (resolved)
-                return resolved;
-        }
-    } catch (error) {
-        console.error(`[opencode-go-meter] could not read ocgo-path: ${error}`);
-    }
+function resolveOcgoPath() {
     const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'ocgo']);
     if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
         return local;
@@ -171,14 +157,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         const page = new Adw.PreferencesPage();
         const group = new Adw.PreferencesGroup({
             title: 'OpenCode Go Meter',
-            description: 'How the extension finds the ocgo CLI and how often it refreshes usage.',
+            description: 'How often the extension refreshes usage data.',
         });
-
-        const pathRow = new Adw.EntryRow({
-            title: 'ocgo path (empty = auto-detect)',
-        });
-        settings.bind('ocgo-path', pathRow, 'text', Gio.SettingsBindFlags.DEFAULT);
-        group.add(pathRow);
 
         const intervalRow = new Adw.SpinRow({
             title: 'Refresh interval (seconds)',
@@ -519,10 +499,12 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     }
 
     _startAccountLoad(generation) {
-        const binary = resolveOcgoPath(this._settings);
+        const binary = resolveOcgoPath();
         if (!binary) {
             this._finishAccountLoad(
-                generation, null, null, 'ocgo not found; set the path above', null);
+                generation, null, null,
+                "The meter's helper is not installed — re-run the installer, "
+                    + 'then restart GNOME Shell.', null);
             return;
         }
         this._accountsLoading = true;
@@ -807,13 +789,17 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     }
 
     _failureMessage(fallback, stderr, stdout) {
-        return (stderr || stdout || '').trim() || fallback;
+        // The CLI prefixes its errors with its binary name; drop it so no raw
+        // tool error reaches the preferences UI.
+        const detail = (stderr || stdout || '').trim().replace(/^ocgo:\s*/, '');
+        return detail || fallback;
     }
 
     _runAccountCommand(args, stdinText, callback) {
-        const binary = resolveOcgoPath(this._settings);
+        const binary = resolveOcgoPath();
         if (!binary) {
-            callback(false, '', 'ocgo not found; set the path above');
+            callback(false, '', "The meter's helper is not installed — "
+                + 're-run the installer, then restart GNOME Shell.');
             return;
         }
         let subprocess = null;
@@ -824,7 +810,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                     Gio.SubprocessFlags.STDOUT_PIPE |
                     Gio.SubprocessFlags.STDERR_PIPE);
         } catch (error) {
-            callback(false, '', `could not start ocgo: ${error.message ?? error}`);
+            callback(false, '', `could not start the meter helper: ${error.message ?? error}`);
             return;
         }
         if (stdinText !== null) {
@@ -834,7 +820,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                 const stdin = subprocess.get_stdin_pipe();
                 stdin.write_all(new TextEncoder().encode(`${stdinText}\n`), null);
             } catch (error) {
-                callback(false, '', `could not send the key to ocgo: ${error.message ?? error}`);
+                callback(false, '', `could not send the key to the meter helper: ${error.message ?? error}`);
                 return;
             }
         }
@@ -846,7 +832,7 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
                 stdout = out ?? '';
                 stderr = err ?? '';
             } catch (error) {
-                callback(false, '', `ocgo failed: ${error.message ?? error}`);
+                callback(false, '', `the meter helper failed: ${error.message ?? error}`);
                 return;
             }
             callback(process.get_successful(), stdout, stderr);
