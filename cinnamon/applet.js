@@ -1833,8 +1833,12 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             const fromDb = selectedType() === KIND_OPENCODE_DB;
             // A type switch cancels a pending keyring-less offer: the
             // type-driven label assignment below drops the
-            // 'Store in a local file' relabel too.
-            fileFallbackOffered = false;
+            // 'Store in a local file' relabel too, and the offer's stale
+            // explanation must not survive pointing at a now-hidden key field.
+            if (fileFallbackOffered) {
+                fileFallbackOffered = false;
+                status.set_text('');
+            }
             keyRow.visible = !fromDb;
             credentialRow.visible = fromDb;
             if (fromDb)
