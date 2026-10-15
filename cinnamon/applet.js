@@ -178,6 +178,15 @@ function expandHome(path) {
     return path;
 }
 
+// Display form of a credential-store path: a home prefix shortens to '~' so
+// the dialog line stays readable.
+function shortenHomePath(path) {
+    const home = GLib.get_home_dir();
+    if (home && path.startsWith(`${home}/`))
+        return `~${path.slice(home.length)}`;
+    return path;
+}
+
 function resolveExecutable(path) {
     if (!path)
         return null;
@@ -348,6 +357,36 @@ function parseAccountList(text) {
     return {accounts, active};
 }
 
+// The discover payload's store block: where the CLI looked for a login and
+// whether it found one. All six fields must be present with their exact
+// types; anything missing or wrong sanitizes to null and callers fall back
+// to the credential list alone.
+function parseDiscoverStore(payload) {
+    if (!isObject(payload))
+        return null;
+    if (typeof payload.db_path !== 'string' || payload.db_path === '')
+        return null;
+    if (typeof payload.db_exists !== 'boolean')
+        return null;
+    if (typeof payload.auth_json_path !== 'string' ||
+            payload.auth_json_path === '')
+        return null;
+    if (typeof payload.auth_json_exists !== 'boolean')
+        return null;
+    if (typeof payload.auth_json_login !== 'boolean')
+        return null;
+    if (typeof payload.has_login !== 'boolean')
+        return null;
+    return {
+        db_path: payload.db_path,
+        db_exists: payload.db_exists,
+        auth_json_path: payload.auth_json_path,
+        auth_json_exists: payload.auth_json_exists,
+        auth_json_login: payload.auth_json_login,
+        has_login: payload.has_login,
+    };
+}
+
 function parseDiscoverJson(text) {
     if (typeof text !== 'string' || text.trim() === '')
         return null;
@@ -386,7 +425,10 @@ function parseDiscoverJson(text) {
                 : null,
         });
     }
-    return {credentials};
+    // Additive block (the payload keeps schema 1): a malformed or missing
+    // store block sanitizes to null, so the dialog degrades to the
+    // credential list alone.
+    return {credentials, store: parseDiscoverStore(payload.store)};
 }
 
 // Display-only suffix for a discovered credential: the email when present,
@@ -426,6 +468,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._activeAccountId = null;
         this._accounts = [];
         this._credentials = [];
+        this._store = null;
         this._accountsLoaded = false;
         this._accountsLoading = false;
         this._accountsError = null;
@@ -840,14 +883,22 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 !account.credential_id);
     }
 
-    // A binding can only succeed when a discovered credential exists: the auto
-    // binding resolves the active credential, so it is only offered while the
-    // store actually holds one (an auto account without any credential
-    // dead-ends on '--from-db').
+    // True when the CLI's store report says a login exists — a database row
+    // (listed or not) or the legacy auth.json — even when the discover
+    // listing is empty.
+    _storeHasLogin() {
+        return !!(this._store && this._store.has_login === true);
+    }
+
+    // A binding can only succeed when a login exists: the auto binding
+    // resolves the active credential (or the legacy auth.json login), so it
+    // is only offered while the store actually holds one (an auto account
+    // without any login dead-ends on '--from-db').
     _hasBindableLogin(choices) {
         if (choices.some(choice => choice.credentialId !== null))
             return true;
-        return !this._hasAutoLogin() && (this._credentials || []).length > 0;
+        return !this._hasAutoLogin() &&
+            ((this._credentials || []).length > 0 || this._storeHasLogin());
     }
 
     // First free account-id suggestion for the add dialog: 'work', then
@@ -953,6 +1004,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             // keeps the auto path working and the error surfaces in the
             // tooltip and the journal.
             this._credentials = credentials ? credentials.credentials : [];
+            // The store report rides with the credential list; on a discover
+            // failure (or an old CLI payload) it is null and the dialog falls
+            // back to the credential list alone.
+            this._store = credentials ? credentials.store : null;
             this._credentialsError = credentialsResult
                 ? credentialsResult.errorMessage
                 : null;
@@ -1317,23 +1372,24 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
         dialog.contentLayout.add_child(content);
 
-        // First-run affordance: with no discovered OpenCode login (or an
+        // First-run affordance: with no discoverable OpenCode login (or an
         // unreadable credential store) the "OpenCode login" type can only
-        // dead-end, so the browser login path is offered up front. The block
-        // is always built and hidden while credentials are available, so the
-        // Refresh button and the login poll update this dialog in place.
-        const noCredentials = (this._credentials || []).length === 0;
+        // dead-end, so the login path and the API-key path are offered up
+        // front. The block is always built and hidden while a login is
+        // available; refreshGuidedState() owns its visibility and content.
         const helper = new St.BoxLayout({vertical: true, x_expand: true});
         setBoxSpacing(helper, 4);
-        const helperLabel = new St.Label({
-            text: this._credentialsError
-                ? 'Could not read the OpenCode credential store. '
-                    + truncate(this._credentialsError, MAX_WARNING_CHARS)
-                : 'No OpenCode login found on this machine. Log in below, or add an API-key account.',
-        });
+        const helperLabel = new St.Label({text: ''});
         helperLabel.clutter_text.line_wrap = true;
         helperLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         helper.add_child(helperLabel);
+        // Second line for the no-login state: the credential-store paths the
+        // CLI checked (the database, plus auth.json when the legacy file
+        // exists), so the empty state is self-diagnosable.
+        const storeLabel = new St.Label({text: ''});
+        storeLabel.clutter_text.line_wrap = true;
+        storeLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        helper.add_child(storeLabel);
 
         // Both button classes: 'modal-dialog-button' styles on Cinnamon
         // 5.4 themes, 'dialog-button' on 6.4 themes.
@@ -1409,21 +1465,16 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // The refresh updates this dialog in place: a
                 // destroy-and-recreate cycle proved fragile while this was
                 // developed and the root cause is not settled, so the open
-                // dialog is reused instead of torn down.
+                // dialog is reused instead of torn down. refreshGuidedState()
+                // owns the helper block (message, store paths, visibility).
                 refreshGuidedState();
                 if (this._credentialsError) {
-                    helper.visible = true;
-                    helperLabel.set_text('Could not read the OpenCode credential store. '
-                        + truncate(this._credentialsError, MAX_WARNING_CHARS));
                     this._setStatus(status,
                         'Could not reload the OpenCode credential store.', true);
-                } else if ((this._credentials || []).length === 0) {
-                    helper.visible = true;
-                    helperLabel.set_text('No OpenCode login found on this machine. '
-                        + 'Log in below, or add an API-key account.');
+                } else if ((this._credentials || []).length === 0 &&
+                        !this._storeHasLogin()) {
                     this._setStatus(status, 'No new credentials found yet.', false);
                 } else {
-                    helper.visible = false;
                     this._setStatus(status, 'Credentials reloaded.', false);
                 }
             });
@@ -1432,7 +1483,6 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         helper.add_child(helperButtons);
         dialog.contentLayout.add_child(helper);
-        helper.visible = noCredentials || !!this._credentialsError;
 
         const idEntry = new St.Entry({hint_text: 'e.g. work', x_expand: true});
         idEntry.set_text(this._suggestedAccountId());
@@ -1504,21 +1554,49 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 ? selectedCredential.label
                 : 'No credentials found';
         };
-        populateCredentialChoices();
+        // "Looked in: …" line for the no-login helper: the paths the CLI
+        // checked, with the home prefix shortened.
+        const storePathsMessage = () => {
+            let text = `Looked in: ${shortenHomePath(this._store.db_path)}`;
+            if (this._store.auth_json_exists)
+                text += ` and ${shortenHomePath(this._store.auth_json_path)}`;
+            return text;
+        };
         // Recomputes the guided state in place after a reload (the Refresh
-        // button and the login poll): the login type depends on whether a
-        // bindable credential exists, and the combo must follow the fresh
-        // credential list.
-        const refreshGuidedState = () => {
+        // button, the silent reload on open, and the login poll): the login
+        // type depends on whether a login is bindable, the combo must follow
+        // the fresh credential list, and the helper block (message, checked
+        // paths, visibility) reflects the fresh store. The optional override
+        // forces an explicit helper line and visibility (the poll's
+        // "detected" message).
+        const refreshGuidedState = (helperOverride = null) => {
             const fresh = this._credentialChoices();
             const freshAllowLogin = this._hasBindableLogin(fresh);
             this._setRadioOptionEnabled(typeChooser, KIND_OPENCODE_DB, freshAllowLogin);
-            // The reload can remove the last bindable credential while the
-            // login type is active: keeping it selected would submit from the
+            // The reload can remove the last bindable login while the login
+            // type is active: keeping it selected would submit from the
             // disabled type, so fall back to the API-key type.
             if (!freshAllowLogin && selectedType() === KIND_OPENCODE_DB)
                 typeChooser.setActive(KIND_API_KEY);
             populateCredentialChoices();
+
+            const noLogin = !this._credentialsError &&
+                (this._credentials || []).length === 0 && !this._storeHasLogin();
+            if (helperOverride !== null) {
+                helper.visible = true;
+                helperLabel.set_text(helperOverride);
+            } else if (this._credentialsError) {
+                helper.visible = true;
+                helperLabel.set_text('Could not read the OpenCode credential store. '
+                    + truncate(this._credentialsError, MAX_WARNING_CHARS));
+            } else {
+                helper.visible = noLogin;
+                helperLabel.set_text('No OpenCode login found on this machine. '
+                    + 'Log in below, or add an API-key account.');
+            }
+            // The checked paths ride under the no-login message only.
+            storeLabel.visible = helperOverride === null && noLogin && !!this._store;
+            storeLabel.set_text(storeLabel.visible ? storePathsMessage() : '');
             return {allowLogin: freshAllowLogin, choices: fresh};
         };
 
@@ -1542,6 +1620,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             const serial = ++loginPollSerial;
             const baseline = new Set(
                 (this._credentials || []).map(credential => credential.id));
+            // Legacy logins never appear in the credentials list: a login
+            // landing in auth.json is detected through has_login alone.
+            const baselineHasLogin = this._storeHasLogin();
             loginPollTicks = 0;
             loginPollId = Mainloop.timeout_add_seconds(LOGIN_POLL_SECONDS, () => {
                 if (this._removed || closed) {
@@ -1554,12 +1635,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     if (this._removed || closed || serial !== loginPollSerial)
                         return; // closed, or a newer poll replaced this one
                     const detected = (this._credentials || []).some(
-                        credential => !baseline.has(credential.id));
+                        credential => !baseline.has(credential.id)) ||
+                        (!baselineHasLogin && this._storeHasLogin());
                     if (detected) {
                         stopLoginPoll();
-                        helper.visible = true;
-                        helperLabel.set_text('OpenCode login detected.');
-                        refreshGuidedState();
+                        refreshGuidedState('OpenCode login detected.');
                         this._setStatus(status, 'OpenCode login detected — '
                             + 'the login can be added now.', false);
                         return;
@@ -1607,6 +1687,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         });
 
         const selectedType = () => typeChooser.getActive();
+        // Initial guided state: helper visibility and message, checked
+        // paths, radio enablement and the combo all come from this one path.
+        refreshGuidedState();
 
         const submit = () => {
             const accountId = idEntry.get_text().trim();
@@ -1626,12 +1709,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 // OpenCode credential (the auto entry).
                 // Backstop only: the login type is disabled when no
                 // credential is bindable, so this submit cannot normally run.
-                // The auto entry (credentialId null) needs at least one
-                // credential in the store to resolve, so it counts as missing
-                // when the store is empty.
+                // The auto entry (credentialId null) needs a login in the
+                // store to resolve — a listed credential or the legacy
+                // auth.json login — so it counts as missing when the store
+                // holds neither.
                 if (!selectedCredential ||
                         (selectedCredential.credentialId === null &&
-                            (this._credentials || []).length === 0)) {
+                            (this._credentials || []).length === 0 &&
+                            !this._storeHasLogin())) {
                     this._setStatus(status, 'No OpenCode login found — use '
                         + '"Log in with OpenCode…" or the API key type.', true);
                     return;
@@ -1719,6 +1804,14 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             // guarded 'destroy' handler clears the reference and runs the cleanups.
             dialog.destroy();
         }
+        // Silent freshness reload: a login made outside the dialog (for
+        // example in a terminal) must not leave a stale "no login found"
+        // behind. No status change from this reload.
+        this._loadAccounts(() => {
+            if (closed)
+                return;
+            refreshGuidedState();
+        });
     }
 
     on_accounts_remove() {
@@ -1796,19 +1889,26 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     // Explains "Use in OpenCode…" when it does not apply: only a pinned
-    // OpenCode login can become the credential OpenCode itself uses.
+    // OpenCode login can become the credential OpenCode itself uses. Purpose
+    // first (two sentences at most), then the concrete next step.
     _openActivateExplainer(account) {
         const dialog = this._openAccountsDialog();
         const lead = account
             ? `The selected account '${account.label}' is not a pinned OpenCode login. `
             : 'No account is selected above. ';
+        const purpose = account
+            ? 'Use in OpenCode makes OpenCode itself use one of your pinned '
+                + 'logins for new OpenCode sessions; only pinned logins can be used.'
+            : 'Use in OpenCode makes OpenCode itself use one of your pinned '
+                + 'logins for new OpenCode sessions.';
+        const nextStep = account
+            ? 'Add one with "Add / replace key…" (type "OpenCode login", pick '
+                + 'a specific credential).'
+            : 'Select a pinned OpenCode login above first — or add one with '
+                + '"Add / replace key…" (type "OpenCode login").';
         dialog.contentLayout.add_child(new MessageContent({
             title: 'Use in OpenCode',
-            description: lead
-                + 'This action points OpenCode itself at a pinned login from this '
-                + 'machine\'s credential store, so new OpenCode sessions use it. Add a '
-                + 'pinned login with "Add / replace key…" (type "OpenCode login", pick '
-                + 'a specific credential).',
+            description: `${lead}${purpose} ${nextStep}`,
         }));
         dialog.setButtons([
             {
