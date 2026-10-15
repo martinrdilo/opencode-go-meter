@@ -1,6 +1,6 @@
 # Feature: project-scaffolding — Round 1: architecture, conventions, and README
 
-**Status**: Implementation complete (T1–T4 done and verified); delivery pending — stacked-to-main (PR1 = S1, PR2 = S2) awaits user push/PR authorization.
+**Status**: Delivered for review — PR #6 (slice 1 → `main`) and PR #7 (slice 2, stacked on `docs/project-scaffolding`) are open; merge is the user's call.
 **Repo**: `opencode-go-meter`
 **Branch**: `docs/project-scaffolding` (from `main` @ `171159a`)
 **Worktree**: `../opencode-go-meter-worktrees/project-scaffolding` (the main checkout is busy with `fix/login-reliability` work in progress)
@@ -63,4 +63,5 @@ User request (2026-10-14): lock a firm structure now so growth does not become d
 - 2026-10-14 — T1–T4 executed by the delegated writer: commits `3d2c4bf`, `7818778`, `5afe95b`, `470579d` (plus seed `bd9cea3`). Checks: `make test` 422 OK; file-relative link integrity `missing: []`; `gentle-ai review assess` over `171159a..HEAD` (committed-only): tier medium (`executable_change` — AGENTS.md loads as agent instructions), `review_due: slice_budget_reached`; RDD is off (global) → no native review started, ordinary policy applies.
 - 2026-10-14 — Independent read-only verifier: PASS WITH FINDINGS. All factual claims match the code (commands, flags, paths, versions, thresholds, schemas, installs, CI). Three wording imprecisions found by the independent verifier are fixed in the delivered docs (folded into the commits; no separate correction commit); the headline-vs-skill duplication note is accepted as by-design layering.
 - 2026-10-14 — Branch restructured for stacked delivery: `docs/project-scaffolding` = S1 (from `main`: seed + architecture + decisions); `docs/project-scaffolding-2` = S2 stacked on S1 (AGENTS + skill + README). The pre-restructure branch is kept locally as `docs/project-scaffolding-old`.
-- Next step: user review of `docs/project-scaffolding`. On go: push PR1 (S1: seed + architecture + decisions), then PR2 (S2: AGENTS + skill + README) retargeted to `main` after PR1 merges. Main checkout remains untouched (`fix/login-reliability` session active).
+- 2026-10-14 — Delivered: both branches pushed; PR #6 (S1 → `main`) and PR #7 (S2 → `docs/project-scaffolding`) opened on GitHub with the `documentation` label; the `tests` workflow runs per push.
+- Next step: user review + merge of PR #6; then PR #7 retargets to `main` (retarget manually, or let GitHub do it when the base branch is deleted). Main checkout remains untouched (`fix/login-reliability` session active).
