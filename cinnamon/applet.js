@@ -186,6 +186,32 @@ function resolveExecutable(path) {
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
 }
 
+// Candidates to run the OpenCode login, in order: the session PATH first
+// (like a terminal would), then the install locations the official
+// installers use — the desktop-session PATH normally misses ~/.opencode/bin.
+const OPENCODE_BINARY_CANDIDATES = [
+    '~/.opencode/bin/opencode',
+    '~/.local/bin/opencode',
+    '~/bin/opencode',
+    '~/.bun/bin/opencode',
+    '~/.npm-global/bin/opencode',
+    '/usr/local/bin/opencode',
+    '/usr/bin/opencode',
+    '/snap/bin/opencode',
+];
+
+function resolveOpenCodeBinary() {
+    const onPath = GLib.find_program_in_path('opencode');
+    if (onPath)
+        return onPath;
+    for (const candidate of OPENCODE_BINARY_CANDIDATES) {
+        const resolved = resolveExecutable(expandHome(candidate));
+        if (resolved)
+            return resolved;
+    }
+    return null;
+}
+
 // Candidates to open a terminal running the login script, in order. The
 // portable Debian/Mint interface comes first; the rest cover common terminals
 // with their native syntax. Only a candidate whose binary resolves is tried.
@@ -1201,8 +1227,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     // (XDG_RUNTIME_DIR, 0700). The world-writable temp dir would let a symlink
     // planted at the fixed filename redirect file_set_contents, so the script
     // lives where only the user can write. The script runs through 'sh', so
-    // the executable bit is best-effort only.
-    _writeLoginScript() {
+    // the executable bit is best-effort only. POSIX sh: it prepends the common
+    // OpenCode install dirs to PATH, runs the resolved binary (or a bare
+    // 'opencode' when none resolved) and reports the real exit status instead
+    // of claiming success.
+    _writeLoginScript(resolvedBinary) {
         const dir = GLib.get_user_runtime_dir();
         try {
             // Best-effort: if this fails, file_set_contents below fails too
@@ -1212,12 +1241,26 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             logError('could not prepare the login script directory', error);
         }
         const script = GLib.build_filenamev([dir, 'ocgo-opencode-login.sh']);
-        const resolved = GLib.find_program_in_path('opencode');
-        const command = resolved
-            ? `'${resolved.replace(/'/g, "'\\''")}'`
+        const command = resolvedBinary
+            ? `'${resolvedBinary.replace(/'/g, "'\\''")}'`
             : 'opencode';
-        const contents = `#!/bin/sh\n${command} auth login\n`
-            + 'printf "\\nLogin finished. You can close this window.\\n"\nread -r _\n';
+        const contents = '#!/bin/sh\n'
+            + 'PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$PATH"\n'
+            + 'export PATH\n'
+            + `${command} auth login\n`
+            + 'status=$?\n'
+            + 'if [ "$status" -eq 0 ]; then\n'
+            + '    printf "\\nLogin finished. You can close this window.\\n"\n'
+            + 'elif [ "$status" -eq 127 ]; then\n'
+            + '    printf "\\nOpenCode was not found. Install OpenCode for this '
+            + 'user, or run \\"opencode auth login\\" in a terminal where it '
+            + 'works, then press Refresh in the applet.\\n"\n'
+            + 'else\n'
+            + '    printf "\\nThe OpenCode login did not finish (exit code '
+            + '%s).\\n" "$status"\n'
+            + 'fi\n'
+            + 'printf "Press Enter to close this window.\\n"\n'
+            + 'read -r _\n';
         if (!GLib.file_set_contents(script, contents))
             throw new Error('could not write the login script');
         try {
@@ -1308,9 +1351,22 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             can_focus: true,
         });
         loginButton.connect('clicked', () => {
+            // The desktop-session PATH normally misses the user's OpenCode
+            // install, so resolve the binary explicitly before anything runs.
+            const binary = resolveOpenCodeBinary();
+            if (!binary) {
+                // No script and no terminal: the login would only die with
+                // "command not found", so point at the manual path instead.
+                this._copyLoginCommand();
+                this._setStatus(status, 'OpenCode was not found on this '
+                    + 'machine. Install OpenCode, or run "opencode auth login" '
+                    + 'in a terminal where it works (the command is on your '
+                    + 'clipboard), then press Refresh.', true);
+                return;
+            }
             let script = null;
             try {
-                script = this._writeLoginScript();
+                script = this._writeLoginScript(binary);
             } catch (error) {
                 logError('could not prepare the login script', error);
             }
