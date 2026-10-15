@@ -34,6 +34,10 @@ const KIND_OPENCODE_DB = 'opencode-db';
 const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
+// The CLI owns the full keyring error (core/ocgo/accounts.py); the applet
+// only matches this stable substring to offer the explicit file backend
+// instead of surfacing the CLI's terminal-level instruction.
+const SECRET_TOOL_UNAVAILABLE_MARKER = 'secret-tool is not available';
 
 const WINDOWS = [
     {key: 'rolling', label: 'Rolling usage', short: '5h'},
@@ -1686,6 +1690,13 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             }
         });
 
+        // Keyring-less fallback state (field report 4b): set when an API-key
+        // submit fails with SECRET_TOOL_UNAVAILABLE_MARKER, so the next confirm
+        // click re-runs the same command with '--store file'. A type switch
+        // clears it (updateTypeState); closing the dialog drops it with the
+        // closure.
+        let fileFallbackOffered = false;
+
         const selectedType = () => typeChooser.getActive();
         // Initial guided state: helper visibility and message, checked
         // paths, radio enablement and the combo all come from this one path.
@@ -1695,6 +1706,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             const accountId = idEntry.get_text().trim();
             const label = labelEntry.get_text().trim();
             const fromDb = selectedType() === KIND_OPENCODE_DB;
+            // A pending keyring-less offer turns this submit into the file
+            // backend retry: same command, '--store file' instead of 'auto'
+            // (the CLI's deliberate explicit opt-in). Captured before the
+            // offer flag is consumed below.
+            const useFileStore = !fromDb && fileFallbackOffered;
             const key = fromDb ? '' : keyEntry.get_text();
             const error = accountFormError(accountId, key, fromDb);
             if (error) {
@@ -1729,13 +1745,19 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 pendingText = `Adding the OpenCode login as '${accountId}'…`;
             } else {
                 const command = accountCommandFor(accountId, this._accounts);
-                args = ['account', command, accountId, '--store', 'auto'];
+                args = ['account', command, accountId, '--store',
+                    useFileStore ? 'file' : 'auto'];
                 if (command === 'add' && label)
                     args.push('--label', label);
-                pendingText = command === 'add'
-                    ? `Adding account '${accountId}'…`
-                    : `Replacing the key for '${accountId}'…`;
+                pendingText = useFileStore
+                    ? 'Storing the key in a local file…'
+                    : command === 'add'
+                        ? `Adding account '${accountId}'…`
+                        : `Replacing the key for '${accountId}'…`;
             }
+            // The offer is consumed by this run: the retry must take one
+            // click, and any later failure goes back to the normal branch.
+            fileFallbackOffered = false;
             this._setDialogButtonEnabled(confirmInfo.button, false);
             this._setStatus(status, pendingText, false);
             this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
@@ -1745,8 +1767,24 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     this._loadAccounts();
                 if (closed)
                     return;
-                // The key never stays in the entry beyond the command.
-                keyEntry.set_text('');
+                // The CLI's keyring-or-error contract is deliberate; the
+                // applet only offers the file backend when the failure names
+                // the missing secret-tool. stderr first, stdout as the
+                // fallback — the same detail _failureMessage picks.
+                const keyringMissing = !ok && !fromDb && !useFileStore &&
+                    (stderr || stdout || '').includes(SECRET_TOOL_UNAVAILABLE_MARKER);
+                if (!keyringMissing) {
+                    // The key never stays in the entry beyond the command.
+                    // Exception (field report 4b): a missing-keyring failure
+                    // keeps it, because the command did not complete and the
+                    // retry must not ask the user to paste it again.
+                    keyEntry.set_text('');
+                }
+                // A completed file-store retry (success or failure) ends the
+                // offer: the confirm button goes back to the API-key type's
+                // label, exactly as updateTypeState assigns it.
+                if (useFileStore)
+                    confirmInfo.button.label = 'Add / replace key';
                 if (ok) {
                     const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join(' ');
                     this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
@@ -1755,6 +1793,18 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         this._closeAccountsDialog(dialog);
                         return false;
                     });
+                } else if (keyringMissing) {
+                    // Two-step offer (field report 4b): keep the typed key,
+                    // explain without the CLI's terminal-level wording, and
+                    // let the next confirm click retry with '--store file'.
+                    // No close timer — the user decides.
+                    fileFallbackOffered = true;
+                    confirmInfo.button.label = 'Store in a local file';
+                    this._setStatus(status, 'The system keyring (libsecret-tools) '
+                        + 'is not installed. Press "Store in a local file" to keep '
+                        + 'the key in ~/.config/ocgo/keys (readable only by you) — '
+                        + 'or install libsecret-tools and try again.', true);
+                    this._setDialogButtonEnabled(confirmInfo.button, true);
                 } else {
                     this._setStatus(status, this._failureMessage(
                         fromDb ? 'could not add the OpenCode login account'
@@ -1781,6 +1831,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         const updateTypeState = () => {
             const fromDb = selectedType() === KIND_OPENCODE_DB;
+            // A type switch cancels a pending keyring-less offer: the
+            // type-driven label assignment below drops the
+            // 'Store in a local file' relabel too.
+            fileFallbackOffered = false;
             keyRow.visible = !fromDb;
             credentialRow.visible = fromDb;
             if (fromDb)
