@@ -1,6 +1,6 @@
 # Feature: login-reliability — fourth field-report round (Cinnamon: login terminal + credential detection)
 
-**Status**: In progress — T1–T3 done; T4 verification next.
+**Status**: Code complete and independently verified (T1–T4 PASS WITH FINDINGS; the MINOR finding fixed, both NITs accepted); delivery (push/PR) pending the user's decision.
 **Repo**: `opencode-go-meter`
 **Branch**: `fix/login-reliability` (from `main` @ `171159a`)
 **Created**: 2026-10-14
@@ -62,8 +62,8 @@ Field report 4 (same Mint/Cinnamon user, right after PR #5 merged) — the OpenC
 - [x] **T1 — Recon** *(route: parent)*: done 2026-10-14. Diagnosis above; contracts frozen; harness located.
 - [x] **T2 — Core: legacy store + discover `store` block** *(route: delegated writer; strict TDD, runner `make test`)*: DONE 2026-10-14, commit `2e7571b` (5 files, +687/−18). RED observed (`Ran 453 tests, failures=11, errors=13` pre-implementation; expiry-gate follow-up `Ran 459 tests, failures=4`), GREEN `Ran 459 tests — OK` (parent spot check re-ran `make test` OK). Legacy `auth.json` fallback for unpinned resolution with expiry gating (`EXPIRED_MESSAGE`), presence semantics unchanged, `store_status()` + discover JSON `store` block (schema 1 additive), missing database is now a state (exit 0) while a corrupt existing database still exits 1, CLI text output names the checked path(s).
 - [x] **T3 — Cinnamon: script + guided-state truth + copy** *(route: delegated writer; checks `make check-cinnamon`, `node --check`, live `:19`)*: DONE 2026-10-14, commits `02303bb` + `95ad0f1` (applet.js +220/−56 total, README +2). Candidate-list binary resolution + PATH-prepending script with exit-status branches (0 / 127 / other) and Enter-to-close; unresolved binary no longer opens a doomed terminal; `store` parsing + `_storeHasLogin()` gating + "Looked in:" line + silent dialog-open reload + poll legacy detection; Use-in-OpenCode explainer rewritten. Live evidence: generated script content correct + `sh -n` OK; all three branches exercised with fake binaries; empty-store dialog shows "Looked in: ~/.local/share/opencode/opencode.db" (`T3B-empty-store.png`), auth.json variant names both paths (`T3B-empty-store-auth.png`), legacy-only state enables the login radio (`T3B-legacy-store.png`), explainer copy (`T3B-explainer.png`); sandbox restored; parent spot check re-ran `make check-cinnamon` + `node --check` OK.
-- [ ] **T4 — Verification** *(route: independent verifier + parent spot checks)*: read-only re-check of T2/T3 diffs; gates; live pass; verdict with findings.
-- [ ] **T5 — Delivery** *(route: parent + user)*: PR (single; size exception per repo precedent), CI green, user merges; user retests on the field machine — the dialog now names the store paths, so a remaining mismatch is diagnosable.
+- [x] **T4 — Verification** *(route: independent verifier + parent spot checks)*: DONE 2026-10-14. Fresh read-only verifier over `171159a..HEAD`: **PASS WITH FINDINGS** (all gates re-run green; core probes with temp HOMEs; live `:19` pass incl. legacy-only binding, poll detection both ways, unresolved-binary no-terminal path; sandbox restored). Findings: **F1 MINOR** — the README login note described the (now unreachable) terminal symptom instead of the in-applet status → fixed in the docs commit; **F2 NIT** — the fromDb backstop message can say "No OpenCode login found" in an unreachable forced state → accepted (wording-only, no user impact); **F3 NIT** — the generated script exits 1 at stdin EOF (no window exists there) and blocks under a real pty → accepted (cosmetic). Verdict saved to Engram (`verification/login-reliability`).
+- [ ] **T5 — Delivery** *(route: parent + user)*: push + PR (single; size exception ≈ 1,050 authored lines per repo precedent) await the user's go-ahead; then CI green → user merges; user retests on the field machine — the dialog now names the store paths, so a remaining mismatch is diagnosable.
 
 ## Acceptance criteria
 
@@ -83,6 +83,7 @@ Field report 4 (same Mint/Cinnamon user, right after PR #5 merged) — the OpenC
 - 2026-10-14 — Field report 4 triaged; recon complete (code + local desktop-session evidence + opencode storage semantics via the shipped v2 migration); contracts frozen; doc seeded.
 - 2026-10-14 — T2 closed (core, `2e7571b`): legacy `auth.json` resolution with expiry gate, `store` block in `account discover --json`, missing database is a state; 459 tests OK; `review assess` over the committed range: high/unassessable (RDD off) → independent verifier required.
 - 2026-10-14 — T3 closed (`02303bb`, `95ad0f1`): login script resolves opencode through a candidate list and reports every outcome honestly; store-aware guided state and copy; live `:19` pass with screenshots; sandbox restored. Harness note: reload after edits = `pkill -f 'cinnamo[n] --x11'` + `setsid python3 /tmp/opencode/cinnamon-test/launch.py` (see `launch.py`).
+- 2026-10-14 — T4 closed: independent read-only verification over `171159a..HEAD` → PASS WITH FINDINGS. F1 (MINOR, README note keyed off the old terminal symptom) fixed in the docs commit; F2/F3 (NITs: unreachable forced-state wording; script EOF exit status) accepted with the verifier's rationale. Sandbox and real store untouched (inode check); all gates green.
 
 ---
 

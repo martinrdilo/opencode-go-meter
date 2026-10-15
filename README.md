@@ -34,7 +34,7 @@ Then right-click the panel → **Add applets to the panel** → **OpenCode Go Me
 
 The applet supports Cinnamon 5.4 and newer (Linux Mint 21 and up).
 
-If you log in from the applet and the terminal reports `opencode: not found`, the desktop session cannot see your OpenCode install. Install OpenCode for that user, or run `opencode auth login` in a terminal where `opencode` works, then press Refresh in the applet.
+If the applet reports **OpenCode was not found** when you press *Log in with OpenCode…*, the desktop session cannot see your OpenCode install. Install OpenCode for that user, or run `opencode auth login` in a terminal where `opencode` works, then press Refresh in the applet.
 
 The installers only create symlinks (no sudo), are safe to re-run, and uninstall with `make uninstall` / `make uninstall-cinnamon` — they remove only links pointing into this repo.
 
