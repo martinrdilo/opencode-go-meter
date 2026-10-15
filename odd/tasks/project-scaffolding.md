@@ -1,6 +1,6 @@
 # Feature: project-scaffolding — Round 1: architecture, conventions, and README
 
-**Status**: In progress — T1–T4 pending.
+**Status**: Delivered for review — PR #6 (slice 1 → `main`) and PR #7 (slice 2, stacked on `docs/project-scaffolding`) are open; merge is the user's call.
 **Repo**: `opencode-go-meter`
 **Branch**: `docs/project-scaffolding` (from `main` @ `171159a`)
 **Worktree**: `../opencode-go-meter-worktrees/project-scaffolding` (the main checkout is busy with `fix/login-reliability` work in progress)
@@ -27,10 +27,10 @@ User request (2026-10-14): lock a firm structure now so growth does not become d
 
 ## Tasks
 
-- [ ] **T1 — `docs/01-architecture.md`**: the four pieces (core CLI, GNOME, Cinnamon, contracts), mermaid diagram of data flow, hard invariants, folder map, "where new things go" decision table. Commit: `docs: add the architecture overview`.
-- [ ] **T2 — `docs/05-technical-decisions.md`**: decision registry (stdlib-only core; read-only credentials, no OAuth implementation; keyring with 0600 fallback; cache JSON as versioned contract; CLI-as-port / thin frontends; percent calibration and color thresholds; account model auto/pinned + registry versioning; symlink-only installs; unittest + stdlib checkers; agent surfaces) + ADR-lite template. Commit: `docs: add the technical decision registry`.
-- [ ] **T3 — `AGENTS.md` + `skills/project-conventions/SKILL.md`**: map + commands + non-negotiables + docs/skills index; skill in skill-creator format (Activation Contract / Hard Rules / Decision Gates / Execution Steps / Output Contract / References). Commit: `docs: add AGENTS.md and the project-conventions skill`.
-- [ ] **T4 — README rewrite**: progressive disclosure; keep exact install commands and screenshots; no file-structure listing. Commit: `docs: rewrite the README with progressive disclosure`.
+- [x] **T1 — `docs/01-architecture.md`**: the four pieces (core CLI, GNOME, Cinnamon, contracts), mermaid diagram of data flow, hard invariants, folder map, "where new things go" decision table. Commit: `docs: add the architecture overview` — `2f179f5` (91 lines).
+- [x] **T2 — `docs/05-technical-decisions.md`**: decision registry (stdlib-only core; read-only credentials, no OAuth implementation; keyring with 0600 fallback; cache JSON as versioned contract; CLI-as-port / thin frontends; percent calibration and color thresholds; account model auto/pinned + registry versioning; symlink-only installs; unittest + stdlib checkers; agent surfaces) + ADR-lite template. Commit: `docs: add the technical decision registry` — `42015f1` (160 lines).
+- [x] **T3 — `AGENTS.md` + `skills/project-conventions/SKILL.md`**: map + commands + non-negotiables + docs/skills index; skill in skill-creator format (Activation Contract / Hard Rules / Decision Gates / Execution Steps / Output Contract / References). Commit: `docs: add AGENTS.md and the project-conventions skill` — `19e4238` (AGENTS.md 47 lines; skill 63 lines).
+- [x] **T4 — README rewrite**: progressive disclosure; keep exact install commands and screenshots; no file-structure listing. Commit: `docs: rewrite the README with progressive disclosure` — `7a94471` (111 lines).
 
 ## Delivery strategy
 
@@ -60,3 +60,9 @@ User request (2026-10-14): lock a firm structure now so growth does not become d
 ## Progress log
 
 - 2026-10-14 — Feature doc seeded. Audit closed; AGENTS-vs-skills split approved; delivery strategy cached (stacked-to-main); worktree isolation set up because the main checkout carries `fix/login-reliability` work in progress.
+- 2026-10-14 — T1–T4 executed by the delegated writer: commits `2f179f5`, `42015f1`, `19e4238`, `7a94471` (plus seed `22d52bc`). Checks: `make test` 422 OK; file-relative link integrity `missing: []`; `gentle-ai review assess` over `171159a..HEAD` (committed-only): tier medium (`executable_change` — AGENTS.md loads as agent instructions), `review_due: slice_budget_reached`; RDD is off (global) → no native review started, ordinary policy applies.
+- 2026-10-14 — Independent read-only verifier: PASS WITH FINDINGS. All factual claims match the code (commands, flags, paths, versions, thresholds, schemas, installs, CI). Three wording imprecisions found by the independent verifier are fixed in the delivered docs (folded into the commits; no separate correction commit); the headline-vs-skill duplication note is accepted as by-design layering.
+- 2026-10-14 — Branch restructured for stacked delivery: `docs/project-scaffolding` = S1 (from `main`: seed + architecture + decisions); `docs/project-scaffolding-2` = S2 stacked on S1 (AGENTS + skill + README). The pre-restructure branch is kept locally as `docs/project-scaffolding-old`.
+- 2026-10-14 — Delivered: both branches pushed; PR #6 (S1 → `main`) and PR #7 (S2 → `docs/project-scaffolding`) opened on GitHub with the `documentation` label; the `tests` workflow runs per push.
+- 2026-10-15 — Rebased onto `main` after PRs #8/#9 merged: README reconciled with the new Dependencies section and the *OpenCode was not found* login note; D2/D8 updated for the legacy credential store and the dependency check (`ac6c9a9`).
+- Next step: user review + merge of PR #6; then PR #7 retargets to `main` (retarget manually, or let GitHub do it when the base branch is deleted). Main checkout remains untouched (`fix/login-reliability` session active).
