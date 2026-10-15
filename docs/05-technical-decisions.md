@@ -19,13 +19,14 @@ installed beyond Python 3 itself.
 
 **Where**: `core/ocgo/`, `core/bin/ocgo`, `core/tests/`.
 
-### D2 — OpenCode logins are read from their local store, read-only; no OAuth implementation
+### D2 — OpenCode logins are read from their local credential stores, read-only; no OAuth implementation
 
-**Decision**: Login-account tokens are read from OpenCode's local database,
-opened read-only (the active credential, or a pinned one). Token refresh and
-expiry recovery stay OpenCode's job: when the stored credential is expired,
-the app reports it and waits for OpenCode to refresh it. `OCGO_TOKEN` and
-`OCGO_DB` environment variables exist as manual overrides for testing.
+**Decision**: Login-account tokens are read from OpenCode's local credential
+stores — the database, falling back to the legacy `auth.json` file — opened
+read-only (the active credential, or a pinned one). Token
+refresh and expiry recovery stay OpenCode's job: when the stored credential is
+expired, the app reports it and waits for OpenCode to refresh it. `OCGO_TOKEN`
+and `OCGO_DB` environment variables exist as manual overrides for testing.
 
 **Why**: Re-implementing OAuth would duplicate OpenCode's session handling,
 drift out of sync, and touch refresh tokens the app should never own.
@@ -105,17 +106,21 @@ working without a migration step.
 
 **Where**: `core/ocgo/accounts.py`, `core/ocgo/cache.py`.
 
-### D8 — Installs are symlink-only, without sudo
+### D8 — Symlink-only installs, with a dependency check first
 
 **Decision**: `make install` links `core/bin/ocgo` into `~/.local/bin` and the
 GNOME extension into the extensions directory; `make install-cinnamon` links
-the applet the same way. Uninstall removes only links that point into this
-repository and leaves anything foreign alone.
+the applet the same way. Both targets run a dependency check first
+(`scripts/install-deps.sh`; `make deps` runs it alone, `SKIP_DEPS=1` skips
+it): Python 3.10+ is required, and the optional dependencies are only ever
+installed with explicit consent — that consent step is the only place sudo
+may be used. Uninstall removes only links that point into this repository and
+leaves anything foreign alone.
 
 **Why**: A checkout stays the source of truth — the running app updates as the
 checkout does — and nothing is copied into system directories.
 
-**Where**: `Makefile`.
+**Where**: `Makefile`, `scripts/install-deps.sh`.
 
 ### D9 — All checks are standard-library Python
 

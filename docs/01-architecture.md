@@ -21,7 +21,7 @@ already fetched.
 ```mermaid
 flowchart LR
     api["OpenCode console API<br/>opencode.ai"]
-    stores["OpenCode credential stores<br/>(local database)"]
+    stores["OpenCode credential stores<br/>(database, legacy auth.json)"]
     keyring["OS keyring<br/>(0600 file fallback)"]
     subgraph core["ocgo core — Python 3, stdlib only"]
         cli["ocgo CLI"]
