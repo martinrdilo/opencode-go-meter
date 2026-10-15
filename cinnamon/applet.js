@@ -489,7 +489,6 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
         this.settings.bind('refresh-interval', 'refresh_interval', () => this._onRefreshIntervalChanged());
-        this.settings.bind('ocgo-path', 'ocgo_path', null);
         this.settings.bind('show-credits', 'show_credits', () => this._updateDisplay());
         this.settings.bind('active-account', 'active_account', () => this._onActiveAccountChanged());
 
@@ -941,8 +940,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (!binary) {
             this._finishAccountLoad(
                 generation, onComplete,
-                {parsed: null, errorMessage: 'ocgo not found', error: null},
-                {parsed: null, errorMessage: 'ocgo not found'});
+                {parsed: null, errorMessage: "The meter's helper is not installed", error: null},
+                {parsed: null, errorMessage: "The meter's helper is not installed"});
             return;
         }
         this._accountsLoading = true;
@@ -975,7 +974,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _spawnAccountJson(binary, args, parser, callback) {
-        const command = `ocgo ${args[0]} ${args[1]}`;
+        const command = `${args[0]} ${args[1]}`;
         try {
             Util.spawnCommandLineAsyncIO(null, (stdout, stderr, exitCode) => {
                 if (this._removed) {
@@ -990,7 +989,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 callback(parsed, parsed ? null : `unexpected ${command} output`);
             }, {argv: [binary, ...args]});
         } catch (error) {
-            callback(null, `could not start ${command}`, error);
+            callback(null, 'could not start the meter helper', error);
         }
     }
 
@@ -1299,7 +1298,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         } catch (error) {
             logError('could not prepare the login script directory', error);
         }
-        const script = GLib.build_filenamev([dir, 'ocgo-opencode-login.sh']);
+        const script = GLib.build_filenamev([dir, 'opencode-login.sh']);
         const command = resolvedBinary
             ? `'${resolvedBinary.replace(/'/g, "'\\''")}'`
             : 'opencode';
@@ -1371,8 +1370,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
         const content = new MessageContent({
             title: 'Add / replace account key',
-            description: 'API-key accounts from the OpenCode console. The key is sent to '
-                + 'the ocgo CLI and is never stored by the applet.',
+            description: 'API-key accounts from the OpenCode console. The key is '
+                + 'validated locally and is never stored by the applet.',
         });
         dialog.contentLayout.add_child(content);
 
@@ -1802,8 +1801,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     confirmInfo.button.label = 'Store in a local file';
                     this._setStatus(status, 'The system keyring (libsecret-tools) '
                         + 'is not installed. Press "Store in a local file" to keep '
-                        + 'the key in ~/.config/ocgo/keys (readable only by you) — '
-                        + 'or install libsecret-tools and try again.', true);
+                        + 'the key in a private file that only your user can '
+                        + 'read — or install libsecret-tools and try again.', true);
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 } else {
                     this._setStatus(status, this._failureMessage(
@@ -1849,8 +1848,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             content.description = fromDb
                 ? 'Registers an OpenCode login. Pick the auto binding (follows ' +
                     'the active OpenCode credential) or a discovered credential.'
-                : 'API-key accounts from the OpenCode console. The key is sent to '
-                    + 'the ocgo CLI and is never stored by the applet.';
+                : 'API-key accounts from the OpenCode console. The key is '
+                    + 'validated locally and is never stored by the applet.';
             confirmInfo.button.label = fromDb ? 'Add account' : 'Add / replace key';
         };
         typeChooser.connect('radio-changed', () => updateTypeState());
@@ -2062,6 +2061,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     _failureMessage(fallback, stderr, stdout) {
         let detail = (stderr || stdout || '').trim();
+        // The CLI prefixes its errors with its binary name; drop it so no raw
+        // tool error reaches the dialog.
+        detail = detail.replace(/^ocgo:\s*/, '');
         // The raw NO_CREDENTIAL stderr assumes a terminal user; point at the
         // dialog's own affordances instead.
         if (detail.includes('No OpenCode credential found')) {
@@ -2074,7 +2076,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     _runAccountCommand(args, stdinText, callback) {
         const binary = this._ocgoPath();
         if (!binary) {
-            callback(false, '', 'ocgo not found; set the path in the applet settings');
+            callback(false, '', "The meter's helper is not installed — "
+                + 're-run the installer, then restart Cinnamon.');
             return;
         }
         try {
@@ -2087,7 +2090,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 input: stdinText === null ? null : `${stdinText}\n`,
             });
         } catch (error) {
-            callback(false, '', `could not start ocgo: ${error.message ?? error}`);
+            callback(false, '', `could not start the meter helper: ${error.message ?? error}`);
         }
     }
 
@@ -2124,13 +2127,9 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     // -- refresh -------------------------------------------------------------
 
-    // The configured path is authoritative: an unresolvable explicit path is an
-    // error, never a silent fallback. An empty setting falls back to
-    // ~/.local/bin/ocgo and then PATH, mirroring the GNOME extension.
+    // The helper is looked up at its standard install location and then on
+    // PATH, mirroring the GNOME extension. There is no user-facing override.
     _ocgoPath() {
-        const configured = typeof this.ocgo_path === 'string' ? this.ocgo_path.trim() : '';
-        if (configured)
-            return resolveExecutable(expandHome(configured));
         const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'ocgo']);
         if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
             return local;

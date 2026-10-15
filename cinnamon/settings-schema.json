@@ -11,13 +11,7 @@
         "step": 30,
         "units": "seconds",
         "description": "Refresh interval",
-        "tooltip": "How often the applet refreshes usage data with 'ocgo refresh'."
-    },
-    "ocgo-path": {
-        "type": "entry",
-        "default": "~/.local/bin/ocgo",
-        "description": "ocgo command",
-        "tooltip": "Path to the ocgo executable. Leave empty to use ~/.local/bin/ocgo or the ocgo found in PATH."
+        "tooltip": "How often the applet refreshes usage data."
     },
     "show-credits": {
         "type": "checkbox",
@@ -36,13 +30,13 @@
             "No accounts": ""
         },
         "description": "Active account",
-        "tooltip": "The account the meter shows; selecting one runs 'ocgo account use'."
+        "tooltip": "The account the meter shows; selecting one switches the meter to it."
     },
     "accounts-apply-button": {
         "type": "button",
         "description": "Add / replace key…",
         "callback": "on_accounts_apply",
-        "tooltip": "Add an API-key account, or replace the key of an existing one. The key is validated by the ocgo CLI and never stored in the applet settings."
+        "tooltip": "Add an API-key account, or replace the key of an existing one. The key is validated locally and never stored in the applet settings."
     },
     "accounts-remove-button": {
         "type": "button",
