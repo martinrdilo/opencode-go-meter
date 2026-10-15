@@ -1,6 +1,6 @@
 # Feature: project-scaffolding — Round 1: architecture, conventions, and README
 
-**Status**: Delivered for review — PR #6 (slice 1 → `main`) and PR #7 (slice 2, stacked on `docs/project-scaffolding`) are open; merge is the user's call.
+**Status**: Complete — PR #6 and PR #7 merged to `main` (`72e30c8`, `e9b5485`).
 **Repo**: `opencode-go-meter`
 **Branch**: `docs/project-scaffolding` (from `main` @ `171159a`)
 **Worktree**: `../opencode-go-meter-worktrees/project-scaffolding` (the main checkout is busy with `fix/login-reliability` work in progress)
@@ -65,4 +65,5 @@ User request (2026-10-14): lock a firm structure now so growth does not become d
 - 2026-10-14 — Branch restructured for stacked delivery: `docs/project-scaffolding` = S1 (from `main`: seed + architecture + decisions); `docs/project-scaffolding-2` = S2 stacked on S1 (AGENTS + skill + README). The pre-restructure branch is kept locally as `docs/project-scaffolding-old`.
 - 2026-10-14 — Delivered: both branches pushed; PR #6 (S1 → `main`) and PR #7 (S2 → `docs/project-scaffolding`) opened on GitHub with the `documentation` label; the `tests` workflow runs per push.
 - 2026-10-15 — Rebased onto `main` after PRs #8/#9 merged: README reconciled with the new Dependencies section and the *OpenCode was not found* login note; D2/D8 updated for the legacy credential store and the dependency check (`ac6c9a9`).
+- 2026-10-15 — PR #6 and PR #7 merged to `main` (`72e30c8`, `e9b5485`); Round 1 complete.
 - Next step: user review + merge of PR #6; then PR #7 retargets to `main` (retarget manually, or let GitHub do it when the base branch is deleted). Main checkout remains untouched (`fix/login-reliability` session active).
