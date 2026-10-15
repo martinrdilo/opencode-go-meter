@@ -199,6 +199,18 @@ function resolveExecutable(path) {
     return GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE) ? path : null;
 }
 
+// The CLI names itself in its output — `ocgo: ...` warning prefixes and
+// `(ocgo_…1234)` masked-key hints; strip every such occurrence so no tool
+// token reaches the UI. Clean strings pass through untouched.
+function stripToolToken(text) {
+    let detail = typeof text === 'string' ? text : '';
+    if (!detail.includes('ocgo'))
+        return detail;
+    detail = detail.replace(/ocgo:\s*/g, ' ');
+    detail = detail.replace(/\(ocgo_[^)]*\)/g, '');
+    return detail.replace(/\s{2,}/g, ' ').trim();
+}
+
 // Candidates to run the OpenCode login, in order: the session PATH first
 // (like a terminal would), then the install locations the official
 // installers use — the desktop-session PATH normally misses ~/.opencode/bin.
@@ -940,8 +952,10 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         if (!binary) {
             this._finishAccountLoad(
                 generation, onComplete,
-                {parsed: null, errorMessage: "The meter's helper is not installed", error: null},
-                {parsed: null, errorMessage: "The meter's helper is not installed"});
+                {parsed: null, errorMessage: "The meter's helper is not installed — "
+                    + 're-run the installer, then restart Cinnamon.', error: null},
+                {parsed: null, errorMessage: "The meter's helper is not installed — "
+                    + 're-run the installer, then restart Cinnamon.'});
             return;
         }
         this._accountsLoading = true;
@@ -1371,7 +1385,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         const content = new MessageContent({
             title: 'Add / replace account key',
             description: 'API-key accounts from the OpenCode console. The key is '
-                + 'validated locally and is never stored by the applet.',
+                + 'verified with OpenCode and is never stored by the applet.',
         });
         dialog.contentLayout.add_child(content);
 
@@ -1785,7 +1799,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 if (useFileStore)
                     confirmInfo.button.label = 'Add / replace key';
                 if (ok) {
-                    const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join(' ');
+                    const summary = stripToolToken(
+                        [stdout.trim(), stderr.trim()].filter(Boolean).join(' '));
                     this._setStatus(status, summary || `Account '${accountId}' updated.`, false);
                     closeTimerId = Mainloop.timeout_add(1200, () => {
                         closeTimerId = 0;
@@ -1849,7 +1864,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                 ? 'Registers an OpenCode login. Pick the auto binding (follows ' +
                     'the active OpenCode credential) or a discovered credential.'
                 : 'API-key accounts from the OpenCode console. The key is '
-                    + 'validated locally and is never stored by the applet.';
+                    + 'verified with OpenCode and is never stored by the applet.';
             confirmInfo.button.label = fromDb ? 'Add account' : 'Add / replace key';
         };
         typeChooser.connect('radio-changed', () => updateTypeState());
@@ -2024,8 +2039,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         if (closed)
                             return;
                         if (ok) {
-                            const summary = [stdout.trim(), stderr.trim()]
-                                .filter(Boolean).join(' ');
+                            const summary = stripToolToken(
+                                [stdout.trim(), stderr.trim()].filter(Boolean).join(' '));
                             this._setStatus(status, summary ||
                                 `Account '${account.id}' is now OpenCode's login.`, false);
                             closeTimerId = Mainloop.timeout_add(1200, () => {
@@ -2060,15 +2075,17 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     _failureMessage(fallback, stderr, stdout) {
-        let detail = (stderr || stdout || '').trim();
-        // The CLI prefixes its errors with its binary name; drop it so no raw
-        // tool error reaches the dialog.
-        detail = detail.replace(/^ocgo:\s*/, '');
+        let detail = stripToolToken((stderr || stdout || '').trim());
         // The raw NO_CREDENTIAL stderr assumes a terminal user; point at the
         // dialog's own affordances instead.
         if (detail.includes('No OpenCode credential found')) {
             detail = 'No OpenCode login found on this machine — use '
                 + '"Log in with OpenCode…" or the API key type.';
+        } else if (detail.includes('no OpenCode credential matches')) {
+            // The CLI's discover hint names the tool; offer the same next
+            // step without the raw command.
+            detail = 'That credential is no longer available — reload the '
+                + 'list and pick another one.';
         }
         return detail || fallback;
     }

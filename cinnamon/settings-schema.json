@@ -36,7 +36,7 @@
         "type": "button",
         "description": "Add / replace key…",
         "callback": "on_accounts_apply",
-        "tooltip": "Add an API-key account, or replace the key of an existing one. The key is validated locally and never stored in the applet settings."
+        "tooltip": "Add an API-key account, or replace the key of an existing one. The key is verified with OpenCode and never stored in the applet settings."
     },
     "accounts-remove-button": {
         "type": "button",

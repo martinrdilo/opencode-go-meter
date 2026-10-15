@@ -13,6 +13,18 @@ const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
 
+// The CLI names itself in its output — `ocgo: ...` warning prefixes and
+// `(ocgo_…1234)` masked-key hints; strip every such occurrence so no tool
+// token reaches the UI. Clean strings pass through untouched.
+function stripToolToken(text) {
+    let detail = typeof text === 'string' ? text : '';
+    if (!detail.includes('ocgo'))
+        return detail;
+    detail = detail.replace(/ocgo:\s*/g, ' ');
+    detail = detail.replace(/\(ocgo_[^)]*\)/g, '');
+    return detail.replace(/\s{2,}/g, ' ').trim();
+}
+
 function resolveOcgoPath() {
     const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'ocgo']);
     if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
@@ -664,9 +676,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._runAccountCommand(args, fromDb ? null : key, (ok, stdout, stderr) => {
             this._keyRow.text = '';
             if (ok) {
-                const summary = [stdout.trim(), stderr.trim()]
-                    .filter(Boolean)
-                    .join(' ');
+                const summary = stripToolToken(
+                    [stdout.trim(), stderr.trim()].filter(Boolean).join(' '));
                 this._setFeedback(summary || `Account '${accountId}' updated.`);
                 this._accountActionAwaitingLoad = true;
                 this._loadAccounts();
@@ -721,8 +732,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
         this._runAccountCommand(
             ['account', 'remove', account.id], null, (ok, stdout, stderr) => {
                 if (ok) {
-                    this._setFeedback(
-                        stdout.trim() || `Removed account '${account.id}'.`);
+                    this._setFeedback(stripToolToken(stdout.trim()) ||
+                        `Removed account '${account.id}'.`);
                     this._accountActionAwaitingLoad = true;
                     this._loadAccounts();
                 } else {
@@ -775,8 +786,8 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
             ['account', 'activate-in-opencode', account.id], null,
             (ok, stdout, stderr) => {
                 if (ok) {
-                    this._setFeedback(
-                        stdout.trim() || `Account '${account.id}' is now active in OpenCode.`);
+                    this._setFeedback(stripToolToken(stdout.trim()) ||
+                        `Account '${account.id}' is now active in OpenCode.`);
                     this._accountActionAwaitingLoad = true;
                     this._loadAccounts();
                 } else {
@@ -789,9 +800,15 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
     }
 
     _failureMessage(fallback, stderr, stdout) {
-        // The CLI prefixes its errors with its binary name; drop it so no raw
-        // tool error reaches the preferences UI.
-        const detail = (stderr || stdout || '').trim().replace(/^ocgo:\s*/, '');
+        // The CLI prefixes some of its messages with its binary name; strip
+        // every occurrence so no raw tool error reaches the preferences UI.
+        let detail = stripToolToken((stderr || stdout || '').trim());
+        if (detail.includes('no OpenCode credential matches')) {
+            // The CLI's discover hint names the tool; offer the same next
+            // step without the raw command.
+            detail = 'That credential is no longer available — reload the '
+                + 'list and pick another one.';
+        }
         return detail || fallback;
     }
 
