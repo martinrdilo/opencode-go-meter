@@ -19,7 +19,7 @@ make install
 gnome-extensions enable opencode-go-meter@martinrdilo
 ```
 
-The installer only creates symlinks (no sudo) and is safe to re-run. On
+The installer needs no sudo and is safe to re-run; nothing lands in system directories. On
 Wayland, log out and back in if the indicator does not appear.
 
 ### Cinnamon
@@ -67,7 +67,7 @@ credits.
 
 ```bash
 ocgo account list                                  # accounts and the active one
-ocgo account add personal --from-db                # register the auto login
+ocgo account add personal --from-db                # register the auto login (only one auto login is allowed)
 ocgo account add work --from-db --credential Work  # pin a stored login
 ocgo account add temp --label "Temp"               # register an API key (prompted hidden)
 ocgo account use work                              # switch the account shown by the app

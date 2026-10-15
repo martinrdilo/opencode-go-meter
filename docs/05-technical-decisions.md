@@ -80,9 +80,10 @@ computed in a single function — the only calibration point if the console ever
 disagrees. Colors: green below 50, amber 50–84, red at 85 and above. The
 thresholds are named constants (`AMBER_AT`/`RED_AT`) defined in the core and
 mirrored in each frontend because rendering is local; they move together.
-Countdown formatting (`Xd Yh` / `Xh Ym` / `Xm`) is defined once in the core,
-and the monthly row counts down to the subscription renewal date because the
-monthly meter has no reset timestamp.
+Countdown formatting (`Xd Yh` / `Xh Ym` / `Xm`) is defined in the core and
+mirrored in both frontends like the color thresholds; the monthly row counts
+down to the subscription renewal date because the monthly meter has no reset
+timestamp.
 
 **Why**: Console parity is an acceptance criterion; one formula prevents the
 CLI and the two frontends from drifting apart.
