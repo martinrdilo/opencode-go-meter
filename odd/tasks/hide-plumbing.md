@@ -1,6 +1,6 @@
 # Feature: hide-plumbing — no tool paths or tool errors in the UI; the installer resolves dependencies
 
-**Status**: Complete — T1–T4 done. Independent verification closed after three bounded corrections (findings FAIL → fixed → PASS WITH FINDINGS → fixed → closed); no user-visible tool-token channel is known to remain across the three frontends. Delivery (T5) pending the user's decision.
+**Status**: Complete — T1–T4 done. Independent verification closed after three bounded corrections (findings FAIL → fixed → PASS WITH FINDINGS → fixed → closed); no user-visible tool-token channel is known to remain across the three frontends. Delivery open — **PR #9**, stacked on **PR #8**; CI green 2026-10-15; merge pending the user.
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/hide-plumbing` (stacked on `fix/login-reliability` @ `acc6677`)
 **Created**: 2026-10-15
@@ -46,7 +46,7 @@ User request (2026-10-15, right after the keyring field report): nothing about t
 - [x] **T2 — Frontends: remove the path setting + neutralize user-visible strings** *(route: delegated writer; checks `make check-cinnamon`, `make check-gnome`, `node --check`, `make test`, live `:19` spot check)*: DONE 2026-10-15 — `18bf9a9` (cinnamon) + `5032d84` (gnome): settings key/row removed, resolvers = `~/.local/bin/ocgo` → PATH, all user-visible copy neutralized, `ocgo-opencode-login.sh` → `opencode-login.sh`, `_failureMessage` strips the prefix., `_failureMessage` strips the prefix. Correction chain from verification: `7511cd3` (metadata.json description rendered in Cinnamon's applet manager; exit-0 `ocgo:` warnings on success paths; credential-mismatch mapping; helper copy + `verified with OpenCode` wording), `6b56265` (cached `last_error` channel: tooltip + popup rows mapped through one `formatFailureDetail` table per frontend), `541d02d` (config-path shapes neutralized), `4450c08` (prefs.js parity), `7369f7f` (sync notes on the three deliberate sanitizer copies).
 - [x] **T3 — Installer: dependencies** *(route: delegated writer; checks `bash -n`, `--check` run on this box, simulated missing-tool paths, Makefile wiring review)*: DONE 2026-10-15, commit `9f638dc` (`scripts/install-deps.sh` 151 lines + Makefile wiring + README Dependencies note). Verified: `--check` accurate here and under scrubbed PATH/fake python3 shim (exit 1 + guidance), non-tty default never prompts or hangs, tty accept/decline paths pty-tested with mocked sudo, `SKIP_DEPS=1` short-circuits, `make -n` shows deps first. Exit code gated only by python3 ≥ 3.10.
 - [x] **T4 — Independent verification** *(route: fresh read-only verifier)*: DONE 2026-10-15. Verdict history: **FAIL** (metadata description in the applet manager; exit-0 `ocgo:` warnings in success statuses; mid-string credential-mismatch; helper-copy step; inaccurate "validated locally") → corrections → **PASS WITH FINDINGS** (new pre-existing cached-`last_error` channel, path-bearing `AccountError` family, prefs.js parity) → corrections → **PASS** on the requested closure (primary channel executed-closed; residual family fixed + prefs parity; harness 20/20 cases × 3 files on shipped functions; sandbox cache restored byte-identical each time). Verdicts in Engram (`verification/hide-plumbing`, `verification/hide-plumbing-residuals`).
-- [ ] **T5 — Delivery** *(route: parent + user)*: shared decision with `login-reliability` T5 (single PR vs sliced/stacked; push authorization pending).
+- [x] **T5 — Delivery** *(route: parent + user)*: pushed 2026-10-15; **PR #9** open, stacked on **PR #8** (`fix/login-reliability` → `main`); the base retargets to `main` once #8 merges. CI green on both. Merge remains the user's; field retest on Mint afterwards.
 
 ## Acceptance criteria
 
@@ -63,7 +63,7 @@ User request (2026-10-15, right after the keyring field report): nothing about t
 
 - 2026-10-15 — User request (hide the plumbing; installer resolves dependencies); recon complete; branch `feat/hide-plumbing` from `acc6677`; contracts frozen.
 - 2026-10-15 — T2/T3 closed (`18bf9a9`, `5032d84`, `9f638dc`); T4 independent verification: FAIL first round (5 findings, all fixed) → PASS WITH FINDINGS (cached `last_error` channel + path family, fixed) → closure pass; the three mirrored sanitizers documented (`7369f7f`). Installer verified with scrubbed PATH, fake python3, non-tty/tty prompt paths and `SKIP_DEPS=1`.
-- 2026-10-15 — Round closed code-side. Residuals recorded: none user-visible known; GNOME runtime behavior verified at source level only (no GNOME session in this environment); Cinnamon 5.4 verified by reading. Delivery pending the user's decision (shared with `login-reliability`).
+- 2026-10-15 — Round closed code-side. Residuals recorded: none user-visible known; GNOME runtime behavior verified at source level only (no GNOME session in this environment); Cinnamon 5.4 verified by reading. Delivery: **PR #9** pushed and stacked on **PR #8**; CI green; merge pending the user.
 
 ---
 
