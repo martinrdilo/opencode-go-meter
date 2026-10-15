@@ -13,15 +13,22 @@ const KIND_API_KEY = 'api-key';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
 
-// The CLI names itself in its output — `ocgo: ...` warning prefixes and
-// `(ocgo_…1234)` masked-key hints; strip every such occurrence so no tool
-// token reaches the UI. Clean strings pass through untouched.
+// Deliberate copy: keep in sync with cinnamon/applet.js and gnome/extension.js.
+// The CLI names itself in its output — `ocgo: ...` warning prefixes,
+// `(ocgo_…1234)` masked-key hints and config paths with an `ocgo` segment
+// (`~/.config/ocgo/...`); strip or neutralize every such occurrence so no
+// tool token reaches the UI. Clean strings pass through untouched.
 function stripToolToken(text) {
     let detail = typeof text === 'string' ? text : '';
     if (!detail.includes('ocgo'))
         return detail;
     detail = detail.replace(/ocgo:\s*/g, ' ');
     detail = detail.replace(/\(ocgo_[^)]*\)/g, '');
+    // `... at <ocgo-path>` reads fine without the fragment; any other
+    // ocgo-bearing path (a token with a slash and the name) becomes a
+    // neutral reference.
+    detail = detail.replace(/\s+at\s+(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, '');
+    detail = detail.replace(/(?=[^\s:'"]*ocgo)(?=[^\s:'"]*\/)[^\s:'"]*/g, 'its config file');
     return detail.replace(/\s{2,}/g, ' ').trim();
 }
 
@@ -808,6 +815,10 @@ export default class OpenCodeGoMeterPreferences extends ExtensionPreferences {
             // step without the raw command.
             detail = 'That credential is no longer available — reload the '
                 + 'list and pick another one.';
+        } else if (detail.includes('no secret found for account')) {
+            // Mirrors the applet and extension helper copy.
+            detail = "The account's stored key is missing — add the key again "
+                + 'in settings.';
         }
         return detail || fallback;
     }
