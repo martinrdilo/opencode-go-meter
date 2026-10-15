@@ -4,7 +4,7 @@ BIN_LINK := $(HOME)/.local/bin/ocgo
 EXT_LINK := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 APPLET_LINK := $(HOME)/.local/share/cinnamon/applets/$(UUID)
 
-.PHONY: test check-gnome check-cinnamon install uninstall install-cinnamon uninstall-cinnamon
+.PHONY: test check-gnome check-cinnamon deps install uninstall install-cinnamon uninstall-cinnamon
 
 test:
 	cd core && python3 -m unittest discover -s tests -v
@@ -15,7 +15,10 @@ check-gnome:
 check-cinnamon:
 	python3 cinnamon/scripts/check_applet.py
 
-install:
+deps:
+	$(REPO)/scripts/install-deps.sh
+
+install: deps
 	mkdir -p $(dir $(BIN_LINK)) $(dir $(EXT_LINK))
 	ln -sfn $(REPO)/core/bin/ocgo $(BIN_LINK)
 	ln -sfn $(REPO)/gnome $(EXT_LINK)
@@ -35,7 +38,7 @@ uninstall:
 		*) [ -z "$$target" ] || echo "kept $(EXT_LINK) (not from this repo)" ;; \
 	esac
 
-install-cinnamon:
+install-cinnamon: deps
 	mkdir -p $(dir $(BIN_LINK)) $(dir $(APPLET_LINK))
 	ln -sfn $(REPO)/core/bin/ocgo $(BIN_LINK)
 	ln -sfn $(REPO)/cinnamon $(APPLET_LINK)
