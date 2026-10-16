@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archives into the gitignored `dist/`.
 - The versioning decision record (D11): SemVer, one source of truth for the
   version, annotated release tags, and a changelog.
+- GitHub issue forms for bug reports and feature requests, plus a pull request
+  template carrying the Chain Context section for stacked PRs.
+- `CONTRIBUTING.md` (setup, checks, and conventions) and `SECURITY.md`
+  (supported versions and the reporting channel), linked from the README.
 
 ## [0.1.0] - 2026-10-15
 
