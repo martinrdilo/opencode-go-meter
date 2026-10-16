@@ -38,6 +38,10 @@ const AUTO_CREDENTIAL_LABEL = 'Auto (follows the active account)';
 // only matches this stable substring to offer the explicit file backend
 // instead of surfacing the CLI's terminal-level instruction.
 const SECRET_TOOL_UNAVAILABLE_MARKER = 'secret-tool is not available';
+// A keyring that resolves but cannot store (no Secret Service on the session
+// bus, a stalled `secret-tool`): the CLI reports the store failure with this
+// fragment, and the offer's message must not claim the tool is missing.
+const SECRET_TOOL_STORE_FAILED_MARKER = 'secret-tool could not store the secret';
 
 const WINDOWS = [
     {key: 'rolling', label: 'Rolling usage', short: '5h'},
@@ -1810,10 +1814,15 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                     return;
                 // The CLI's keyring-or-error contract is deliberate; the
                 // applet only offers the file backend when the failure names
-                // the missing secret-tool. stderr first, stdout as the
-                // fallback — the same detail _failureMessage picks.
+                // the keyring. Two markers: the binary missing, and a keyring
+                // that resolves but cannot store (no keyring service, timeout).
+                // stderr first, stdout as the fallback — the same detail
+                // _failureMessage picks.
+                const detail = stderr || stdout || '';
+                const keyringUnavailable = detail.includes(SECRET_TOOL_UNAVAILABLE_MARKER);
+                const keyringStoreFailed = detail.includes(SECRET_TOOL_STORE_FAILED_MARKER);
                 const keyringMissing = !ok && !fromDb && !useFileStore &&
-                    (stderr || stdout || '').includes(SECRET_TOOL_UNAVAILABLE_MARKER);
+                    (keyringUnavailable || keyringStoreFailed);
                 if (!keyringMissing) {
                     // The key never stays in the entry beyond the command.
                     // Exception (field report 4b): a missing-keyring failure
@@ -1836,16 +1845,23 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         return false;
                     });
                 } else if (keyringMissing) {
-                    // Two-step offer (field report 4b): keep the typed key,
-                    // explain without the CLI's terminal-level wording, and
-                    // let the next confirm click retry with '--store file'.
-                    // No close timer — the user decides.
+                    // Two-step offer (field report 4b, extended in report 5):
+                    // keep the typed key, explain without the CLI's
+                    // terminal-level wording, and let the next confirm click
+                    // retry with '--store file'. Two causes, two messages — a
+                    // runtime keyring failure must not claim the tool is
+                    // missing. No close timer: the user decides.
                     fileFallbackOffered = true;
                     confirmInfo.button.label = 'Store in a local file';
-                    this._setStatus(status, 'The system keyring (libsecret-tools) '
-                        + 'is not installed. Press "Store in a local file" to keep '
-                        + 'the key in a private file that only your user can '
-                        + 'read — or install libsecret-tools and try again.', true);
+                    this._setStatus(status, keyringUnavailable
+                        ? 'The system keyring (libsecret-tools) is not '
+                            + 'installed. Press "Store in a local file" to keep '
+                            + 'the key in a private file that only your user can '
+                            + 'read — or install libsecret-tools and try again.'
+                        : 'The system keyring is unavailable in this session '
+                            + '(no keyring service answered). Press "Store in a '
+                            + 'local file" to keep the key in a private file '
+                            + 'that only your user can read.', true);
                     this._setDialogButtonEnabled(confirmInfo.button, true);
                 } else {
                     this._setStatus(status, this._failureMessage(
