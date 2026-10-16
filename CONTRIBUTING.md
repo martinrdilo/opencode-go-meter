@@ -21,7 +21,8 @@ make deps
   `scripts/install-deps.sh`).
 - To install the app on your desktop, follow the [README](README.md) quick
   start instead of repeating it here.
-- The tests and checks need no third-party packages.
+- The test suite and the GNOME check need no third-party packages; the
+  Cinnamon check needs Node (`node --check`).
 
 ## The checks
 

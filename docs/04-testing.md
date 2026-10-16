@@ -1,8 +1,10 @@
 # Testing
 
-Every check is standard-library Python; nothing third-party is installed to run
-them. All commands run from the repository root, and the same three checks run
-in CI on every push and pull request. See [AGENTS.md](../AGENTS.md) for the
+The test suite and the GNOME check are standard-library Python — nothing
+third-party is installed to run them. The Cinnamon check additionally needs
+Node on `PATH` for its `node --check` syntax pass. All commands run from the
+repository root, and the same three checks run in CI on every push and pull
+request. See [AGENTS.md](../AGENTS.md) for the
 command headlines and the [architecture](01-architecture.md) for what the
 checks protect.
 
