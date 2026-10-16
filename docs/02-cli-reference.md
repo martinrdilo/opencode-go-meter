@@ -125,9 +125,12 @@ prints `no accounts configured` and exits 0.
 
 `ocgo account discover [-h] [--json]` — list the OpenCode credentials in the
 local database (never tokens): `id`, `label`, `active`, `email`, then the
-database path. `--json` adds a `store` block with the checked paths and whether
-a login exists. With none present it prints `no OpenCode credentials found in
-<path>` (exit 0) and mentions the legacy `auth.json` when that file exists.
+database path. Rows count when their integration id is OpenCode-owned
+(`opencode-go`, `opencode`, or any other `opencode*` id); `opencode-go` rows
+are listed first, then `opencode`, then the rest. `--json` adds a `store`
+block with the checked paths and whether a login exists. With none present it
+prints `no OpenCode credentials found in <path>` (exit 0) and mentions the
+legacy `auth.json` when that file exists.
 
 ## `ocgo account activate-in-opencode`
 

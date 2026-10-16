@@ -4,12 +4,18 @@ Resolution order:
 
 1. ``OCGO_TOKEN`` environment variable (manual/testing override).
 2. The local OpenCode database, opened read-only. With a pinned
-   ``credential_id``, exactly that row is read; otherwise the ``active = 1``
-   credential wins (the one ``opencode auth switch`` marked) and the newest
-   ``time_updated`` row is the fallback.
+   ``credential_id``, exactly that row is read; otherwise the preferred
+   OpenCode-owned credential wins — ``opencode-go`` first, then ``opencode``,
+   then any other ``opencode*`` id — active rows before inactive ones and the
+   newest ``time_updated`` first inside a tier.
 3. The legacy OpenCode ``auth.json`` login file (``$XDG_DATA_HOME/opencode``
    or ``~/.local/share/opencode``), read only when the database yields no
    credential and no specific ``credential_id`` was requested.
+
+Credential values tolerate the shapes OpenCode v2 writes: one optional
+``value`` wrapper around the credential object, the token in ``access``
+(oauth) or ``key`` (api key), an optional ``type``, and a sane ms-epoch
+``expires``.
 
 The token is never logged, printed in full, cached, or written anywhere.
 :func:`list_db_credentials` exposes display metadata only (id, label, active,
@@ -39,23 +45,39 @@ _ENV_DB = "OCGO_DB"
 _SOURCE_ENV = "OCGO_TOKEN environment"
 _SOURCE_DB = "OpenCode local database"
 _SOURCE_AUTH_JSON = "OpenCode auth.json file"
-_ACTIVE_QUERY = (
-    "SELECT value FROM credential WHERE integration_id = 'opencode' "
-    "AND active = 1 ORDER BY time_updated DESC LIMIT 1"
+# OpenCode-owned integrations: `opencode-go` preferred over `opencode` over
+# any other `opencode*` id (the same ranking `_integration_rank` applies to
+# legacy auth.json keys).
+_ACCEPTED_IDS = "integration_id GLOB 'opencode*'"
+_PREFERENCE_ORDER = (
+    "ORDER BY CASE integration_id "
+    "WHEN 'opencode-go' THEN 0 "
+    "WHEN 'opencode' THEN 1 "
+    "ELSE 2 END, active DESC, time_updated DESC"
 )
-_FALLBACK_QUERY = (
-    "SELECT value FROM credential WHERE integration_id = 'opencode' "
-    "ORDER BY time_updated DESC LIMIT 1"
+_SELECT_QUERY = (
+    f"SELECT value FROM credential WHERE {_ACCEPTED_IDS} "
+    f"{_PREFERENCE_ORDER} LIMIT 1"
 )
 _PINNED_QUERY = (
-    "SELECT value FROM credential WHERE integration_id = 'opencode' "
-    "AND id = ? LIMIT 1"
+    f"SELECT value FROM credential WHERE {_ACCEPTED_IDS} AND id = ? LIMIT 1"
 )
 _LIST_QUERY = (
-    "SELECT id, label, active, value FROM credential "
-    "WHERE integration_id = 'opencode' ORDER BY time_updated DESC"
+    f"SELECT id, label, active, value FROM credential "
+    f"WHERE {_ACCEPTED_IDS} {_PREFERENCE_ORDER}"
 )
-_EXISTS_QUERY = "SELECT 1 FROM credential WHERE integration_id = 'opencode' LIMIT 1"
+_EXISTS_QUERY = f"SELECT 1 FROM credential WHERE {_ACCEPTED_IDS} LIMIT 1"
+
+
+def _integration_rank(integration_id: str) -> int | None:
+    """Preference rank for an integration id: Go, Console, other, or none."""
+    if integration_id == "opencode-go":
+        return 0
+    if integration_id == "opencode":
+        return 1
+    if integration_id.startswith("opencode"):
+        return 2
+    return None
 
 
 def _missing_credential_message(credential_id: str) -> str:
@@ -132,10 +154,11 @@ def resolve_credential(
     """Resolve the credential to use; ``OCGO_TOKEN`` wins over the stores.
 
     ``credential_id`` pins the lookup to that database row; ``None`` follows
-    the database's active credential (fallback: newest ``time_updated``) and,
-    when the database yields no credential, the legacy ``auth.json`` login —
-    expired logins on either path raise ``EXPIRED_MESSAGE``. A pinned id
-    never falls back: the original database error is re-raised.
+    the accepted-id preference order (``opencode-go``, then ``opencode``,
+    then other ``opencode*`` ids) and, when the database yields no
+    credential, the legacy ``auth.json`` login — expired logins on either
+    path raise ``EXPIRED_MESSAGE``. A pinned id never falls back: the
+    original database error is re-raised.
     """
     env_token = os.environ.get(_ENV_TOKEN, "").strip()
     if env_token:
@@ -156,9 +179,10 @@ def _read_legacy_login() -> Credential | None:
     """Read the legacy ``auth.json`` login; any problem reads as "no login".
 
     The file is keyed by integration id, mirroring OpenCode's own migration:
-    keys match as ``opencode`` after trimming trailing ``/``; ``oauth``
-    entries carry the token in ``access`` (with ``expires`` in ms-epoch
-    terms), ``api`` entries in ``key``.
+    keys match the same ids as the database (``opencode-go``, ``opencode``,
+    or any other ``opencode*`` id after trimming trailing ``/``), preferred
+    in that order and otherwise kept in file order. Entries accept the same
+    tolerant shapes as the database values.
     """
     path = default_auth_json_path()
     try:
@@ -169,25 +193,21 @@ def _read_legacy_login() -> Credential | None:
     if not isinstance(payload, dict):
         return None
     entry = None
+    best_rank = None
     for key, value in payload.items():
-        if key.rstrip("/") == "opencode":
+        rank = _integration_rank(key.rstrip("/"))
+        if rank is None:
+            continue
+        if best_rank is None or rank < best_rank:
             entry = value
-            break
+            best_rank = rank
     if not isinstance(entry, dict):
         return None
-    if entry.get("type") == "oauth":
-        token = entry.get("access")
-        expires_ms = _parse_expiry(entry.get("expires"))
-    elif entry.get("type") == "api":
-        token = entry.get("key")
-        expires_ms = None
-    else:
+    fields = _credential_fields(entry)
+    if fields is None:
         return None
-    if not isinstance(token, str) or not token.strip():
-        return None
-    return Credential(
-        token=token.strip(), source=_SOURCE_AUTH_JSON, expires_ms=expires_ms
-    )
+    token, expires_ms = fields
+    return Credential(token=token, source=_SOURCE_AUTH_JSON, expires_ms=expires_ms)
 
 
 def _raise_if_expired(expires_ms: int | None, now_ms: int | None) -> None:
@@ -201,6 +221,33 @@ def _raise_if_expired(expires_ms: int | None, now_ms: int | None) -> None:
     now = now_ms if now_ms is not None else int(time.time() * 1000)
     if expires_ms <= now:
         raise CredentialError(EXPIRED_MESSAGE)
+
+
+def _unwrap_value(payload: object) -> object:
+    """Descend once into a dict ``value`` wrapper when present."""
+    if isinstance(payload, dict):
+        wrapper = payload.get("value")
+        if isinstance(wrapper, dict):
+            return wrapper
+    return payload
+
+
+def _credential_fields(payload: object) -> tuple[str, int | None] | None:
+    """Extract ``(token, expires_ms)`` from a credential payload.
+
+    Tolerates one ``value`` wrapper around the credential object; the token
+    is ``access`` (oauth) or ``key`` (api key) and ``type`` is optional.
+    Anything that cannot yield a non-blank string token reads as ``None``.
+    """
+    payload = _unwrap_value(payload)
+    if not isinstance(payload, dict):
+        return None
+    token = payload.get("access")
+    if not isinstance(token, str) or not token.strip():
+        token = payload.get("key")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    return token.strip(), _parse_expiry(payload.get("expires"))
 
 
 def _resolve_db_credential(
@@ -219,9 +266,12 @@ def _resolve_db_credential(
 def list_db_credentials() -> list[DbCredential]:
     """List the database's OpenCode credentials for pickers (never tokens).
 
-    Rows come newest-``time_updated`` first. Malformed ``value`` JSON leaves
-    the row listed with ``email``/``org_name`` as ``None``; an unreadable
-    database raises :class:`CredentialError` with ``NO_CREDENTIAL_MESSAGE``.
+    Rows come in the accepted-id preference order — ``opencode-go``, then
+    ``opencode``, then other ``opencode*`` ids — active rows before inactive
+    ones and newest ``time_updated`` first inside a tier. Malformed ``value``
+    JSON leaves the row listed with ``email``/``org_name`` as ``None``; an
+    unreadable database raises :class:`CredentialError` with
+    ``NO_CREDENTIAL_MESSAGE``.
     """
     db_path = _effective_db_path()
     if not db_path.is_file():
@@ -250,11 +300,11 @@ def list_db_credentials() -> list[DbCredential]:
 def has_stored_login() -> bool:
     """True when a login exists: ``OCGO_TOKEN``, a database row, or legacy.
 
-    The database check only asks whether an ``opencode`` row exists, on
-    stable columns — a schema without the listing's ``label`` reads the same
-    way. Rows count regardless of expiry: an expired login still drives the
-    seeded default's refresh messaging, and so does a legacy ``auth.json``
-    login (presence, not expiry, is the question here).
+    The database check only asks whether an OpenCode-owned (``opencode*``)
+    row exists, on stable columns — a schema without the listing's ``label``
+    reads the same way. Rows count regardless of expiry: an expired login
+    still drives the seeded default's refresh messaging, and so does a legacy
+    ``auth.json`` login (presence, not expiry, is the question here).
     """
     if os.environ.get(_ENV_TOKEN, "").strip():
         return True
@@ -264,7 +314,7 @@ def has_stored_login() -> bool:
 
 
 def _db_has_stored_login() -> bool:
-    """True when the database holds at least one ``opencode`` row."""
+    """True when the database holds at least one accepted OpenCode row."""
     db_path = _effective_db_path()
     if not db_path.is_file():
         return False
@@ -299,7 +349,9 @@ def store_status() -> dict:
 def _metadata_strings(value: object) -> tuple[str | None, str | None]:
     """Extract ``(email, org_name)`` from a credential ``value`` payload.
 
-    Absent, non-object, or non-string members read as ``None``.
+    Absent, non-object, or non-string members read as ``None``; the metadata
+    lives inside the credential object, so one ``value`` wrapper is tolerated
+    like resolution does.
     """
     if not isinstance(value, str):
         return None, None
@@ -309,6 +361,7 @@ def _metadata_strings(value: object) -> tuple[str | None, str | None]:
         return None, None
     if not isinstance(payload, dict):
         return None, None
+    payload = _unwrap_value(payload)
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return None, None
@@ -323,10 +376,13 @@ def _metadata_strings(value: object) -> tuple[str | None, str | None]:
 def _read_db_row(
     db_path: Path, *, credential_id: str | None = None
 ) -> tuple[str, int | None]:
-    """Read one credential row: pinned by id, else active, else newest.
+    """Read one credential row: pinned by id, else the preferred one.
 
-    A pinned ``credential_id`` that cannot produce a usable token raises the
-    actionable "no longer exists" message instead of the generic one.
+    The unpinned query follows the accepted-id preference order and, inside
+    a tier, prefers the credential that ``opencode auth switch`` marked
+    active. A pinned ``credential_id`` that cannot produce a usable token
+    raises the actionable "no longer exists" message instead of the generic
+    one.
     """
     uri = Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
     try:
@@ -334,22 +390,19 @@ def _read_db_row(
             if credential_id is not None:
                 row = connection.execute(_PINNED_QUERY, (credential_id,)).fetchone()
             else:
-                # Prefer the credential that ``opencode auth switch`` marked active.
-                row = connection.execute(_ACTIVE_QUERY, ()).fetchone()
-                if not row:
-                    row = connection.execute(_FALLBACK_QUERY, ()).fetchone()
+                row = connection.execute(_SELECT_QUERY, ()).fetchone()
     except sqlite3.Error as exc:
         raise CredentialError(NO_CREDENTIAL_MESSAGE) from exc
     if not row or not row[0]:
         raise _unusable_row_error(credential_id)
     try:
-        value = json.loads(row[0])
-        token = value["access"]
-    except (TypeError, ValueError, KeyError) as exc:
+        payload = json.loads(row[0])
+    except (TypeError, ValueError) as exc:
         raise _unusable_row_error(credential_id) from exc
-    if not isinstance(token, str) or not token.strip():
+    fields = _credential_fields(payload)
+    if fields is None:
         raise _unusable_row_error(credential_id)
-    return token.strip(), _parse_expiry(value.get("expires"))
+    return fields
 
 
 def _unusable_row_error(credential_id: str | None) -> CredentialError:
