@@ -129,6 +129,8 @@ make deps            # dependency check (also run by the installers)
 See [AGENTS.md](AGENTS.md) for the agent-facing map and non-negotiables, and
 [docs/01-architecture.md](docs/01-architecture.md) for the design.
 
+The full CLI, frontend, and testing references: [docs/02-cli-reference.md](docs/02-cli-reference.md), [docs/03-frontends.md](docs/03-frontends.md), [docs/04-testing.md](docs/04-testing.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

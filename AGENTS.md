@@ -43,5 +43,11 @@ only.
 
 - [docs/01-architecture.md](docs/01-architecture.md) — pieces, data flow,
   invariants, where new things go.
+- [docs/02-cli-reference.md](docs/02-cli-reference.md) — every `ocgo` command,
+  flag, environment variable, and file location.
+- [docs/03-frontends.md](docs/03-frontends.md) — GNOME and Cinnamon behavior,
+  settings, compatibility.
+- [docs/04-testing.md](docs/04-testing.md) — the test suite, static checkers,
+  and CI.
 - [docs/05-technical-decisions.md](docs/05-technical-decisions.md) — decision
   records and the template for new ones.

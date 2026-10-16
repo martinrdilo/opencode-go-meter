@@ -84,6 +84,9 @@ never see a token.
 
 ## Related
 
+- [CLI reference](02-cli-reference.md) — every `ocgo` command, flag, and file.
+- [Frontends](03-frontends.md) — GNOME vs Cinnamon behavior and settings.
+- [Testing](04-testing.md) — checks, checkers, and CI.
 - [Technical decisions](05-technical-decisions.md) — why the system is shaped
   this way, as records.
 - [AGENTS.md](../AGENTS.md) — the agent-facing map and non-negotiables.
