@@ -1,8 +1,8 @@
 # Feature: login-detection — sixth field-report round (accept the OpenCode Go integration and every credential shape OpenCode v2 writes)
 
-**Status**: COMPLETE (code + verification) — commits `322017b` (fix + tests +
-docs), `4ad0520` (tracker) and the T3 record on `fix/login-detection`;
-delivery (push/PR/merge) pending the user's decision.
+**Status**: MERGED — PR #15 (`cc5f2c1`) on 2026-10-16; branch
+`fix/login-detection` kept on origin (repo precedent). Field-machine check on
+the Mint box is the remaining step.
 **Repo**: `opencode-go-meter`
 **Branch**: `fix/login-detection` (worktree `opencode-go-meter-worktrees/login-detection`, from `main` @ `b48b8b2`)
 **Created**: 2026-10-16
@@ -156,6 +156,10 @@ CLI commands, contract version bumps.
   review assess --base-ref b48b8b2` → `medium` / `slice_budget_reached`
   (649 changed lines); RDD is off by global decision, so the assessment and
   its transition are informational only.
+- 2026-10-16 — delivered on user instruction ("si y luego de armar PR pushea a
+  main"): branch pushed, PR #15 opened with the repo template + `bug` label,
+  CI green (test workflow on push and pull_request), merged with a merge
+  commit → `main` @ `cc5f2c1`; branch kept on origin.
 
 ## Verification evidence
 
@@ -188,9 +192,13 @@ CLI commands, contract version bumps.
 
 ## Next step
 
-- Hand the field machine (Mint) the read-only store probe and read its output:
-  if it prints `login found`, updating the repo there to this branch and
-  reloading the applet closes the field report; if it prints `NO login`, the
-  probe output names what that store actually holds.
-- Delivery decision (push the branch, open the PR) belongs to the user; the
-  commits are local on `fix/login-detection`.
+- Field machine (Mint): pull `main` there (`cc5f2c1` or later), restart
+  Cinnamon so the applet reloads the core, then confirm
+  `ocgo account discover --json` lists the `opencode-go` credential,
+  `ocgo refresh` fetches usage with the Go key, and the dialog no longer says
+  "No OpenCode login found".
+- The field dump (`row: opencode-go | default | active: 1 | {"type": "key",
+  "key": …}` plus the same entry in `auth.json`) is exactly the shape the new
+  reader was verified against: detection and token resolution confirmed on a
+  fixture store; usage end-to-end on the Mint depends only on that key
+  authorizing `https://opencode.ai/console/api/go/status`.
