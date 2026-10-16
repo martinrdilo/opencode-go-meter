@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a problem with the CLI, the GNOME extension, or the Cinnamon applet
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        **Never paste tokens, API keys, or credential JSON into this report.**
+        Redact secrets from logs and command output before posting.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part is affected?
+      description: Where did you see the problem?
+      options:
+        - Core CLI (ocgo)
+        - GNOME Shell extension
+        - Cinnamon applet
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem — what you saw and what you did just before.
+      placeholder: Tell us what you see.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The steps that lead to the problem, starting from a known state.
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Run `ocgo --version`, and `gnome-shell --version` or `cinnamon --version`; also name your distribution.
+      placeholder: ocgo 0.1.0 · GNOME Shell 50 · Linux Mint 22
+    validations:
+      required: true
+  - type: textarea
+    id: status-output
+    attributes:
+      label: ocgo status output
+      description: If the problem shows in the meters, paste the output of `ocgo status`.
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines, if any — ocgo errors, or GNOME Shell / Cinnamon session output.
