@@ -131,6 +131,8 @@ See [AGENTS.md](AGENTS.md) for the agent-facing map and non-negotiables, and
 
 The full CLI, frontend, and testing references: [docs/02-cli-reference.md](docs/02-cli-reference.md), [docs/03-frontends.md](docs/03-frontends.md), [docs/04-testing.md](docs/04-testing.md).
 
+Release history: [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
