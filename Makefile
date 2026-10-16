@@ -4,7 +4,7 @@ BIN_LINK := $(HOME)/.local/bin/ocgo
 EXT_LINK := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 APPLET_LINK := $(HOME)/.local/share/cinnamon/applets/$(UUID)
 
-.PHONY: test check-gnome check-cinnamon deps install uninstall install-cinnamon uninstall-cinnamon
+.PHONY: test check-gnome check-cinnamon pack deps install uninstall install-cinnamon uninstall-cinnamon
 
 test:
 	cd core && python3 -m unittest discover -s tests -v
@@ -14,6 +14,9 @@ check-gnome:
 
 check-cinnamon:
 	python3 cinnamon/scripts/check_applet.py
+
+pack:
+	python3 scripts/pack.py
 
 deps:
 	$(REPO)/scripts/install-deps.sh
