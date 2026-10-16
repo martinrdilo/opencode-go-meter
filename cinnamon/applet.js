@@ -528,6 +528,8 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this._updatingActive = false;
         this._activeOptionsSignature = null;
         this._accountsDialog = null;
+        this._accountsWindow = false;
+        this._metadata = metadata;
 
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
         this.settings.bind('refresh-interval', 'refresh_interval', () => this._onRefreshIntervalChanged());
@@ -1270,6 +1272,56 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             button.add_style_pseudo_class('insensitive');
     }
 
+    // The account window is a real, non-blocking window: a plain `cjs` + GTK3
+    // process (cinnamon/accounts-window.js next to this file at the installed
+    // location), so the terminal the login button opens stays usable — the
+    // in-shell ModalDialog grabs input and blocks it. Returns false when the
+    // window cannot be launched at all (missing `cjs` or script), which keeps
+    // the in-shell dialog as the fallback path.
+    _openAccountsWindow() {
+        const script = this._accountsWindowScript();
+        if (!script)
+            return false;
+        const cjs = GLib.find_program_in_path('cjs');
+        if (!cjs)
+            return false;
+        const argv = [cjs, script];
+        const ocgo = this._ocgoPath();
+        if (ocgo)
+            argv.push('--ocgo', ocgo);
+        try {
+            this._accountsWindow = true;
+            // Reload when the window exits: it may have changed accounts, and
+            // the menu and tooltip must follow.
+            Util.spawnCommandLineAsyncIO(null, () => {
+                this._accountsWindow = false;
+                if (!this._removed)
+                    this._loadAccounts();
+            }, {argv});
+            return true;
+        } catch (error) {
+            this._accountsWindow = false;
+            logError('could not open the account window', error);
+            return false;
+        }
+    }
+
+    // `make install-cinnamon` symlinks the whole applet directory into
+    // ~/.local/share/cinnamon/applets/<uuid>, so the window script always sits
+    // next to applet.js at the installed location (mirrors _ocgoPath()).
+    _accountsWindowScript() {
+        const uuid = this._metadata && this._metadata.uuid
+            ? this._metadata.uuid
+            : 'opencode-go-meter@martinrdilo';
+        const installed = GLib.build_filenamev([
+            GLib.get_home_dir(), '.local', 'share', 'cinnamon', 'applets',
+            uuid, 'accounts-window.js',
+        ]);
+        if (GLib.file_test(installed, GLib.FileTest.IS_REGULAR))
+            return installed;
+        return null;
+    }
+
     // RadioButtonGroup (byte-identical on 5.4 and 6.4) keeps its options in a
     // private list and has no per-option API: reach the option's actor to
     // disable it, degrading to a normal option when the shape changes.
@@ -1406,7 +1458,11 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
     }
 
     on_accounts_apply() {
-        if (this._accountsDialog)
+        if (this._accountsDialog || this._accountsWindow)
+            return;
+        // Preferred path: the real window (non-blocking). The in-shell dialog
+        // stays as the fallback when the window cannot be launched.
+        if (this._openAccountsWindow())
             return;
         const dialog = this._openAccountsDialog();
         let closed = false;
@@ -1691,6 +1747,17 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
                         refreshGuidedState('OpenCode login detected.');
                         this._setStatus(status, 'OpenCode login detected — '
                             + 'the login can be added now.', false);
+                        return;
+                    }
+                    if (this._storeHasLogin()) {
+                        // The store already held a login when the button was
+                        // clicked (for example a re-auth that keeps the same
+                        // credential): nothing new will appear, and claiming
+                        // "no login" would be false. The login is bindable now.
+                        stopLoginPoll();
+                        refreshGuidedState('An OpenCode login is available.');
+                        this._setStatus(status, 'An OpenCode login is already '
+                            + 'available in the store — it can be added now.', false);
                         return;
                     }
                     if (lastTick) {

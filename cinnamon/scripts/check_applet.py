@@ -2,11 +2,13 @@
 """Static checks for the Cinnamon applet.
 
 Validates that ``metadata.json`` and ``settings-schema.json`` parse as JSON,
-that ``applet.js`` passes ``node --check``, that the metadata uuid matches the
-directory name Cinnamon will load the applet from, and that ``applet.js``
-defines the ``main`` entry point. Every ``imports.*`` module ``applet.js``
-uses must exist in the oldest supported Cinnamon release (5.4):
-``imports.ui.dialog``, for example, only exists from Cinnamon 6.4.
+that ``applet.js`` and ``accounts-window.js`` pass ``node --check``, that the
+metadata uuid matches the directory name Cinnamon will load the applet from,
+and that ``applet.js`` defines the ``main`` entry point. Every ``imports.*``
+module ``applet.js`` uses must exist in the oldest supported Cinnamon release
+(5.4): ``imports.ui.dialog``, for example, only exists from Cinnamon 6.4.
+``accounts-window.js`` runs under plain ``cjs`` and must never import the
+shell-only ``imports.ui.*`` namespace.
 
 Exits non-zero with a clear message on the first failure.
 """
@@ -22,6 +24,7 @@ MAKEFILE = APPLET_DIR.parent / "Makefile"
 METADATA = APPLET_DIR / "metadata.json"
 SCHEMA = APPLET_DIR / "settings-schema.json"
 APPLET_JS = APPLET_DIR / "applet.js"
+WINDOW_JS = APPLET_DIR / "accounts-window.js"
 
 UUID_RE = re.compile(r"^UUID\s*:=\s*(\S+)\s*$", re.MULTILINE)
 MAIN_RE = re.compile(
@@ -75,7 +78,7 @@ def _allowed_import(module: str) -> bool:
 
 
 def main() -> int:
-    for path in (METADATA, SCHEMA, APPLET_JS):
+    for path in (METADATA, SCHEMA, APPLET_JS, WINDOW_JS):
         if not path.exists():
             return fail(f"{path.relative_to(APPLET_DIR.parent)} is missing")
 
@@ -112,17 +115,19 @@ def main() -> int:
                 f"cinnamon/metadata.json declares uuid '{uuid}'"
             )
 
-    try:
-        result = subprocess.run(
-            ["node", "--check", str(APPLET_JS)],
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError:
-        return fail("node is required for the applet.js syntax check")
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        return fail(f"node --check cinnamon/applet.js failed: {detail}")
+    for script in (APPLET_JS, WINDOW_JS):
+        try:
+            result = subprocess.run(
+                ["node", "--check", str(script)],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return fail("node is required for the JS syntax checks")
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            rel = script.relative_to(APPLET_DIR.parent)
+            return fail(f"node --check {rel} failed: {detail}")
 
     source = APPLET_JS.read_text(encoding="utf-8")
     if not MAIN_RE.search(source):
@@ -137,6 +142,18 @@ def main() -> int:
             "supported Cinnamon release, then add it to ALLOWED_UI_MODULES, "
             "ALLOWED_MISC_MODULES or ALLOWED_ROOT_MODULES in this script"
         )
+
+    # accounts-window.js runs under plain cjs, outside the Cinnamon shell:
+    # the shell-only imports.ui.* namespace (and the shell's own modules) is
+    # not available there and would crash the window at startup.
+    window_source = WINDOW_JS.read_text(encoding="utf-8")
+    for module in IMPORT_DECL_RE.findall(window_source):
+        if module == "ui" or module.startswith("ui."):
+            return fail(
+                "cinnamon/accounts-window.js imports 'imports.ui' — it runs "
+                "under plain cjs, outside the Cinnamon shell; use imports.gi.* "
+                "or stdlib instead"
+            )
 
     print(f"ok: cinnamon applet checks passed ({uuid})")
     return 0
