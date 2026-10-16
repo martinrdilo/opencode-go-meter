@@ -148,6 +148,25 @@ guarantees the copies eventually contradict each other.
 **Where**: `AGENTS.md`, `skills/project-conventions/SKILL.md`, `docs/`,
 `odd/tasks/`.
 
+### D11 — Versioning is SemVer with one source of truth
+
+**Decision**: The project version follows Semantic Versioning; `__version__`
+in `core/ocgo/__init__.py` is the single source of truth and `ocgo --version`
+surfaces it. Released states are marked with annotated `vX.Y.Z` git tags on
+`main`. The GNOME metadata `version` is an independent packaging integer (an
+extensions.gnome.org contract, bumped deliberately); Cinnamon metadata stays
+versionless. Release artifacts are built with `make pack` into the gitignored
+`dist/` and never committed. `CHANGELOG.md` follows Keep a Changelog and
+records user-visible changes.
+
+**Why**: One number that means one thing: the CLI reports the code's version,
+tags mark released states, and the changelog is what users read. The extension
+website needs its own monotonically increasing upload counter, which can move
+independently of a release; Cinnamon has no such field.
+
+**Where**: `core/ocgo/__init__.py`, `core/ocgo/cli.py`, `gnome/metadata.json`,
+`CHANGELOG.md`, `scripts/pack.py`, `Makefile`.
+
 ## Template
 
 ```markdown
