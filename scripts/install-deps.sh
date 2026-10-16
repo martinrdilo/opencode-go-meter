@@ -62,7 +62,7 @@ secret_tool_bin="$(command -v secret-tool 2>/dev/null || true)"
 if [ -z "$secret_tool_bin" ]; then
     say ""
     say "secret-tool: not found — optional (libsecret-tools)"
-    detail "without it the app keeps API keys in a private local file instead of the OS keyring"
+    detail "without it the app offers to keep API keys in a private local file instead of the OS keyring"
     if [ "$CHECK_ONLY" = 0 ] && [ -t 0 ] && command -v apt-get >/dev/null 2>&1; then
         printf '  Install libsecret-tools now? [y/N] '
         reply=""
@@ -135,7 +135,7 @@ fi
 if [ -n "$secret_tool_bin" ]; then
     summary_line "ok" "secret-tool" "$secret_tool_bin"
 else
-    summary_line "missing" "secret-tool" "API keys go to a private local file instead of the OS keyring (optional)"
+    summary_line "missing" "secret-tool" "the app offers a private local file instead of the OS keyring (optional)"
 fi
 if [ -n "$opencode_bin" ]; then
     summary_line "ok" "opencode CLI" "$opencode_bin"
