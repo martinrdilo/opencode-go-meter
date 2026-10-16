@@ -1,6 +1,8 @@
 # Feature: login-detection — sixth field-report round (accept the OpenCode Go integration and every credential shape OpenCode v2 writes)
 
-**Status**: IN PROGRESS — T1/T2 done (`322017b`); T3 verification pending.
+**Status**: COMPLETE (code + verification) — commits `322017b` (fix + tests +
+docs), `4ad0520` (tracker) and the T3 record on `fix/login-detection`;
+delivery (push/PR/merge) pending the user's decision.
 **Repo**: `opencode-go-meter`
 **Branch**: `fix/login-detection` (worktree `opencode-go-meter-worktrees/login-detection`, from `main` @ `b48b8b2`)
 **Created**: 2026-10-16
@@ -101,10 +103,16 @@ CLI commands, contract version bumps.
   - Done 2026-10-16, commit `322017b`: D12 recorded; the CLI reference's
     `account discover` section now names the accepted ids and their order.
     README needed no edit — it names neither integration ids nor shapes.
-- [ ] **T3 — verify**: `make test`, `make check-gnome`, `make check-cinnamon`;
+- [x] **T3 — verify**: `make test`, `make check-gnome`, `make check-cinnamon`;
   real-store re-check on the dev box (`ocgo account discover --json`,
   `ocgo auth show`, `ocgo status`); sandbox applet still reports a login; hand
   the field machine its diagnostic one-liner.
+  - Done 2026-10-16 (parent): parent spot check re-ran `make test`
+    (`Ran 478 tests — OK`) and `account discover --json` (one credential,
+    `has_login: true`); the nested Cinnamon sandbox applet reloaded against
+    the new core and reports `has_login: true`, one credential, no error; the
+    read-only store probe for the field machine is written and self-tested
+    (secret-free output, old/absent stores tolerated).
 
 ## Acceptance criteria
 
@@ -140,6 +148,14 @@ CLI commands, contract version bumps.
   `access`/`key`, optional `type`), legacy `auth.json` parity; D12 recorded;
   `store_status()` untouched. Full suite + both frontend checks green;
   dev-box real-store re-check OK (one credential, live usage fetched).
+- 2026-10-16 — T3 verified by the parent: parent spot check (`make test`,
+  `account discover --json`), independent applet check in the nested Cinnamon
+  sandbox against the **new** core (store reloaded in place: `has_login: true`,
+  one credential, `_credentialsError: null`; the sandbox `ocgo` symlink was
+  restored afterwards), and the field-machine probe prepared. `gentle-ai
+  review assess --base-ref b48b8b2` → `medium` / `slice_budget_reached`
+  (649 changed lines); RDD is off by global decision, so the assessment and
+  its transition are informational only.
 
 ## Verification evidence
 
@@ -158,8 +174,23 @@ CLI commands, contract version bumps.
 - `ocgo status --no-color` — `Rolling 1% · Weekly 28% · Monthly 18% ·
   Credits $2.59`; `ocgo refresh` — `Refreshed OpenCode Go (default): rolling
   1% · weekly 28% · monthly 18% · $2.59`.
+- Parent spot check (after the writer): `make test` — `Ran 478 tests ... OK`;
+  `./core/bin/ocgo account discover --json` — one credential,
+  `store.has_login: true`, no token material.
+- Applet check with the new core (nested Cinnamon at
+  `/tmp/opencode/cinnamon-test`, `ocgo` symlink temporarily pointed at this
+  worktree, restored afterwards): `{"store": {..., "has_login": true},
+  "creds": 1, "hasLogin": true, "err": null}`.
+- Field-machine probe (`/tmp/opencode/field-store-probe.py`, read-only,
+  secret-free): dev box → `verdict: login found ['db:opencode']`; legacy
+  `auth.json` fixture store → `verdict: login found ['auth:opencode']`; empty
+  store → `NO login`; older schemas without `method_id` degrade gracefully.
 
 ## Next step
 
-- Review of the writer's diff, then T3 checks, then the field-machine
-  diagnostic to the user.
+- Hand the field machine (Mint) the read-only store probe and read its output:
+  if it prints `login found`, updating the repo there to this branch and
+  reloading the applet closes the field report; if it prints `NO login`, the
+  probe output names what that store actually holds.
+- Delivery decision (push the branch, open the PR) belongs to the user; the
+  commits are local on `fix/login-detection`.
