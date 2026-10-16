@@ -1,69 +1,115 @@
-# Feature: project-scaffolding — Round 1: architecture, conventions, and README
+# Feature: project-scaffolding — rounds 1–3
 
-**Status**: Complete — PR #6 and PR #7 merged to `main` (`72e30c8`, `e9b5485`).
+**Status**: Round 1 complete (PRs #6/#7 merged to `main`, `72e30c8`/`e9b5485`). Rounds 2–3 in progress from `main` @ `8f9fab5`.
 **Repo**: `opencode-go-meter`
-**Branch**: `docs/project-scaffolding` (from `main` @ `171159a`)
-**Worktree**: `../opencode-go-meter-worktrees/project-scaffolding` (the main checkout is busy with `fix/login-reliability` work in progress)
+**Branches**: Round 1: `docs/project-scaffolding`, `docs/project-scaffolding-2` (merged). Rounds 2–3: `docs/reference-docs` (S3) → `chore/versioning-pack` (S4, stacked) → `chore/community-files` (S5, stacked).
+**Worktree**: main checkout (`fix/login-reliability` closed; the old `../opencode-go-meter-worktrees/project-scaffolding` worktree stays idle).
 **Created**: 2026-10-14
 
 ## Objective
 
 Give the repository a written, enforced foundation before it grows further:
 
-- **S1 — architecture and decisions**: `docs/01-architecture.md` (the pieces, hard invariants, folder rules, where new things go) and `docs/05-technical-decisions.md` (registry of decisions already taken + a lightweight ADR template).
-- **S2 — agent/contributor surfaces and README**: `AGENTS.md` (always-loaded map, commands, non-negotiables, index), `skills/project-conventions/SKILL.md` (on-demand operational rules), and a full README rewrite (outcome-first, progressive disclosure).
+- **R1 — architecture, conventions, README** (done): `docs/01-architecture.md`, `docs/05-technical-decisions.md` (D1–D10 + template), `AGENTS.md`, `skills/project-conventions/SKILL.md`, README rewrite.
+- **R2 — reference docs**: `docs/02-cli-reference.md`, `docs/03-frontends.md` (compat matrix), `docs/04-testing.md`, wired into the doc surfaces.
+- **R3 — release and community hygiene**: CHANGELOG.md + SemVer policy/tags + `make pack`; issue/PR templates; `CONTRIBUTING.md` and `SECURITY.md`.
 
 ## Why
 
-User request (2026-10-14): lock a firm structure now so growth does not become disorder; rewrite the README (dense, unclear). Reference scaffolding: `github.com/martinrdilo/notification-management-system` — adopt the AGENTS.md + skills conventions pattern and numbered docs with technical decisions; skip what does not apply (Docker, Testcontainers, CircleCI, `.env`).
+User request (2026-10-14): lock a firm structure now so growth does not become disorder; rewrite the README (dense, unclear). Reference scaffolding: `github.com/martinrdilo/notification-management-system`.
+User request (2026-10-15): continue with Rounds 2 and 3 — the remaining reference docs plus release hygiene so the repo is distributable and self-explanatory for contributors.
 
-## Audit findings (2026-10-14, verified)
+## Audit findings — Round 1 (2026-10-14, verified)
 
-- Architecture decisions exist but are scattered across `odd/tasks/*.md` and session memory; no architecture doc in the repo (`docs/` holds only screenshots).
+- Architecture decisions exist but are scattered across `odd/tasks/*.md` and session memory; no architecture doc in the repo (`docs/` held only screenshots).
 - Current layout (`core/`, `gnome/`, `cinnamon/`, `docs/`, `odd/`) is sound — formalize it, do not reorganize (moves would break Makefile/dconf symlinks for no gain).
-- The README's old file-structure listing was already removed in `b25f578` (2026-10-10); the remaining problems are the wall-of-text Accounts section and a dense intro.
+- The README's old file-structure listing was already removed in `b25f578` (2026-10-10); the remaining problems were the wall-of-text Accounts section and a dense intro.
 - Surfaces split (user-approved, 2026-10-14): `AGENTS.md` = discovery (always loaded); `skills/` = on-demand rules; `docs/` = humans; `odd/tasks/` = tracking. Anti-duplication rule: one source of truth per rule; AGENTS.md carries headlines and pointers only.
-- Versions today: `core/ocgo/__init__.py` `__version__` 0.1.0; `gnome/metadata.json` version 13; `cinnamon/metadata.json` has no version field; no git tags/releases. (Out of scope for Round 1 — proposed for Round 3.)
+- Versions today: `core/ocgo/__init__.py` `__version__` 0.1.0; `gnome/metadata.json` version 13; `cinnamon/metadata.json` has no version field; no git tags/releases.
 
-## Tasks
+## Audit findings — Rounds 2–3 (2026-10-15, verified)
+
+- `docs/02`–`docs/04` are free, unclaimed numbers: no references anywhere; numbering rule is "next free number" (`docs/01:82`).
+- CLI surface (verified in `core/ocgo/cli.py`): `refresh` (`--account`/`--all`), `status` (`--json`, `--no-color`, `--account`), `auth show` (`--account`), `account {add,set-key,list,discover,activate-in-opencode,use,remove}`; global `--version` prints `ocgo 0.1.0`; exit codes 0 ok / 1 handled failure / 2 argparse usage.
+- Env: `OCGO_TOKEN`, `OCGO_DB`, `OCGO_TOKEN_<ID>`, `NO_COLOR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`. Paths: cache `$XDG_CACHE_HOME/ocgo/status.json` (+ per-account), registry `$XDG_CONFIG_HOME/ocgo/accounts.json`, 0600 file secrets, keyring, OpenCode DB + legacy `auth.json`.
+- Frontends: GNOME `shell-version: ["50"]` (ESM `resource:///`), version 13; Cinnamon `cinnamon-version: ["5.4"]`, no version field, 5.4-vs-6.4 compat shims commented in `applet.js`. Settings: GNOME `refresh-interval`/`panel-box`/`panel-position`/`show-credits`; Cinnamon `refresh-interval`/`show-credits`/`active-account`.
+- Tests: 6 files under `core/tests/` (459 static `def test_`), env-isolated, never network; static checkers `gnome/scripts/check_collisions.py`, `cinnamon/scripts/check_applet.py`; CI `.github/workflows/test.yml` (name `tests`, push + PR, `make test` + both checkers).
+- Packaging: `.gitignore` already ignores `dist/` and `*.shell-extension.zip` (added in the initial scaffold `2a543ac`); no pack/release scripts exist. Distribution layouts (verified against primary sources): GNOME extension zip is flat (files at archive root); Cinnamon spice zip nests a `UUID/` folder.
+- Community: no CHANGELOG/CONTRIBUTING/SECURITY; `.github/` holds only `workflows/test.yml`. Repo keeps branches after merge (precedent); PRs use the `documentation` label and PR #5 structure + Chain Context.
+
+## Tasks — Round 1 (complete)
 
 - [x] **T1 — `docs/01-architecture.md`**: the four pieces (core CLI, GNOME, Cinnamon, contracts), mermaid diagram of data flow, hard invariants, folder map, "where new things go" decision table. Commit: `docs: add the architecture overview` — `2f179f5` (91 lines).
-- [x] **T2 — `docs/05-technical-decisions.md`**: decision registry (stdlib-only core; read-only credentials, no OAuth implementation; keyring with 0600 fallback; cache JSON as versioned contract; CLI-as-port / thin frontends; percent calibration and color thresholds; account model auto/pinned + registry versioning; symlink-only installs; unittest + stdlib checkers; agent surfaces) + ADR-lite template. Commit: `docs: add the technical decision registry` — `42015f1` (160 lines).
-- [x] **T3 — `AGENTS.md` + `skills/project-conventions/SKILL.md`**: map + commands + non-negotiables + docs/skills index; skill in skill-creator format (Activation Contract / Hard Rules / Decision Gates / Execution Steps / Output Contract / References). Commit: `docs: add AGENTS.md and the project-conventions skill` — `19e4238` (AGENTS.md 47 lines; skill 63 lines).
+- [x] **T2 — `docs/05-technical-decisions.md`**: decision registry (D1–D10) + ADR-lite template. Commit: `docs: add the technical decision registry` — `42015f1` (160 lines).
+- [x] **T3 — `AGENTS.md` + `skills/project-conventions/SKILL.md`**: map + commands + non-negotiables + docs/skills index; skill in skill-creator format. Commit: `docs: add AGENTS.md and the project-conventions skill` — `19e4238` (AGENTS.md 47 lines; skill 63 lines).
 - [x] **T4 — README rewrite**: progressive disclosure; keep exact install commands and screenshots; no file-structure listing. Commit: `docs: rewrite the README with progressive disclosure` — `7a94471` (111 lines).
+
+## Tasks — Round 2: reference docs (S3, branch `docs/reference-docs`)
+
+- [ ] **T5 — `docs/02-cli-reference.md`**: full `ocgo` reference verified against source — synopsis, global behavior (`--version`, `-h`, exit codes 0/1/2, colors + `NO_COLOR`), every command and flag (see audit findings), what default vs `--json` output shows, environment variables, file locations (cache, registry, key files, keyring, OpenCode DB + legacy `auth.json`), worked copy-paste examples. Must not duplicate README quick start or AGENTS headlines — link them. Link rules: file-relative, from `docs/`.
+- [ ] **T6 — `docs/03-frontends.md`**: GNOME vs Cinnamon reference with a compat matrix (GNOME Shell 50 / ESM; Cinnamon 5.4+ and the 5.4-vs-6.4 shims), what you see (panel format `5h X% · 7d Y% · 30d Z%`, color thresholds 50/85 mirrored constants, empty states, popup rows, Cinnamon tooltip vs GNOME none), settings tables per frontend (exact keys/ranges/defaults from schema and settings-schema), install/uninstall points to README (no duplication), troubleshooting (enable/disable, prefs, `make deps`; external commands must be verified or omitted).
+- [ ] **T7 — `docs/04-testing.md`**: how to run (`make test`, `make check-gnome`, `make check-cinnamon`, `make deps`), what each test file covers, test conventions (stdlib unittest, offline, env isolation, temp dirs, fake `secret-tool`), what the static checkers validate, CI workflow (triggers/steps), pre-PR checklist pointer.
+- [ ] **T8 — doc-surface wiring**: `AGENTS.md` Docs section gains the three docs; `docs/01-architecture.md` Related section gains the three docs; `README.md` Development section gains one reference line (02/03/04). Commit: `docs: wire the new references into the doc surfaces`.
+
+Commits: `docs: add the CLI reference` (T5), `docs: add the frontends reference` (T6), `docs: add the testing guide` (T7), `docs: wire the new references into the doc surfaces` (T8).
+
+## Tasks — Round 3a: versioning, changelog, pack (S4, branch `chore/versioning-pack`)
+
+- [ ] **T9 — versioning decision (D11) + tag**: append D11 to `docs/05-technical-decisions.md` (after D10, before `## Template`): project version is SemVer; `core/ocgo/__init__.py::__version__` is the single source of truth (surfaced by `ocgo --version`); annotated git tags `vX.Y.Z` on `main` mark released states; GNOME metadata `version` stays an independent packaging integer (extensions.gnome.org contract, bumped deliberately); Cinnamon metadata stays versionless; release artifacts build with `make pack` into gitignored `dist/`; `CHANGELOG.md` follows Keep a Changelog. Create annotated tag `v0.1.0` on `8f9fab5` (local only, no push). Commit: `docs: add the versioning decision`.
+- [ ] **T10 — `CHANGELOG.md`**: Keep a Changelog 1.1.0 format. `[Unreleased]` lists what Rounds 2–3 add up to this slice (docs 02–04, pack tooling, the versioning decision). `[0.1.0] - 2026-10-15` reconstructs the initial release honestly from `git log` + merged PRs #1–#9 + `odd/tasks/*.md` (meter, multi-account, OAuth login via OpenCode DB + legacy `auth.json`, API keys with keyring/0600 fallback, credits, dependency check, sanitized UI errors, docs). Link refs to the GitHub compare/tag URLs. Commit: `docs: add the changelog`.
+- [ ] **T11 — `make pack`**: new `scripts/pack.py` (stdlib `zipfile` only) + `pack` target in `Makefile` (+ `.PHONY`). Builds into `dist/`: `opencode-go-meter@martinrdilo.shell-extension.zip` — flat archive: `metadata.json`, `extension.js`, `prefs.js`, `stylesheet.css`, `schemas/*.gschema.xml` (exclude `scripts/`, compiled schemas); `opencode-go-meter@martinrdilo.zip` — nested `opencode-go-meter@martinrdilo/` folder: `metadata.json`, `applet.js`, `settings-schema.json`, `stylesheet.css`. Fail fast if a required file is missing; validate uuid from metadata; print artifact paths and sizes. Writer verifies with a zip listing. Commit: `build: add make pack for release artifacts`.
+
+## Tasks — Round 3b: community surfaces (S5, branch `chore/community-files`)
+
+- [ ] **T12 — `.github` templates**: `ISSUE_TEMPLATE/bug_report.yml` (frontend selector core/GNOME/Cinnamon, what happened, expected, steps, `ocgo --version` + desktop/OS versions, optional `ocgo status` output, optional logs, "never paste tokens" note), `ISSUE_TEMPLATE/feature_request.yml` (problem, proposal, scope, alternatives), `ISSUE_TEMPLATE/config.yml` (blank issues stay enabled), `pull_request_template.md` (summary, type, checklist: checks green / docs updated / English / Conventional Commits / no secrets; Chain Context section per the chained-PR convention). YAML must parse. Commit: `chore: add the issue and pull request templates`.
+- [ ] **T13 — `CONTRIBUTING.md` + `SECURITY.md` + wiring**: CONTRIBUTING (setup, run checks, conventions — core stdlib-only, thin frontends, English artifacts, Conventional Commits, no AI attribution —, work-unit commits, PR flow with template + Chain Context for stacked PRs, release/versioning pointers). SECURITY (supported: latest `main`; private reporting via GitHub's Security tab; scope: credential handling/leaks, cache integrity; out of scope: the upstream OpenCode app/service). README: Security section links SECURITY.md, Development links CONTRIBUTING.md; append the S5 items to CHANGELOG `[Unreleased]`. Commit: `docs: add CONTRIBUTING and SECURITY`.
 
 ## Delivery strategy
 
-- Forecast: S1 ≈ 260 authored lines (T1+T2); S2 ≈ 300 (T3+T4); total ≈ 560 > 400 → chain strategy required; **user chose `stacked-to-main` (2026-10-14)**.
-- Slices: **S1** = seed + T1 + T2 (PR 1); **S2** = T3 + T4 stacked on S1 (PR 2, retarget to `main` after PR 1 merges).
-- Push/PR/merge remain user decisions.
+- Round 1 (done): `stacked-to-main` (user chose 2026-10-14); S1 = PR #6, S2 = PR #7.
+- Rounds 2–3: reuse the cached strategy **`stacked-to-main`**. Forecast: S3 ≈ 450, S4 ≈ 350, S5 ≈ 400 authored lines → three slices, one PR each. S3 ← `main`; S4 ← S3 branch; S5 ← S4 branch. Retarget to `main` as predecessors merge (repo keeps branches on merge, so retarget manually).
+- Push, PR creation, tag push, and merge remain user decisions.
 
 ## Constraints
 
 - English artifacts; Conventional Commits; no AI attribution.
-- Writer's allowed edit surfaces: `README.md`, `AGENTS.md`, `docs/01-architecture.md`, `docs/05-technical-decisions.md`, `skills/project-conventions/SKILL.md` (+ new `skills/project-conventions/` directory). Nothing else.
+- Writers only touch their slice's allowed edit surfaces (below); nothing else per slice.
 - Doc claims must be verified against the code; if the code contradicts the brief, the code wins and the discrepancy is reported.
+- No runtime code changes: `core/ocgo/*`, `gnome/extension.js`, `gnome/prefs.js`, `cinnamon/applet.js` stay untouched.
+
+### Allowed edit surfaces
+
+- **S3**: `docs/02-cli-reference.md`, `docs/03-frontends.md`, `docs/04-testing.md` (new); `AGENTS.md` (Docs section), `docs/01-architecture.md` (Related section), `README.md` (Development section).
+- **S4**: `CHANGELOG.md`, `scripts/pack.py` (new); `Makefile` (pack target), `docs/05-technical-decisions.md` (D11), `README.md` (Development section link).
+- **S5**: `.github/ISSUE_TEMPLATE/bug_report.yml`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `.github/ISSUE_TEMPLATE/config.yml`, `.github/pull_request_template.md`, `CONTRIBUTING.md`, `SECURITY.md` (new); `README.md` (Security + Development sections), `CHANGELOG.md` (Unreleased entries).
 
 ## Acceptance criteria
 
-- Three surfaces exist and are mutually consistent; no rule duplicated across them.
-- `AGENTS.md` ≈ ≤60 lines; skill body 180–450 tokens (max 700); README leads with what/for-whom.
-- Every relative link in the touched files resolves; `make test` stays green.
-- All commits are work-unit commits on `docs/project-scaffolding`.
+Rounds 2–3:
+
+- Every CLI, frontend, and testing claim in the new docs matches the source; link integrity holds across touched files (file-relative resolution).
+- No rule duplicated across surfaces (README keeps install steps; docs reference them); AGENTS.md ≤ 60 lines.
+- D11 present before the template; CHANGELOG follows Keep a Changelog 1.1.0 with working link refs; tag `v0.1.0` (annotated) points at `8f9fab5` locally.
+- `make pack` builds both artifacts with the verified layouts; `dist/` stays gitignored; required-file assertions fail fast.
+- Issue templates parse as YAML; CONTRIBUTING/SECURITY describe only repo-real process (no invented steps).
+- `make test`, `make check-gnome`, `make check-cinnamon` stay green; all commits are work-unit commits on their slice branch.
 
 ## Checks
 
-- `make test` (expect the unchanged green suite).
-- Link-integrity check over the five files.
-- Parent structural readback + `gentle-ai review assess` tier check (RDD off).
+- `make test` (expect green suite), `make check-gnome`, `make check-cinnamon`.
+- Link-integrity check over touched files (file-relative from each file's directory).
+- S4: `make pack` + archive listing inspection (`unzip -l` or `python3 -m zipfile -l`).
+- S5: YAML parse of issue templates if PyYAML is available; otherwise structural readback.
+- Parent structural readback per slice + `gentle-ai review assess --cwd . --committed-only --json` (RDD off) for the record; independent read-only verifier pass over the three slices before delivery.
 
 ## Progress log
 
-- 2026-10-14 — Feature doc seeded. Audit closed; AGENTS-vs-skills split approved; delivery strategy cached (stacked-to-main); worktree isolation set up because the main checkout carries `fix/login-reliability` work in progress.
+- 2026-10-14 — Feature doc seeded. Audit closed; AGENTS-vs-skills split approved; delivery strategy cached (stacked-to-main); worktree isolation set up because the main checkout carried `fix/login-reliability` work in progress.
 - 2026-10-14 — T1–T4 executed by the delegated writer: commits `2f179f5`, `42015f1`, `19e4238`, `7a94471` (plus seed `22d52bc`). Checks: `make test` 422 OK; file-relative link integrity `missing: []`; `gentle-ai review assess` over `171159a..HEAD` (committed-only): tier medium (`executable_change` — AGENTS.md loads as agent instructions), `review_due: slice_budget_reached`; RDD is off (global) → no native review started, ordinary policy applies.
 - 2026-10-14 — Independent read-only verifier: PASS WITH FINDINGS. All factual claims match the code (commands, flags, paths, versions, thresholds, schemas, installs, CI). Three wording imprecisions found by the independent verifier are fixed in the delivered docs (folded into the commits; no separate correction commit); the headline-vs-skill duplication note is accepted as by-design layering.
 - 2026-10-14 — Branch restructured for stacked delivery: `docs/project-scaffolding` = S1 (from `main`: seed + architecture + decisions); `docs/project-scaffolding-2` = S2 stacked on S1 (AGENTS + skill + README). The pre-restructure branch is kept locally as `docs/project-scaffolding-old`.
 - 2026-10-14 — Delivered: both branches pushed; PR #6 (S1 → `main`) and PR #7 (S2 → `docs/project-scaffolding`) opened on GitHub with the `documentation` label; the `tests` workflow runs per push.
 - 2026-10-15 — Rebased onto `main` after PRs #8/#9 merged: README reconciled with the new Dependencies section and the *OpenCode was not found* login note; D2/D8 updated for the legacy credential store and the dependency check (`ac6c9a9`).
 - 2026-10-15 — PR #6 and PR #7 merged to `main` (`72e30c8`, `e9b5485`); Round 1 complete.
-- Next step: user review + merge of PR #6; then PR #7 retargets to `main` (retarget manually, or let GitHub do it when the base branch is deleted). Main checkout remains untouched (`fix/login-reliability` session active).
+- 2026-10-15 — Rounds 2–3 planned: recon verified the CLI surface, frontend metadata/settings, test inventory + CI, versioning state, and the distribution layouts (GNOME flat; Cinnamon `UUID/` folder). Delivery strategy reloaded (`stacked-to-main`), slices S3/S4/S5 defined, RDD off (global) re-confirmed.
+- Next step: plan commit on `docs/reference-docs`; execute S3.
