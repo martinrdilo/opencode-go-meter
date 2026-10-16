@@ -194,6 +194,120 @@ class CredentialResolutionTests(EnvTestCase):
         self._env(OCGO_DB=str(db))
         self.assertEqual(creds.resolve_credential().token, "newest-token")
 
+    def test_opencode_go_row_resolves_with_expiry(self):
+        expires = int(time.time() * 1000) + 3_600_000
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode-go",
+                    json.dumps(
+                        {
+                            "type": "oauth",
+                            "access": "go-token-1234",
+                            "expires": expires,
+                        }
+                    ),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "go-token-1234")
+        self.assertEqual(credential.source, "OpenCode local database")
+        self.assertEqual(credential.expires_ms, expires)
+
+    def test_opencode_go_wins_over_active_opencode(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "go-cred",
+                    "opencode-go",
+                    json.dumps({"access": "go-token-1234"}),
+                    0,
+                    100,
+                ),
+                (
+                    "console-cred",
+                    "opencode",
+                    json.dumps({"access": "console-token-1"}),
+                    1,
+                    300,
+                ),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(creds.resolve_credential().token, "go-token-1234")
+
+    def test_other_opencode_prefixed_row_resolves(self):
+        db = self.tmp / "opencode.db"
+        _write_db(db, [("opencode-x", json.dumps({"access": "prefixed-token"}))])
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(creds.resolve_credential().token, "prefixed-token")
+
+    def test_value_wrapper_row_resolves(self):
+        expires = int(time.time() * 1000) + 3_600_000
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode",
+                    json.dumps(
+                        {
+                            "value": {
+                                "type": "oauth",
+                                "access": "wrapped-token-1",
+                                "expires": expires,
+                            }
+                        }
+                    ),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "wrapped-token-1")
+        self.assertEqual(credential.expires_ms, expires)
+
+    def test_api_key_row_resolves_without_expiry(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [("opencode-go", json.dumps({"type": "api", "key": "row-api-key-1"}))],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "row-api-key-1")
+        self.assertEqual(credential.source, "OpenCode local database")
+        self.assertIsNone(credential.expires_ms)
+
+    def test_key_token_without_type_resolves(self):
+        db = self.tmp / "opencode.db"
+        _write_db(db, [("opencode", json.dumps({"key": "untyped-key-1"}))])
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(creds.resolve_credential().token, "untyped-key-1")
+
+    def test_expired_opencode_go_row_raises_the_expired_message(self):
+        now_ms = int(time.time() * 1000)
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode-go",
+                    json.dumps({"access": "go-token-1234", "expires": now_ms - 1}),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential(now_ms=now_ms)
+        self.assertEqual(str(caught.exception), creds.EXPIRED_MESSAGE)
+
     def test_missing_db_file(self):
         self._env(OCGO_DB=str(self.tmp / "nope.db"))
         with self.assertRaises(creds.CredentialError) as caught:
@@ -365,6 +479,31 @@ class PinnedCredentialTests(EnvTestCase):
         self.assertEqual(credential.expires_ms, expires)
         self.assertIsNotNone(credential.expires_at)
 
+    def test_pinned_opencode_go_row_resolves(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "go-cred",
+                    "opencode-go",
+                    json.dumps({"access": "go-pinned-token"}),
+                    0,
+                    100,
+                ),
+                (
+                    "console-cred",
+                    "opencode",
+                    json.dumps({"access": "console-token-1"}),
+                    1,
+                    300,
+                ),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential(credential_id="go-cred")
+        self.assertEqual(credential.token, "go-pinned-token")
+
     def test_pinned_missing_row_is_actionable(self):
         db = self.tmp / "opencode.db"
         _write_db(
@@ -460,6 +599,51 @@ class LegacyAuthJsonTests(EnvTestCase):
         self.assertIsNone(credential.expires_ms)
         self.assertIsNone(credential.expires_at)
 
+    def test_legacy_opencode_go_login_resolves_with_expiry(self):
+        expires = int(time.time() * 1000) + 3_600_000
+        self._legacy_only(
+            {
+                "opencode-go": {
+                    "type": "oauth",
+                    "access": "legacy-go-access",
+                    "expires": expires,
+                }
+            }
+        )
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "legacy-go-access")
+        self.assertEqual(credential.source, "OpenCode auth.json file")
+        self.assertEqual(credential.expires_ms, expires)
+
+    def test_legacy_opencode_go_wins_over_opencode(self):
+        self._legacy_only(
+            {
+                "opencode": {"type": "oauth", "access": "console-access"},
+                "opencode-go": {"type": "oauth", "access": "go-access"},
+            }
+        )
+        self.assertEqual(creds.resolve_credential().token, "go-access")
+
+    def test_legacy_value_wrapper_resolves(self):
+        self._legacy_only(
+            {"opencode-go": {"value": {"access": "wrapped-legacy-access"}}}
+        )
+        self.assertEqual(creds.resolve_credential().token, "wrapped-legacy-access")
+
+    def test_legacy_key_shape_without_type_resolves(self):
+        self._legacy_only({"opencode-go": {"key": "legacy-go-key"}})
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "legacy-go-key")
+        self.assertIsNone(credential.expires_ms)
+
+    def test_legacy_unknown_type_with_access_still_resolves(self):
+        self._legacy_only({"opencode": {"type": "legacy", "access": "tok-legacy"}})
+        self.assertEqual(creds.resolve_credential().token, "tok-legacy")
+
+    def test_legacy_other_opencode_prefixed_key_resolves(self):
+        self._legacy_only({"opencode-x/": {"access": "prefixed-legacy-access"}})
+        self.assertEqual(creds.resolve_credential().token, "prefixed-legacy-access")
+
     def test_trailing_slash_in_the_key_is_tolerated(self):
         self._legacy_only({"opencode/": {"type": "oauth", "access": "slash-access-1"}})
         self.assertEqual(creds.resolve_credential().token, "slash-access-1")
@@ -500,9 +684,6 @@ class LegacyAuthJsonTests(EnvTestCase):
             "malformed json": "{not json",
             "non-dict payload": json.dumps(["opencode"]),
             "non-dict entry": json.dumps({"opencode": ["oauth"]}),
-            "unknown type": json.dumps(
-                {"opencode": {"type": "legacy", "access": "tok"}}
-            ),
             "oauth without access": json.dumps({"opencode": {"type": "oauth"}}),
             "oauth with non-string access": json.dumps(
                 {"opencode": {"type": "oauth", "access": 7}}
@@ -717,6 +898,59 @@ class ListDbCredentialsTests(EnvTestCase):
             ),
         )
 
+    def test_opencode_go_is_listed_first(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                ("cred-x", "opencode-x", "Other", json.dumps({"access": "x"}), 0, 200),
+                (
+                    "cred-open",
+                    "opencode",
+                    "Console",
+                    json.dumps({"access": "o"}),
+                    1,
+                    300,
+                ),
+                ("cred-go", "opencode-go", "Go", json.dumps({"access": "g"}), 0, 100),
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertEqual(
+            [credential.id for credential in creds.list_db_credentials()],
+            ["cred-go", "cred-open", "cred-x"],
+        )
+
+    def test_value_wrapper_metadata_is_read(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-go",
+                    "opencode-go",
+                    "Go",
+                    json.dumps(
+                        {
+                            "value": {
+                                "access": "wrapped-token",
+                                "metadata": {
+                                    "email": "go@example.com",
+                                    "orgName": "Go Org",
+                                },
+                            }
+                        }
+                    ),
+                    1,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.list_db_credentials()[0]
+        self.assertEqual(credential.email, "go@example.com")
+        self.assertEqual(credential.org_name, "Go Org")
+
     def test_malformed_value_still_lists_the_row(self):
         db = self.tmp / "opencode.db"
         _write_labelled_db(db, [("cred-1", "opencode", "Default", "{not json", 0, 100)])
@@ -910,6 +1144,42 @@ class HasStoredLoginTests(EnvTestCase):
         self._env(OCGO_DB=str(db))
         self.assertTrue(creds.has_stored_login())
 
+    def test_opencode_go_row_is_a_stored_login(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-go",
+                    "opencode-go",
+                    "Go",
+                    json.dumps({"access": "go-token-1"}),
+                    1,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertTrue(creds.has_stored_login())
+
+    def test_other_opencode_prefixed_row_is_a_stored_login(self):
+        db = self.tmp / "opencode.db"
+        _write_labelled_db(
+            db,
+            [
+                (
+                    "cred-x",
+                    "opencode-x",
+                    "X",
+                    json.dumps({"access": "x-token-1"}),
+                    0,
+                    100,
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        self.assertTrue(creds.has_stored_login())
+
     def test_expired_database_row_is_still_a_stored_login(self):
         now_ms = int(time.time() * 1000)
         db = self.tmp / "opencode.db"
@@ -1005,6 +1275,17 @@ class StoreStatusTests(EnvTestCase):
         self.assertFalse(status["auth_json_exists"])
         self.assertFalse(status["auth_json_login"])
         self.assertFalse(status["has_login"])
+
+    def test_field_types(self):
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        status = creds.store_status()
+        self.assertEqual(list(status), self._FIELDS)
+        self.assertIsInstance(status["db_path"], str)
+        self.assertIsInstance(status["db_exists"], bool)
+        self.assertIsInstance(status["auth_json_path"], str)
+        self.assertIsInstance(status["auth_json_exists"], bool)
+        self.assertIsInstance(status["auth_json_login"], bool)
+        self.assertIsInstance(status["has_login"], bool)
 
     def test_database_only(self):
         db = self.tmp / "opencode" / "opencode.db"

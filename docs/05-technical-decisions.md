@@ -167,6 +167,27 @@ independently of a release; Cinnamon has no such field.
 **Where**: `core/ocgo/__init__.py`, `core/ocgo/cli.py`, `gnome/metadata.json`,
 `CHANGELOG.md`, `scripts/pack.py`, `Makefile`.
 
+### D12 — Accepted OpenCode integration ids and tolerant credential shapes
+
+**Decision**: Credentials count when the `integration_id` starts with
+`opencode` (SQLite `GLOB 'opencode*'`, case-sensitive), ordered exactly
+`opencode-go` first, then `opencode`, then any other `opencode*` id — with
+active rows before inactive ones and newest `time_updated` first inside a
+tier, for both resolution and listing. Credential values (database rows and
+legacy `auth.json` entries) tolerate one `value` wrapper around the
+credential object; the token is `access` (oauth) or `key` (api key), `type`
+is optional, and a sane ms-epoch `expires` still gates expiry. Legacy
+`auth.json` keys follow the same id set and preference order, with trailing
+`/` trimmed.
+
+**Why**: OpenCode v2 owns more than one OpenCode integration — `opencode-go`
+ranks above `opencode` inside OpenCode itself — and field report 6 showed a
+logged-in OpenCode whose login the reader missed. Reading a single id and a
+single payload shape produced "No OpenCode login found" for a connected
+account; the meter must detect the login the user actually has.
+
+**Where**: `core/ocgo/creds.py`.
+
 ## Template
 
 ```markdown
