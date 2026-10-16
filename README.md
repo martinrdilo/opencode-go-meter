@@ -117,6 +117,8 @@ ocgo account remove work                           # remove an account
 - Requests go only to `opencode.ai`; the cache holds usage and credit numbers
   only.
 
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
 ## Development
 
 ```bash
@@ -125,6 +127,9 @@ make check-gnome     # GNOME extension static checks
 make check-cinnamon  # Cinnamon applet static checks
 make deps            # dependency check (also run by the installers)
 ```
+
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup, the checks,
+and the conventions.
 
 See [AGENTS.md](AGENTS.md) for the agent-facing map and non-negotiables, and
 [docs/01-architecture.md](docs/01-architecture.md) for the design.
