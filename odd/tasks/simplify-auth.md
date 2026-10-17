@@ -1,6 +1,6 @@
 # Feature: simplify-auth — single-account auto-detection, simple API-key fallback, and removal of credits/multi-account machinery
 
-**Status**: PLANNED — ready for task-by-task implementation (`T1`–`T5`).
+**Status**: IMPLEMENTED — all tasks (`T1`–`T5`) complete on `refactor/simplify-auth` (9 commits ahead of `origin/main`); push + PR pending user decision.
 **Repo**: `opencode-go-meter`
 **Branch**: `refactor/simplify-auth` (from `main` @ `6098125`)
 **Created**: 2026-10-17
@@ -151,8 +151,8 @@ Out:
     - `cinnamon/applet.js`: remove `CREDITS_ROWS`, `_renderCredits`, `creditValueMarkup`, `dollarsText`, `creditsAmountText`, `creditsSuffix`, `autoRechargeValue`, `parseAccountList`, `parseDiscoverJson`, login terminal spawner, credential picker, and multi-account menu/state (~1,400 lines). Monitor only `$XDG_CACHE_HOME/ocgo/status.json`. Wire `opencode-data-dir` change handler to `ocgo auth set-data-dir` / `ocgo auth clear-data-dir` + `_triggerRefresh()`, and wire the API-key buttons to `ocgo auth set-key --stdin` / `ocgo auth clear-key` + `_triggerRefresh()`.
   - Verification: `make check-cinnamon`, `make check-gnome`, `make test`.
 
-- [ ] **T5 — scripts & docs: align `install-deps.sh`, `AGENTS.md`, `README.md`, `docs/01`–`05`, and `skills/project-conventions/SKILL.md`.**
-  - Route: delegated writer (writer trigger: 9 files).
+- [x] **T5 — scripts & docs: align `install-deps.sh`, `AGENTS.md`, `README.md`, `docs/01`–`05`, and `skills/project-conventions/SKILL.md`.**
+  - Route: delegated writer (writer trigger: 9 files). Done 2026-10-17, commit `df21961` (219+/277-): D13 recorded (supersedes D3/D4-per-account/D7); architecture, CLI, frontends, testing, README, AGENTS and the skill rewritten to the single-credential model; `install-deps.sh` trimmed (no `secret-tool`/login `opencode` checks); README screenshot references removed (stale UI — see SOP-1). `make test` + both checks + `make pack` green.
   - Files (`Allowed edit surfaces`):
     - `scripts/install-deps.sh`
     - `AGENTS.md`
@@ -200,6 +200,12 @@ Out:
 - 2026-10-17 — `T1` done (commit `dc9015b`): credits/billing surface removed from the core; suite 478 → 422 tests, all green.
 - 2026-10-17 — `T2` done (commit `6a8af1a`): multi-account registry deleted; single-credential detection + `Credential.kind` routing + `api.key` fallback + configurable data dir; suite 422 → 235 tests, all green; live refresh OK (`kind: api` → zen).
 - 2026-10-17 — `T3` + `T4` done in parallel (commits `a398ece`, `6b7d90d`): GNOME and Cinnamon reduced to the single-cache/3-windows surface with Credentials preferences; `accounts-window.js` deleted; all three checks green.
+- 2026-10-17 — `T5` done (commit `df21961`): references aligned to the single-credential model; D13 recorded; `make pack` green. All tasks complete.
+
+## Follow-ups (out of T1–T5 scope)
+
+- **SOP-1**: regenerate `docs/screenshots/gnome-popup.png` and `gnome-preferences.png` for the new UI (the stale image references were removed from `README.md`).
+- Delivery: the branch is local (`refactor/simplify-auth`, 9 commits ahead of `origin/main`); push + PR remain the user's decision under ordinary repository policy.
 
 ## Next step
 
