@@ -90,30 +90,6 @@ def live_payload() -> dict:
     }
 
 
-def billing_status_payload() -> dict:
-    """The live billing/status capture (odd/tasks/credits-panel.md, 2026-10-10)."""
-    return {
-        "billingMode": "prepaid",
-        "mode": "pay-as-you-go",
-        "balanceMicroCents": "312600514",
-        "creditLimitMicroCents": None,
-        "availableMicroCents": "312600514",
-        "canPurchaseCredits": True,
-        "canEnableAutoRecharge": True,
-    }
-
-
-def auto_recharge_payload() -> dict:
-    """The live billing/auto-recharge capture (2026-10-10)."""
-    return {
-        "enabled": False,
-        "thresholdDollars": 5,
-        "rechargeAmountDollars": 20,
-        "pending": False,
-        "failureReason": None,
-    }
-
-
 class CliTestCase(unittest.TestCase):
     def setUp(self):
         # A leaked HTTPError fixture from another test can otherwise warn into
@@ -329,13 +305,9 @@ class RefreshTests(CliTestCase):
             mock.patch.object(
                 cli.creds, "resolve_credential", return_value=self._fake_credential()
             ),
-            mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
             mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ),
+                cli.api, "fetch_status", return_value=live_payload()
+            ) as fetch,
         ):
             code, out, err = run_cli(["refresh"])
         self.assertEqual(code, 0)
@@ -343,10 +315,12 @@ class RefreshTests(CliTestCase):
             "Refreshed OpenCode Go: rolling 2% · weekly 64% · monthly 58%", out
         )
         self.assertEqual(err, "")
+        fetch.assert_called_once_with(TOKEN)
         data = cache.load()
         self.assertEqual(data["windows"]["weekly"]["percent"], 64)
         self.assertEqual(data["windows"]["monthly"]["resets_at"], None)
-        self.assertEqual(data["credits"]["available_usd"], 3.126)
+        self.assertNotIn("credits", data)
+        self.assertNotIn("extra_usage", data)
         self.assertIsNone(data["last_error"])
         self.assertIsNotNone(fmt.parse_iso(data["fetched_at"]))
         self.assertNotIn(TOKEN, out + err)
@@ -1795,21 +1769,18 @@ class RefreshAccountTests(AccountCliTestCase):
             mock.patch.object(
                 cli.creds, "resolve_credential", return_value=self._credential()
             ),
-            mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
             mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ),
+                cli.api, "fetch_status", return_value=live_payload()
+            ) as fetch,
         ):
             code, out, err = run_cli(["refresh"])
         self.assertEqual(code, 0)
         self.assertEqual(
             out,
-            "Refreshed OpenCode Go: rolling 2% · weekly 64% · monthly 58% · $3.13\n",
+            "Refreshed OpenCode Go: rolling 2% · weekly 64% · monthly 58%\n",
         )
         self.assertEqual(err, "")
+        fetch.assert_called_once_with("console-token-abcdefgh")
         self.assertIsNotNone(cache.load())
         self.assertFalse((self.tmp / "cache" / "ocgo" / "accounts").exists())
 
@@ -1838,12 +1809,6 @@ class RefreshAccountTests(AccountCliTestCase):
                 cli.creds, "resolve_credential", return_value=self._credential()
             ),
             mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ),
         ):
             code, out, _err = run_cli(["refresh", "--account", "default"])
         self.assertEqual(code, 0)
@@ -1957,12 +1922,6 @@ class RefreshAccountTests(AccountCliTestCase):
                 cli.creds, "resolve_credential", return_value=self._credential()
             ),
             mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ),
             mock.patch.object(cli.api, "fetch_zen_status", side_effect=zen),
         ):
             code, out, err = run_cli(["refresh", "--all"])
@@ -2001,12 +1960,6 @@ class PinnedRefreshTests(AccountCliTestCase):
                 cli.creds, "resolve_credential", return_value=self._credential()
             ) as resolve,
             mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ),
         ):
             code, out, err = run_cli(["refresh", "--account", "pin"])
         self.assertEqual(code, 0)
@@ -2040,12 +1993,6 @@ class PinnedRefreshTests(AccountCliTestCase):
             mock.patch.object(
                 cli.api, "fetch_status", return_value=live_payload()
             ) as fetch,
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ),
         ):
             code, _out, err = run_cli(["refresh", "--account", "pin"])
         self.assertEqual(code, 0)
@@ -2108,12 +2055,6 @@ class PinnedRefreshTests(AccountCliTestCase):
             mock.patch.object(
                 cli.api, "fetch_status", return_value=live_payload()
             ) as fetch,
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ),
         ):
             code, out, err = run_cli(["refresh", "--all"])
         self.assertEqual(code, 1)
@@ -2121,115 +2062,6 @@ class PinnedRefreshTests(AccountCliTestCase):
         self.assertIn("account 'pin':", err)
         self.assertIn("no longer exists", err)
         fetch.assert_called_once_with("token-active-1")
-
-
-class CreditsRefreshTests(AccountCliTestCase):
-    def _credential(self):
-        return creds.Credential(token="console-token-abcdefgh", source="test")
-
-    def test_db_refresh_caches_credits_and_summary_suffix(self):
-        self._isolate(login=True)
-        with (
-            mock.patch.object(
-                cli.creds, "resolve_credential", return_value=self._credential()
-            ),
-            mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ) as billing,
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ) as auto,
-        ):
-            code, out, err = run_cli(["refresh"])
-        self.assertEqual(code, 0)
-        self.assertEqual(err, "")
-        self.assertIn("rolling 2% · weekly 64% · monthly 58% · $3.13", out)
-        billing.assert_called_once_with("console-token-abcdefgh")
-        auto.assert_called_once_with("console-token-abcdefgh")
-        data = cache.load()
-        self.assertEqual(
-            data["credits"],
-            {
-                "available_usd": 3.126,
-                "state": "low",
-                "billing_mode": "prepaid",
-                "auto_recharge": {
-                    "enabled": False,
-                    "threshold_usd": 5.0,
-                    "amount_usd": 20.0,
-                    "pending": False,
-                    "failed": False,
-                },
-            },
-        )
-        self.assertIs(data["extra_usage"], True)
-        self.assertIsNone(data["last_error"])
-
-    def test_billing_failure_never_fails_the_refresh(self):
-        self._isolate(login=True)
-        error = api.ApiError(
-            "billing request rejected (HTTP 403) — credits are available only "
-            "for the OpenCode login account"
-        )
-        with (
-            mock.patch.object(
-                cli.creds, "resolve_credential", return_value=self._credential()
-            ),
-            mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
-            mock.patch.object(cli.api, "fetch_billing_status", side_effect=error),
-            mock.patch.object(cli.api, "fetch_auto_recharge") as auto,
-        ):
-            code, out, err = run_cli(["refresh"])
-        self.assertEqual(code, 0)
-        self.assertEqual(err, "")
-        self.assertNotIn("$", out)
-        auto.assert_not_called()
-        data = cache.load()
-        self.assertEqual(data["credits"], {"error": str(error)})
-        self.assertIsNone(data["last_error"])
-        self.assertEqual(data["windows"]["weekly"]["percent"], 64)
-
-    def test_auto_recharge_failure_keeps_the_balance(self):
-        self._isolate(login=True)
-        with (
-            mock.patch.object(
-                cli.creds, "resolve_credential", return_value=self._credential()
-            ),
-            mock.patch.object(cli.api, "fetch_status", return_value=live_payload()),
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ),
-            mock.patch.object(
-                cli.api,
-                "fetch_auto_recharge",
-                side_effect=api.ApiError("network error contacting opencode.ai: boom"),
-            ),
-        ):
-            code, out, err = run_cli(["refresh"])
-        self.assertEqual(code, 0)
-        self.assertEqual(err, "")
-        self.assertIn("· $3.13", out)
-        data = cache.load()
-        self.assertEqual(data["credits"]["state"], "low")
-        self.assertIsNone(data["credits"]["auto_recharge"])
-
-    def test_api_key_refresh_does_not_touch_billing(self):
-        self._isolate()
-        self._seed_account("work")
-        accounts.set_active("work")
-        with (
-            mock.patch.object(cli.api, "fetch_zen_status", return_value=zen_payload()),
-            mock.patch.object(cli.api, "fetch_billing_status") as billing,
-            mock.patch.object(cli.api, "fetch_auto_recharge") as auto,
-        ):
-            code, _out, _err = run_cli(["refresh"])
-        self.assertEqual(code, 0)
-        billing.assert_not_called()
-        auto.assert_not_called()
-        data = cache.load(cache.cache_path("work"))
-        self.assertIsNone(data["credits"])
-        self.assertIsNone(data["extra_usage"])
 
 
 class StatusAccountTests(AccountCliTestCase):
@@ -2288,97 +2120,6 @@ class StatusAccountTests(AccountCliTestCase):
         code, out, err = run_cli(["status", "--no-color"])
         self.assertEqual(code, 0)
         self.assertIn("Rolling usage    2%", out)
-        self.assertEqual(err, "")
-
-
-class CreditsStatusTests(CliTestCase):
-    def _save_credits(self, credits):
-        data = good_cache_data()
-        data["credits"] = credits
-        cache.save(data)
-
-    def test_low_state_row(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits(
-            {"available_usd": 3.126, "state": "low", "billing_mode": "prepaid"}
-        )
-        code, out, err = run_cli(["status", "--no-color"])
-        self.assertEqual(code, 0)
-        self.assertIn("Credits        $3.13   Running low", out)
-        self.assertEqual(err, "")
-
-    def test_ok_state_row_has_no_suffix(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits(
-            {"available_usd": 12.5, "state": "ok", "billing_mode": "prepaid"}
-        )
-        code, out, _err = run_cli(["status", "--no-color"])
-        self.assertEqual(code, 0)
-        line = next(line for line in out.splitlines() if line.startswith("Credits"))
-        self.assertEqual(line, "Credits        $12.50")
-
-    def test_empty_state_row(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits(
-            {"available_usd": 0.0, "state": "empty", "billing_mode": "prepaid"}
-        )
-        code, out, _err = run_cli(["status", "--no-color"])
-        self.assertEqual(code, 0)
-        self.assertIn("Credits        $0.00   No credits left", out)
-
-    def test_error_row(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits({"error": "billing request rejected (HTTP 403)"})
-        code, out, _err = run_cli(["status", "--no-color"])
-        self.assertEqual(code, 0)
-        self.assertIn("Credits        n/a   unavailable", out)
-        self.assertNotIn("HTTP 403", out)
-
-    def test_no_credits_key_means_no_row(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        cache.save(good_cache_data())
-        code, out, _err = run_cli(["status", "--no-color"])
-        self.assertEqual(code, 0)
-        self.assertNotIn("Credits", out)
-
-    def test_null_credits_means_no_row(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits(None)
-        code, out, _err = run_cli(["status", "--no-color"])
-        self.assertEqual(code, 0)
-        self.assertNotIn("Credits", out)
-
-    def test_low_row_is_amber_on_a_tty(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits({"available_usd": 3.126, "state": "low"})
-        out = TtyStream()
-        with mock.patch.object(cli.sys, "stdout", out):
-            code = cli.main(["status"])
-        self.assertEqual(code, 0)
-        self.assertIn(
-            "\x1b[33mCredits        $3.13   Running low\x1b[0m", out.getvalue()
-        )
-
-    def test_empty_row_is_red_on_a_tty(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits({"available_usd": 0.0, "state": "empty"})
-        out = TtyStream()
-        with mock.patch.object(cli.sys, "stdout", out):
-            code = cli.main(["status"])
-        self.assertEqual(code, 0)
-        self.assertIn(
-            "\x1b[31mCredits        $0.00   No credits left\x1b[0m", out.getvalue()
-        )
-
-    def test_json_stays_verbatim_with_credits(self):
-        self._env(XDG_CACHE_HOME=str(self.tmp), OCGO_TOKEN=TOKEN)
-        self._save_credits(
-            {"available_usd": 3.126, "state": "low", "billing_mode": "prepaid"}
-        )
-        raw = cache.cache_path().read_text(encoding="utf-8")
-        code, out, err = run_cli(["status", "--json"])
-        self.assertEqual(code, 0)
-        self.assertEqual(out, raw)
         self.assertEqual(err, "")
 
 
@@ -2536,20 +2277,12 @@ class DbKindTests(AccountCliTestCase):
             mock.patch.object(
                 cli.api, "fetch_status", return_value=live_payload()
             ) as fetch,
-            mock.patch.object(
-                cli.api, "fetch_billing_status", return_value=billing_status_payload()
-            ) as billing,
-            mock.patch.object(
-                cli.api, "fetch_auto_recharge", return_value=auto_recharge_payload()
-            ) as auto,
             mock.patch.object(cli.api, "fetch_zen_status") as zen,
         ):
             code, out, _err = run_cli(["refresh", "--account", "login"])
         self.assertEqual(code, 0)
         resolve.assert_called_once_with(credential_id=None)
         fetch.assert_called_once_with("console-token-abcdefgh")
-        billing.assert_called_once_with("console-token-abcdefgh")
-        auto.assert_called_once_with("console-token-abcdefgh")
         zen.assert_not_called()
         self.assertIn("Refreshed OpenCode Go (login):", out)
         self.assertIsNotNone(cache.load(cache.cache_path("login")))

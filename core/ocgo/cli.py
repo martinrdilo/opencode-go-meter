@@ -180,15 +180,6 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
             ).token
             payload = api.fetch_status(token)
             data = api.to_cache_schema(payload, now=now)
-            try:
-                billing = api.fetch_billing_status(token)
-                try:
-                    auto = api.fetch_auto_recharge(token)
-                except api.ApiError:
-                    auto = None
-                data["credits"] = api.credits_from_billing(billing, auto)
-            except api.ApiError as exc:
-                data["credits"] = {"error": str(exc)}
         else:
             token = accounts.read_secret(account.id)
             payload = api.fetch_zen_status(token)
@@ -207,7 +198,7 @@ def _refresh_one(account: accounts.Account) -> tuple[bool, str]:
         cache.save(data, path)
     except OSError as exc:
         return False, f"could not write the cache: {exc}"
-    return True, _summary(data["windows"], data.get("credits"))
+    return True, _summary(data["windows"])
 
 
 def _find_account(account_id: str | None) -> accounts.Account:
@@ -263,13 +254,6 @@ def cmd_status(args: argparse.Namespace) -> int:
         target = _window_target(name, window, data)
         remaining = "n/a" if target is None else fmt.countdown(now, target)
         row = f"{label:<{WINDOW_WIDTH}}{pct_text}   Resets in {remaining}"
-        if colors and color is not None:
-            row = f"{ANSI_COLORS[color]}{row}{ANSI_RESET}"
-        print(row)
-
-    credits = data.get("credits")
-    if isinstance(credits, dict):
-        row, color = _credits_row(credits)
         if colors and color is not None:
             row = f"{ANSI_COLORS[color]}{row}{ANSI_RESET}"
         print(row)
@@ -687,38 +671,12 @@ def _window_target(name: str, window: dict, data: dict):
     return fmt.parse_iso(window.get("resets_at"))
 
 
-def _summary(windows: dict, credits: dict | None = None) -> str:
+def _summary(windows: dict) -> str:
     parts = []
     for name, _label in WINDOW_LABELS:
         value = (windows.get(name) or {}).get("percent")
         parts.append(f"{name} {value}%" if isinstance(value, int) else f"{name} n/a")
-    if isinstance(credits, dict):
-        available = credits.get("available_usd")
-        if isinstance(available, (int, float)) and not isinstance(available, bool):
-            parts.append(f"${available:.2f}")
     return " · ".join(parts)
-
-
-def _credits_row(credits: dict) -> tuple[str, str | None]:
-    """Credits row text and color name, mirroring the window row layout."""
-    if "error" in credits:
-        value, suffix, color = "n/a", "unavailable", None
-    else:
-        available = credits.get("available_usd")
-        if isinstance(available, bool) or not isinstance(available, (int, float)):
-            available = None
-        value = f"${available:.2f}" if available is not None else "n/a"
-        state = credits.get("state")
-        if state == "low":
-            suffix, color = "Running low", fmt.AMBER
-        elif state == "empty":
-            suffix, color = "No credits left", fmt.RED
-        else:
-            suffix, color = "", None
-    row = f"{'Credits':<{WINDOW_WIDTH}}{value}"
-    if suffix:
-        row = f"{row}   {suffix}"
-    return row, color
 
 
 def _record_refresh_failure(
