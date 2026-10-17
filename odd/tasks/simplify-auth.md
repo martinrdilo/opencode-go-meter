@@ -1,6 +1,6 @@
 # Feature: simplify-auth — single-account auto-detection, simple API-key fallback, and removal of credits/multi-account machinery
 
-**Status**: IMPLEMENTED — all tasks (`T1`–`T5`) complete on `refactor/simplify-auth` (9 commits ahead of `origin/main`); push + PR pending user decision.
+**Status**: MERGED — PR #16 (`ad35596`) on 2026-10-17; branch `refactor/simplify-auth` kept on origin (repo precedent). CI green on push and pull_request.
 **Repo**: `opencode-go-meter`
 **Branch**: `refactor/simplify-auth` (from `main` @ `6098125`)
 **Created**: 2026-10-17
@@ -201,12 +201,13 @@ Out:
 - 2026-10-17 — `T2` done (commit `6a8af1a`): multi-account registry deleted; single-credential detection + `Credential.kind` routing + `api.key` fallback + configurable data dir; suite 422 → 235 tests, all green; live refresh OK (`kind: api` → zen).
 - 2026-10-17 — `T3` + `T4` done in parallel (commits `a398ece`, `6b7d90d`): GNOME and Cinnamon reduced to the single-cache/3-windows surface with Credentials preferences; `accounts-window.js` deleted; all three checks green.
 - 2026-10-17 — `T5` done (commit `df21961`): references aligned to the single-credential model; D13 recorded; `make pack` green. All tasks complete.
+- 2026-10-17 — DELIVERED: pushed `refactor/simplify-auth`, opened PR #16 (repo template + `enhancement` label), CI green on push and pull_request, merged with a merge commit (`ad35596`) on user instruction; branch kept on origin.
 
 ## Follow-ups (out of T1–T5 scope)
 
 - **SOP-1**: regenerate `docs/screenshots/gnome-popup.png` and `gnome-preferences.png` for the new UI (the stale image references were removed from `README.md`).
-- Delivery: the branch is local (`refactor/simplify-auth`, 9 commits ahead of `origin/main`); push + PR remain the user's decision under ordinary repository policy.
+- Delivery: MERGED — PR #16 (`ad35596`) landed on `main` on 2026-10-17.
 
 ## Next step
 
-Confirm delivery strategy (`single-pr` with `size:exception` vs `stacked-to-main`), then execute `T1` through `T5` in order, committing each task as a self-contained work unit after `make test`, `make check-gnome`, and `make check-cinnamon` pass.
+Feature closed. Optional follow-ups: SOP-1 (README screenshots) and a field-machine re-check of the new auto-detection flow on Mint/Cinnamon.
