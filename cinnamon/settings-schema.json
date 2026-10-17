@@ -13,41 +13,38 @@
         "description": "Refresh interval",
         "tooltip": "How often the applet refreshes usage data."
     },
-    "show-credits": {
-        "type": "checkbox",
-        "default": false,
-        "description": "Show credits",
-        "tooltip": "Show the credits balance, extra usage, and auto-recharge in the popup (OpenCode login accounts only)."
-    },
-    "section2": {
+    "credentials": {
         "type": "section",
-        "description": "Accounts"
+        "description": "Credentials"
     },
-    "active-account": {
-        "type": "combobox",
+    "opencode-data-dir": {
+        "type": "entry",
         "default": "",
-        "options": {
-            "No accounts": ""
-        },
-        "description": "Active account",
-        "tooltip": "The account the meter shows; selecting one switches the meter to it."
+        "description": "OpenCode data directory (empty = auto-detect ~/.local/share/opencode)",
+        "tooltip": "The directory where OpenCode stores its credentials (opencode.db / auth.json). Leave empty to auto-detect ~/.local/share/opencode, then apply the value with the button below."
     },
-    "accounts-apply-button": {
+    "set-data-dir-button": {
         "type": "button",
-        "description": "Add / replace key…",
-        "callback": "on_accounts_apply",
-        "tooltip": "Add an API-key account, or replace the key of an existing one. The key is verified with OpenCode and never stored in the applet settings."
+        "description": "Apply the directory above",
+        "callback": "on_set_data_dir",
+        "tooltip": "Use this OpenCode data directory. The meter's helper stores it; the applet itself never reads credentials."
     },
-    "accounts-remove-button": {
+    "clear-data-dir-button": {
         "type": "button",
-        "description": "Remove account…",
-        "callback": "on_accounts_remove",
-        "tooltip": "Remove the account selected above. Removing an API-key account also deletes its stored key."
+        "description": "Reset to auto-detect",
+        "callback": "on_clear_data_dir",
+        "tooltip": "Clear the stored OpenCode data directory and go back to auto-detection."
     },
-    "accounts-activate-button": {
+    "set-api-key-button": {
         "type": "button",
-        "description": "Use the selected login in OpenCode…",
-        "callback": "on_accounts_activate",
-        "tooltip": "Point OpenCode itself at the selected pinned OpenCode login, so new OpenCode sessions use it. Only pinned OpenCode logins are eligible; anything else opens a short explainer."
+        "description": "Store fallback API key…",
+        "callback": "on_set_api_key",
+        "tooltip": "Store a fallback API key, used only while no local OpenCode login is available. The key is verified with OpenCode and never stored in the applet settings."
+    },
+    "clear-api-key-button": {
+        "type": "button",
+        "description": "Remove stored API key",
+        "callback": "on_clear_api_key",
+        "tooltip": "Remove the stored fallback API key."
     }
 }
