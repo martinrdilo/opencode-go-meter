@@ -6,8 +6,6 @@ OpenCode Go subscription usage in your panel — rolling 5-hour, weekly, and
 monthly meters, always visible. A GNOME Shell extension and a Cinnamon applet,
 backed by one portable Python core.
 
-![OpenCode Go meters in the GNOME top bar and popup](docs/screenshots/gnome-popup.png)
-
 ## Quick start
 
 ### GNOME Shell
@@ -33,11 +31,6 @@ make install-cinnamon
 Then right-click the panel → **Add applets to the panel** → **OpenCode Go
 Meter**. The applet supports Cinnamon 5.4 and newer (Linux Mint 21 and up).
 
-If the applet reports **OpenCode was not found** when you press *Log in with
-OpenCode…*, the desktop session cannot see your OpenCode install. Install
-OpenCode for that user, or run `opencode auth login` in a terminal where
-`opencode` works, then press Refresh in the applet.
-
 Uninstall with `make uninstall` / `make uninstall-cinnamon` — they remove only
 links pointing into this repository.
 
@@ -46,12 +39,6 @@ links pointing into this repository.
 Both installers run a dependency check first:
 
 - **python3 3.10+** — required.
-- **libsecret-tools** — optional (the OS keyring). Without it the app stores
-  API keys in a private local file that only your user can read. When it is
-  missing, the check offers to install it with your consent; that is the only
-  step that may ask for sudo.
-- **OpenCode CLI** — optional; only the *Log in with OpenCode…* button needs
-  it. Install from https://opencode.ai.
 - **glib-compile-schemas** (`libglib2.0-bin` on Mint/Ubuntu) — needed by
   `make install` to compile the GNOME schema.
 
@@ -66,56 +53,54 @@ at 85% and above.
 
 Click the indicator for the popup: each window with its reset countdown, the
 subscription renewal date in the header, and a manual refresh with the time of
-the last update. When the shown account is an OpenCode login, the popup can
-also mirror the console's credits panel — the balance with its console state
-(`Running low` under $5, `No credits left` at zero), the extra-usage switch,
-and the auto-recharge state. Show or hide the section in the settings (GNOME:
-Preferences → Popup → Show credits; Cinnamon: applet settings → Show credits).
+the last update. The popup shows the three Go usage windows only; the
+console's credits and auto-recharge panel is not mirrored.
 
 In the terminal, `ocgo status` prints the same view and `ocgo refresh` updates
 it now. When a refresh fails, the panel keeps the last good values and the
 popup explains the error — nothing is invented.
 
-## Accounts
+## Credentials
 
-A fresh install starts from what OpenCode already has: a stored login seeds the
-`default` account and the meter works immediately. With API keys only, the app
-starts with an explicit empty state and you add accounts from the settings or
-the CLI. Accounts are OpenCode logins (`ocgo account discover` lists the stored
-ones) or API keys from the OpenCode console (`oc_sk_…`). A login account is
-**auto** — it follows the credential that `opencode auth switch` marks active —
-or **pinned** to one stored login; every account shows its own meters and
-credits.
+The meter works zero-config: it reads the OpenCode login already on your
+machine from OpenCode's local store (`~/.local/share/opencode/opencode.db`,
+falling back to the legacy `auth.json`) and refreshes usage from it. An
+OpenCode login is read in read-only mode and drives the console status
+endpoint; an API key stored by OpenCode drives the Zen usage endpoint.
+`OCGO_DATA_DIR`, or a configured data directory, points the meter at a store
+kept elsewhere.
+
+When no usable OpenCode login is present, you can store a single fallback API
+key. `ocgo auth` covers both cases:
 
 ```bash
-ocgo account list                                  # accounts and the active one
-ocgo account add personal --from-db                # register the auto login (only one auto login is allowed)
-ocgo account add work --from-db --credential Work  # pin a stored login
-ocgo account add temp --label "Temp"               # register an API key (prompted hidden)
-ocgo account use work                              # switch the account shown by the app
-ocgo account remove work                           # remove an account
+ocgo auth show                            # credential source and store status
+ocgo auth set-data-dir ~/opencode-data    # use a custom OpenCode data directory
+ocgo auth clear-data-dir                  # back to auto-detection
+ocgo auth set-key --stdin                 # read the fallback API key from stdin
+ocgo auth clear-key                       # remove the stored fallback API key
 ```
 
-- Replace or rotate a key — or convert a login into an API key — with
-  `ocgo account set-key <id>`.
-- Stored logins stay valid for about a month; one OpenCode has not used for
-  that long shows as expired until it is used again — make it active
-  (`ocgo account activate-in-opencode <id>`) and use OpenCode once.
-- API-key accounts show the meters only: the console API rejects API keys for
-  billing (HTTP 403). To see credits, keep an OpenCode login as the shown
-  account.
+`ocgo auth set-key` verifies the key with OpenCode first and then stores it in
+`~/.config/ocgo/api.key` with `0600` permissions; the key is used only while
+the local store has no usable credential. The GNOME preferences and the
+Cinnamon applet settings expose the same actions, and the key always travels
+to the CLI over stdin. On a terminal, `ocgo auth set-key` prompts for it
+hidden.
 
-![Managing accounts in the GNOME extension preferences](docs/screenshots/gnome-preferences.png)
+OpenCode logins carry their own expiry. When the stored login has expired the
+meter reports it and waits: use OpenCode once so it refreshes its login, then
+press Refresh.
 
 ## Security
 
 - Credentials are handled only by `ocgo`: the OpenCode login is read from
-  OpenCode's local stores in read-only mode; API keys live in the OS keyring
-  (0600 file fallback) — never in logs, argv, or the usage cache.
+  OpenCode's local stores in read-only mode, and the fallback API key lives in
+  a private `0600` file under `~/.config/ocgo` — never in logs, argv, or the
+  usage cache.
 - The GNOME and Cinnamon frontends never touch credentials: they read the usage
-  cache and run the CLI.
-- Requests go only to `opencode.ai`; the cache holds usage and credit numbers
-  only.
+  cache and run the CLI. The API key travels to the CLI over stdin only.
+- Requests go only to `opencode.ai`; the cache holds usage numbers only.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 

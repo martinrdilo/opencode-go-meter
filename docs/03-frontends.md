@@ -27,23 +27,19 @@ constants of the core, see
 [technical decisions](05-technical-decisions.md)).
 
 **Panel.** `5h 42% · 7d 64% · 30d 88%`. Without a cache the GNOME extension
-shows the explicit empty label `Go —`; the Cinnamon applet shows `—` when no
-account is active and `5h — · 7d — · 30d —` with an account but no cache yet.
+shows the explicit empty label `Go —`; the Cinnamon applet shows
+`5h — · 7d — · 30d —`.
 
-**Popup.** The header names the account and the subscription renewal date
-(`OpenCode Go — Renews Nov 1`, or `OpenCode Go · Work — Renews Nov 1` for a
-named account). Below it: a warning row when the last refresh failed
-(`Last refresh failed: … · data from <ago>`), then one row per window —
+**Popup.** The header names the subscription and the renewal date
+(`OpenCode Go — Renews Nov 1`). Below it: a warning row when the last refresh
+failed (`Last refresh failed: … · data from <ago>`), then one row per window —
 `Rolling usage`, `Weekly usage`, `Monthly usage` — each with its percent and a
-`Resets in …` countdown. When credits are enabled and present: `Credits`,
-`Extra usage` (On/Off), and `Auto-recharge` rows; a low balance reads
-`Running low` (amber), a zero balance `No credits left` (red), and a recorded
-billing error `Unavailable`. An Account submenu switches accounts. The footer
-shows when the cache was last updated and hosts the manual refresh.
+`Resets in …` countdown. The footer shows when the cache was last updated and
+hosts the manual refresh.
 
 The Cinnamon applet additionally mirrors the header, update age, and last error
-into its panel tooltip, and its account dialog offers making a pinned login the
-credential OpenCode itself uses.
+into its panel tooltip; a failed credential command adds a `Credentials: …`
+line there.
 
 ## GNOME settings
 
@@ -55,11 +51,15 @@ Schema: `gnome/schemas/org.gnome.shell.extensions.opencode-go-meter.gschema.xml`
 | `refresh-interval` | int | 300 | 60–86400 (seconds) | Refresh interval (seconds) |
 | `panel-box` | string | `right` | `left`, `center`, `right` (unknown values fall back to `right`) | Panel → Zone |
 | `panel-position` | int | 0 | -1–30; -1 appends last | Panel → Order in the zone |
-| `show-credits` | bool | false | — | Popup → Show credits |
 
-The preferences page also carries the Accounts group: the active account
-picker, `Remove account`, `Make active in OpenCode`, and the add/replace form
-(account id, label, type, OpenCode credential, API key).
+The preferences page also carries the **Credentials** group: a status row that
+runs `ocgo auth show --json` to show the resolved source (or the explicit
+no-login text) with a `Refresh status` button, an `OpenCode data directory`
+entry with `Apply` / `Reset` (`ocgo auth set-data-dir` / `clear-data-dir`),
+and a `Fallback API key` password row with `Save` / `Clear` (`ocgo auth
+set-key --stdin` / `clear-key`). The key travels over the subprocess stdin
+pipe only; after every successful action the group re-reads the status and
+runs a best-effort `ocgo refresh`.
 
 ## Cinnamon settings
 
@@ -69,28 +69,28 @@ settings framework.
 | Key | Type | Default | Range / values |
 |-----|------|---------|----------------|
 | `refresh-interval` | spinbutton | 300 | 30–3600, step 30 (seconds) |
-| `show-credits` | checkbox | false | — |
-| `active-account` | combobox | `""` (No accounts) | Options come from the CLI's account list |
-| `accounts-apply-button` | button | — | Add / replace key… |
-| `accounts-remove-button` | button | — | Remove account… |
-| `accounts-activate-button` | button | — | Use the selected login in OpenCode… |
+| `opencode-data-dir` | entry | `""` | OpenCode credentials directory; empty = auto-detect `~/.local/share/opencode` |
+| `set-data-dir-button` | button | — | Apply the directory above (`ocgo auth set-data-dir`) |
+| `clear-data-dir-button` | button | — | Reset to auto-detect (`ocgo auth clear-data-dir`) |
+| `set-api-key-button` | button | — | Store fallback API key… (`ocgo auth set-key --stdin`) |
+| `clear-api-key-button` | button | — | Remove stored API key (`ocgo auth clear-key`) |
 
-The buttons run dialog flows backed by `ocgo`; the applet stores no secrets in
-its settings.
+The API-key button opens a minimal single-field modal: the key is typed into a
+masked entry, piped to the helper over stdin only, and cleared from the entry
+after the command. Successful credential commands re-read the display and
+trigger a refresh; the applet stores no secrets in its settings.
 
 ## Cinnamon 5.4 vs 6.4
 
 The applet supports both the oldest release and current Cinnamon, so it carries
 explicit compatibility measures:
 
-- A local `MessageContent` component replaces `imports.ui.dialog`, which only
-  exists from Cinnamon 6.4.
+- A local `MessageContent` factory replaces `imports.ui.dialog`, which only
+  exists from Cinnamon 6.4, and adds the label classes the 5.4 theme styles.
 - Box spacing is set through the inner `Clutter.BoxLayout`, because
   `St.BoxLayout` exposes no `spacing` property on 5.4 or 6.4.
 - On close, the dialog is destroyed explicitly when the 6.4 auto-destroy is not
   in play, so 5.4 (where `close()` only hides) does not leak the hidden actor.
-- Dialog buttons carry both theme classes (`dialog-button` and
-  `modal-dialog-button`).
 
 `make check-cinnamon` guards the import allowlist; see [testing](04-testing.md).
 
@@ -113,8 +113,10 @@ explicit compatibility measures:
 - **Meter stays empty.** Both frontends look for `ocgo` at `~/.local/bin/ocgo`
   first and then on `PATH`; when it is missing they log `ocgo not found` and
   keep the last values. Install it with `make install`.
-- **Credits missing.** Credits need an OpenCode login account (API-key accounts
-  have no billing access) and the `show-credits` setting enabled.
+- **No OpenCode login found.** Configure a fallback API key in the Credentials
+  settings, or point the meter at the right OpenCode data directory;
+  `ocgo auth show` reports what the core sees
+  ([CLI reference](02-cli-reference.md)).
 
 ## Related
 

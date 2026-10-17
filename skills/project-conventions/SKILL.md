@@ -16,7 +16,8 @@ Load before changing `core/`, `gnome/`, `cinnamon/`, `docs/`, `odd/tasks/`, the 
 Core:
 1. Python 3 standard library only; no new runtime or test dependencies.
 2. Sensitive logic stays in `core/ocgo/` (credentials, API calls, cache writes); secrets never reach argv, logs, cache, or frontends.
-3. Cache schema and accounts registry are versioned contracts: version shape changes, keep older versions readable.
+3. The cache JSON (schema 1) and the CLI surface are versioned contracts:
+   version shape changes, keep older versions readable.
 
 Frontends:
 4. GNOME and Cinnamon stay thin — read the cache JSON, run `ocgo`, render; no credential access, no direct API calls.
@@ -38,8 +39,8 @@ Docs and commits:
 |--------|--------|
 | New CLI command | `core/ocgo/cli.py` + tests in `core/tests/` |
 | New frontend | New top-level dir + Makefile targets; core unchanged |
-| Credential behavior | Core only (`core/ocgo/creds.py`, `accounts.py`) |
-| Cache/registry shape | Bump the contract version; keep consumers working |
+| Credential behavior | Core only (`core/ocgo/creds.py`, `core/ocgo/cli.py`) |
+| Cache/CLI shape | Bump the contract version; keep consumers working |
 | User-facing behavior | Update `README.md` |
 | New decision | Record it in `docs/05-technical-decisions.md` |
 

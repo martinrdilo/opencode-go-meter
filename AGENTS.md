@@ -29,7 +29,7 @@ only.
 - Core is Python 3, standard library only.
 - Credentials live only in the core; no secrets in logs, argv, cache, or frontends.
 - Frontends stay thin: read the cache, run `ocgo`, render.
-- Cache JSON and the accounts registry are versioned contracts.
+- Cache JSON (schema 1) and the CLI surface are versioned contracts.
 - Never invent values; empty and error states are explicit.
 - English artifacts, Conventional Commits, no AI attribution.
 

@@ -188,6 +188,38 @@ account; the meter must detect the login the user actually has.
 
 **Where**: `core/ocgo/creds.py`.
 
+### D13 — Single auto-detected credential with a stored fallback API key; no account registry, keyring, or billing surface
+
+**Decision**: The meter resolves exactly one credential, in order: the
+`OCGO_TOKEN` environment variable; the local OpenCode store (the database,
+then the legacy `auth.json`) under the effective OpenCode data directory
+(`OCGO_DATA_DIR`, else `opencode_data_dir` from
+`$XDG_CONFIG_HOME/ocgo/config.json`, else `$XDG_DATA_HOME/opencode`);
+finally a single fallback API key stored by `ocgo auth set-key` in
+`$XDG_CONFIG_HOME/ocgo/api.key` with `0600` permissions. `Credential.kind`
+routes the refresh — `oauth` tokens (the store `access`) to the console
+status endpoint, `api` tokens (the store `key` or the fallback file) to the
+zen usage endpoint. The cache is a single `$XDG_CACHE_HOME/ocgo/status.json`
+with the three usage windows. The accounts registry, per-account caches, the
+OS keyring integration, the GUI `opencode auth login` launcher, the stored
+credential pickers, and the OAuth-only credits / extra-usage / auto-recharge
+fetches and rows are gone.
+
+**Why**: The store read alone is zero-config and covers the common case;
+nearly all recurring Linux Mint / Cinnamon friction came from the account
+layer on top of it — `opencode` missing from the graphical session `PATH`,
+keyring prompts and fallback paths, and a 1,343-line accounts window
+duplicating applet helpers. The billing surface only worked for console OAuth
+tokens (API keys get HTTP 403), cost two extra requests per refresh, and
+added three UI rows; removing it treats an API key as a first-class
+credential instead of a second-class account.
+
+**Where**: `core/ocgo/creds.py`, `core/ocgo/cache.py`, `core/ocgo/cli.py`,
+`core/ocgo/api.py`, `gnome/prefs.js`, `cinnamon/applet.js`.
+
+**Supersedes**: D3 (keyring storage), D4 (per-account cache notes where
+applicable), D7 (accounts registry).
+
 ## Template
 
 ```markdown

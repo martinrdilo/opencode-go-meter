@@ -19,17 +19,16 @@ checks protect.
 
 ## Test layout
 
-`core/tests/` holds the whole suite: 459 tests, isolated from your real
+`core/tests/` holds the whole suite: 235 tests, isolated from your real
 environment and never hitting the network.
 
 | File | Tests | Focus |
 |------|-------|-------|
-| `core/tests/test_accounts.py` | 108 | Account ids, registry versions 1–3 and upgrades, account kinds, secret backends and move semantics, atomic writes. |
-| `core/tests/test_api.py` | 71 | HTTP transport (injected, never live), schema mapping, billing, zen usage. |
-| `core/tests/test_cache.py` | 18 | Cache paths, atomic IO, per-account removal. |
-| `core/tests/test_cli.py` | 160 | The parser surface and every command, TTY color behavior, error paths. |
-| `core/tests/test_creds.py` | 78 | Credential resolution order, pinned credentials, the legacy `auth.json`, token masking. |
-| `core/tests/test_format.py` | 24 | Pure helpers: percent, USD, countdown, credits state, ISO time. |
+| `core/tests/test_api.py` | 34 | HTTP transport (injected, never live), console and zen payload mapping to cache schema v1, entitlement handling. |
+| `core/tests/test_cache.py` | 12 | The single cache path, atomic IO, malformed-cache errors, the removed per-account surface. |
+| `core/tests/test_cli.py` | 52 | The parser surface and every command (`refresh`, `status`, `auth show/set-key/clear-key/set-data-dir/clear-data-dir`), TTY color behavior, error paths. |
+| `core/tests/test_creds.py` | 119 | Credential resolution order (env token, database, legacy `auth.json`, fallback key), `Credential.kind` detection, the configured and environment data directories, the `0600` `api.key` file, masking, store status. |
+| `core/tests/test_format.py` | 18 | Pure helpers: percent, USD, countdown, ISO time. |
 | `core/tests/_support.py` | — | Shared helpers (see below). |
 
 ## Conventions for new tests
@@ -38,8 +37,9 @@ environment and never hitting the network.
 - **Offline.** The HTTP transport is injected and mocked; a test must never
   open a network connection.
 - **Environment isolation.** Tests pin `XDG_*` and `OCGO_*` variables into
-  temporary directories; `secret-tool` is a fake script placed on a temporary
-  `PATH`; SQLite fixtures are temporary files.
+  temporary directories; SQLite fixtures are temporary files. No keyring or
+  external helper is involved — the fallback API key is a plain temporary
+  file.
 - **Temporary directories.** `_support.temp_dir()` prefers `/tmp/opencode`
   when it exists and falls back to the system temporary directory.
 - **Placement.** Tests belong with the behavior they verify, in the same

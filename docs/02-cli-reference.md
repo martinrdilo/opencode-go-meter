@@ -1,14 +1,14 @@
 # CLI reference
 
-`ocgo` resolves credentials, calls the OpenCode console API, and writes the
-cache the frontends read. This is the full command reference; install steps
-live in the [README](../README.md), the command headlines in
+`ocgo` resolves a single credential, calls the matching OpenCode API, and
+writes the cache the frontends read. This is the full command reference;
+install steps live in the [README](../README.md), the command headlines in
 [AGENTS.md](../AGENTS.md).
 
 ## Synopsis
 
 ```text
-ocgo [-h] [--version] {refresh,status,auth,account} ...
+ocgo [-h] [--version] {refresh,status,auth} ...
 ```
 
 The subcommand is required. `core/bin/ocgo` is the entry point; `make install`
@@ -28,39 +28,49 @@ links it into `~/.local/bin/ocgo`.
 (consumed use). Colors appear only when stdout is a terminal; `--no-color` or a
 non-empty `NO_COLOR` disables them.
 
+## Credential resolution
+
+Every command that needs a credential resolves it in one order:
+
+1. `OCGO_TOKEN` — a manual token, treated as `oauth`.
+2. The local OpenCode store under the effective data directory: the database
+   first (`opencode.db`), then the legacy `auth.json`. A stored credential is
+   `oauth` when it carries `access` and `api` when it carries `key`.
+3. The fallback API key at `$XDG_CONFIG_HOME/ocgo/api.key` (`api`), used only
+   when the store has no usable (non-expired) credential.
+
+The effective OpenCode data directory is `OCGO_DATA_DIR`, else
+`opencode_data_dir` from `$XDG_CONFIG_HOME/ocgo/config.json`, else
+`$XDG_DATA_HOME/opencode` (`~/.local/share/opencode`); `OCGO_DB` overrides the
+database path directly.
+
 ## `ocgo refresh`
 
-`ocgo refresh [-h] [--account ID | --all]` — fetch usage and rewrite the cache.
-Without a flag it refreshes the active account; `--account ID` and `--all` are
-mutually exclusive. Login accounts also fetch credits, best-effort: a billing
-failure is recorded as `credits.error` without failing the refresh.
+`ocgo refresh [-h]` — resolve the credential, fetch usage, and rewrite the
+cache. An `oauth` credential hits the console status endpoint; an `api`
+credential hits the zen usage endpoint.
 
-On success, one line per account:
-`Refreshed OpenCode Go (<id>): rolling 42% · weekly 64% · monthly 88% · $3.25`
-(the id is omitted for the seeded login without a registry file; the dollar
-figure appears only when credits resolved). On failure the message goes to
-stderr, the last good cache is kept with `last_error` recorded, and the exit
-code is 1.
+On success one line:
+`Refreshed OpenCode Go: rolling 42% · weekly 64% · monthly 88%` (one percent
+per window, `n/a` when a value is missing). On failure the message goes to
+stderr, the last good cache is kept with `last_error` and `last_error_at`
+recorded beside it, and the exit code is 1.
 
 ## `ocgo status`
 
-`ocgo status [-h] [--json] [--no-color] [--account ID]` — show the cached
-usage; `--account ID` picks a named account, otherwise the active one is used.
+`ocgo status [-h] [--json] [--no-color]` — show the cached usage.
 
-Default output, one row per window plus a credits row when the cache has one:
+Default output, one row per window:
 
 ```text
 Rolling usage   42%   Resets in 0m
 Weekly usage    64%   Resets in 3d 23h
 Monthly usage   88%   Resets in 15d 23h
-Credits        $3.25   Running low
 ```
 
 Countdowns use `Xd Yh` / `Xh Ym` / `Xm`; a missing timestamp prints `n/a` and a
-past one `0m`. The monthly row counts down to the subscription renewal date.
-The credits row prints `$X.XX`, optionally followed by `Running low` (prepaid
-under $5 without healthy auto-recharge) or `No credits left` (zero balance); a
-billing error prints `n/a   unavailable`. When `last_error` is set, a
+past one `0m`. The monthly row counts down to the subscription renewal date
+because the monthly meter has no reset timestamp. When `last_error` is set, a
 `Warning: …` line goes to stderr and the rows keep the last good values.
 
 `--json` prints the cache file verbatim and exits; it is the raw stored JSON
@@ -69,9 +79,8 @@ yet, both modes fail with exit 1 and point at `ocgo refresh`.
 
 ## `ocgo auth show`
 
-`ocgo auth show [-h] [--account ID]` — show the credential source for the
-account, masking the token (first six and last four characters, or `…` for
-short values):
+`ocgo auth show [-h] [--json]` — show where the credential comes from, masking
+the token:
 
 ```text
 Source:  OpenCode local database
@@ -79,104 +88,77 @@ Token:   abcd12…wxyz
 Expires: 2026-11-01T00:00:00Z (in 15d 23h)
 ```
 
-`Expires` appears only when the credential carries an expiry. For an API-key
-account the source reads `stored API key (account '<id>')`; the token is the
-registry hint.
+The token hint keeps the first six and last four characters (a token of 12
+characters or fewer is fully hidden as `…`); `Expires` appears only when the
+credential carries an expiry. The possible sources are `OCGO_TOKEN
+environment`, `OpenCode local database`, `OpenCode auth.json file`, and
+`Configured API key`.
 
-## `ocgo account add`
+When nothing resolves, the command prints `Source:  none` and the error on
+stderr, with exit 1. `--json` prints a schema 1 document:
 
-`ocgo account add [-h] [--label LABEL] [--store {auto,file}] [--from-db]
-[--credential ID_OR_LABEL] ID` — register an account. The id is 1–64 characters
-matching `[a-z0-9][a-z0-9._-]*`; `--label` defaults to the id. Without
-`--from-db` the command reads an API key — hidden prompt on a terminal, one
-line from stdin otherwise — validates it against the console API, stores it,
-and registers an `api-key` account. A valid key without an active subscription
-is still stored, with a note on stderr.
+- `credential` — `source`, `kind` (`oauth` or `api`), `token_hint`,
+  `expires_at` (ISO 8601 or `null`), or `null` when nothing resolves.
+- `store` — `db_path`, `db_exists`, `auth_json_path`, `auth_json_exists`,
+  `auth_json_login`, `has_login`, `data_dir`, `configured_data_dir`,
+  `api_key_configured`, `api_key_hint`.
 
-- `--store auto` (default) stores the key in the OS keyring through
-  `secret-tool` (fails when unavailable); `--store file` stores it in an opt-in
-  0600 file under the config directory.
-- `--from-db` registers the local OpenCode login instead of an API key, with no
-  prompt; with `--credential ID_OR_LABEL` it pins one stored login (exact id
-  first, then exact label; an ambiguous label is an error).
+## `ocgo auth set-key`
 
-## `ocgo account set-key`
+`ocgo auth set-key [-h] [--stdin]` — read a fallback API key, verify it
+against the zen endpoint, store it in `$XDG_CONFIG_HOME/ocgo/api.key` (0600
+permissions), and refresh the cache right away. `--stdin` reads one line from
+stdin; on a terminal without it the prompt is hidden.
 
-`ocgo account set-key [-h] [--store {auto,file}] ID` — replace the API key of
-an existing account (same key input and store choices as `add`). When the
-account is a login account it is converted in place to an `api-key` account,
-keeping the id, label, and active state and freeing the login slot.
+A key rejected with HTTP 401, or a network failure, is never stored. A valid
+key without an active Go subscription is stored with a note on stderr
+(`this account has no active OpenCode Go subscription`). Empty input fails
+with `no API key provided`.
 
-## `ocgo account list`
+## `ocgo auth clear-key`
 
-`ocgo account list [-h] [--json]` — list accounts, marking the active one with
-`*`:
+`ocgo auth clear-key [-h]` — remove the stored fallback API key. Prints
+`Cleared the stored API key`, or `No stored API key to clear` when there was
+none.
 
-```text
-* work         Work  (api-key, ocgo_s…1234)
-  default      Default  (opencode-db)
-```
+## `ocgo auth set-data-dir`
 
-`--json` prints a document with `schema`, `active`, and `accounts[]` (`id`,
-`label`, `kind`, `hint`, `active`, `credential_id`). With none configured it
-prints `no accounts configured` and exits 0.
+`ocgo auth set-data-dir [-h] PATH` — persist `opencode_data_dir` in
+`$XDG_CONFIG_HOME/ocgo/config.json` (a `~` is expanded) so the store and the
+legacy file are read from there. The path must be an existing directory
+(`not a directory: <path>` otherwise). Prints `OpenCode data directory set
+to <path>`.
 
-## `ocgo account discover`
+## `ocgo auth clear-data-dir`
 
-`ocgo account discover [-h] [--json]` — list the OpenCode credentials in the
-local database (never tokens): `id`, `label`, `active`, `email`, then the
-database path. Rows count when their integration id is OpenCode-owned
-(`opencode-go`, `opencode`, or any other `opencode*` id); `opencode-go` rows
-are listed first, then `opencode`, then the rest. `--json` adds a `store`
-block with the checked paths and whether a login exists. With none present it
-prints `no OpenCode credentials found in <path>` (exit 0) and mentions the
-legacy `auth.json` when that file exists.
-
-## `ocgo account activate-in-opencode`
-
-`ocgo account activate-in-opencode [-h] ID` — make a pinned login the
-credential `opencode auth switch` marks active, by running
-`opencode auth switch opencode <credential-id>` (10-second timeout; `opencode`
-must be on PATH). Only pinned logins qualify: an `api-key` account and the auto
-login (which already follows the active credential) fail with exit 1.
-
-## `ocgo account use`
-
-`ocgo account use [-h] ID` — switch the account shown by the meter. Prints
-`Active account: <id>`.
-
-## `ocgo account remove`
-
-`ocgo account remove [-h] ID` — remove the account. An `api-key` account's
-secret is deleted first; its cache file is cleaned best-effort (a failed
-cleanup is a warning, not an error). Removing the last account leaves the list
-empty.
+`ocgo auth clear-data-dir [-h]` — remove `opencode_data_dir` from
+`config.json` and go back to auto-detection. Prints `OpenCode data directory
+reset to the default`.
 
 ## Environment variables
 
 | Variable | Effect |
 |----------|--------|
-| `OCGO_TOKEN` | Manual login token; wins over the OpenCode stores for login accounts. |
-| `OCGO_TOKEN_<ID>` | API key for account `<id>`: the id uppercased with non-alphanumerics mapped to `_` (`work-2` → `OCGO_TOKEN_WORK_2`). Wins over the keyring and file backends. |
-| `OCGO_DB` | Overrides the OpenCode database path. |
+| `OCGO_TOKEN` | Manual credential, treated as `oauth`; wins over the OpenCode stores and the fallback key. |
+| `OCGO_DB` | Overrides the OpenCode database path directly. |
+| `OCGO_DATA_DIR` | Overrides the effective OpenCode data directory (wins over `config.json`). |
 | `NO_COLOR` | Any non-empty value disables ANSI colors in `status`. |
 | `XDG_CACHE_HOME` | Cache root; default `~/.cache`. |
-| `XDG_CONFIG_HOME` | Registry and key-store root; default `~/.config`. |
-| `XDG_DATA_HOME` | OpenCode store root; default `~/.local/share`. |
+| `XDG_CONFIG_HOME` | `config.json` and `api.key` root; default `~/.config`. |
+| `XDG_DATA_HOME` | Default OpenCode store root; default `~/.local/share`. |
 
 ## File locations
 
 | Path | What lives there |
 |------|------------------|
-| `$XDG_CACHE_HOME/ocgo/status.json` | Cache for the default account (`accounts/<id>/status.json` for named accounts). |
-| `$XDG_CONFIG_HOME/ocgo/accounts.json` | Accounts registry (version 3). |
-| `$XDG_CONFIG_HOME/ocgo/keys/<id>.key` | `--store file` secret, written 0600. |
-| OS keyring (`secret-tool`, service `ocgo`, account `<id>`) | `--store auto` secret. |
+| `$XDG_CACHE_HOME/ocgo/status.json` | The usage cache (schema 1). |
+| `$XDG_CONFIG_HOME/ocgo/config.json` | `opencode_data_dir`, when configured. |
+| `$XDG_CONFIG_HOME/ocgo/api.key` | Fallback API key, written 0600. |
 | `$XDG_DATA_HOME/opencode/opencode.db` | OpenCode logins, read-only. |
 | `$XDG_DATA_HOME/opencode/auth.json` | Legacy OpenCode login store, read-only. |
 
-Secrets never appear in argv, logs, the registry, or the cache; the registry
-stores masked hints only.
+Secrets never appear in argv, logs, or the cache; the only secret file is
+`api.key` (0600), and `status --json` prints usage numbers only.
 
 ## Examples
 
@@ -188,15 +170,14 @@ ocgo auth show
 
 # Machine-readable output for scripts
 ocgo status --json
-ocgo account list --json
+ocgo auth show --json
 
-# Register accounts
-ocgo account add work --label "Work"                # API key, prompted hidden
-ocgo account add personal --from-db                  # the auto OpenCode login
-ocgo account add pinned --from-db --credential CREDENTIAL_ID
+# Configure a fallback API key from a pipe
+printf '%s\n' "$OPENCODE_API_KEY" | ocgo auth set-key --stdin
 
-# Point the meter at another account
-ocgo account use work
+# Point the meter at an OpenCode store kept elsewhere
+ocgo auth set-data-dir ~/backup/opencode
+ocgo auth clear-data-dir
 
 # Manual override for testing
 OCGO_TOKEN=placeholder-token ocgo refresh
