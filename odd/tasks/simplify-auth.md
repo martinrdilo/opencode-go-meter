@@ -118,8 +118,8 @@ Out:
       - `ocgo auth set-data-dir <path>` and `ocgo auth clear-data-dir`: sets or clears `opencode_data_dir` in `config.json`.
   - Verification: `make test`, `make check-gnome`, `make check-cinnamon`.
 
-- [ ] **T3 — gnome: simplify `extension.js`, `prefs.js`, `gschema.xml`, and `stylesheet.css` to single-credential auto-detection + optional data-dir and API-key preferences.**
-  - Route: delegated writer (writer trigger: 4 non-trivial files).
+- [x] **T3 — gnome: simplify `extension.js`, `prefs.js`, `gschema.xml`, and `stylesheet.css` to single-credential auto-detection + optional data-dir and API-key preferences.**
+  - Route: delegated writer (writer trigger: 4 non-trivial files). Done 2026-10-17, commit `a398ece` (197+/1,104-): `show-credits` key + `.ocgo-credit-value` + multi-account submenu/discovery removed; new Credentials preferences group (status row via `ocgo auth show --json`, data-dir EntryRow with Apply/Reset, API-key PasswordEntryRow with Save/Clear over stdin, best-effort `ocgo refresh` after each success). `make check-gnome` + `make test` + `make check-cinnamon` green; banned-token grep empty. Ran in parallel with T4 (disjoint surfaces).
   - Files (`Allowed edit surfaces`):
     - `gnome/extension.js`
     - `gnome/prefs.js`
@@ -135,8 +135,8 @@ Out:
       - Fallback API key entry (`Adw.PasswordEntryRow` + Save/Clear buttons invoking `ocgo auth set-key --stdin` / `ocgo auth clear-key`).
   - Verification: `make check-gnome`, `make test`, `make check-cinnamon`.
 
-- [ ] **T4 — cinnamon: delete `accounts-window.js`, simplify `applet.js`, `settings-schema.json`, and `check_applet.py`.**
-  - Route: delegated writer (writer trigger: 4 non-trivial files).
+- [x] **T4 — cinnamon: delete `accounts-window.js`, simplify `applet.js`, `settings-schema.json`, and `check_applet.py`.**
+  - Route: delegated writer (writer trigger: 4 non-trivial files). Done 2026-10-17, commit `6b7d90d` (214+/3,186-): `accounts-window.js` deleted (1,343 lines); `applet.js` 2,335 → 727 lines (credits, accounts menu, login terminal, credential picker gone; single `status.json` cache + unconditional startup refresh); new `credentials` settings section (data-dir entry + apply/clear buttons, set/clear API key with a masked single-field modal piped to stdin); `check_applet.py` dropped the window/module checks. `make check-cinnamon` + `make test` + `make check-gnome` green; banned-token grep empty. Ran in parallel with T3 (disjoint surfaces).
   - Files (`Allowed edit surfaces`):
     - `cinnamon/accounts-window.js` (delete)
     - `cinnamon/applet.js`
@@ -199,6 +199,7 @@ Out:
 - 2026-10-17 — Feature planned on `refactor/simplify-auth` (from `main` @ `6098125`). Ready for implementation of `T1`–`T5`.
 - 2026-10-17 — `T1` done (commit `dc9015b`): credits/billing surface removed from the core; suite 478 → 422 tests, all green.
 - 2026-10-17 — `T2` done (commit `6a8af1a`): multi-account registry deleted; single-credential detection + `Credential.kind` routing + `api.key` fallback + configurable data dir; suite 422 → 235 tests, all green; live refresh OK (`kind: api` → zen).
+- 2026-10-17 — `T3` + `T4` done in parallel (commits `a398ece`, `6b7d90d`): GNOME and Cinnamon reduced to the single-cache/3-windows surface with Credentials preferences; `accounts-window.js` deleted; all three checks green.
 
 ## Next step
 
