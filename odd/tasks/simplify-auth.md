@@ -67,8 +67,8 @@ Out:
 
 ## Tasks
 
-- [ ] **T1 — core (billing/credits removal): remove `credits`, `extra_usage`, and `auto_recharge` from `api.py`, `format.py`, `cli.py`, and their unit tests.**
-  - Route: delegated writer (writer trigger: 6 non-trivial files).
+- [x] **T1 — core (billing/credits removal): remove `credits`, `extra_usage`, and `auto_recharge` from `api.py`, `format.py`, `cli.py`, and their unit tests.**
+  - Route: delegated writer (writer trigger: 6 non-trivial files). Done 2026-10-17, commit `dc9015b` (914 authored lines vs the ~400 heuristic — deletion work unit, not sliced): RED `Ran 422 tests — FAILED (failures=3)` (new `assertNotIn` tests against the removed keys), GREEN `Ran 422 tests — OK`; parent spot check re-ran `make test` (`Ran 422 tests — OK`); `make check-gnome` + `make check-cinnamon` green; `grep -rn "credits\|extra_usage\|auto_recharge\|fetch_billing\|BILLING" core/ocgo/` empty.
   - Files (`Allowed edit surfaces`):
     - `core/ocgo/format.py`
     - `core/ocgo/api.py`
@@ -197,6 +197,7 @@ Out:
 ## Progress
 
 - 2026-10-17 — Feature planned on `refactor/simplify-auth` (from `main` @ `6098125`). Ready for implementation of `T1`–`T5`.
+- 2026-10-17 — `T1` done (commit `dc9015b`): credits/billing surface removed from the core; suite 478 → 422 tests, all green.
 
 ## Next step
 
