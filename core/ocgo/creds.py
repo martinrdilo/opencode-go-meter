@@ -3,23 +3,27 @@
 Resolution order:
 
 1. ``OCGO_TOKEN`` environment variable (manual/testing override).
-2. The local OpenCode database, opened read-only. With a pinned
-   ``credential_id``, exactly that row is read; otherwise the preferred
-   OpenCode-owned credential wins — ``opencode-go`` first, then ``opencode``,
-   then any other ``opencode*`` id — active rows before inactive ones and the
-   newest ``time_updated`` first inside a tier.
-3. The legacy OpenCode ``auth.json`` login file (``$XDG_DATA_HOME/opencode``
-   or ``~/.local/share/opencode``), read only when the database yields no
-   credential and no specific ``credential_id`` was requested.
+2. The local OpenCode store: the database (``opencode.db``), opened
+   read-only, then the legacy ``auth.json`` login file. The
+   preferred ``opencode*`` credential wins — ``opencode-go`` first, then
+   ``opencode``, then any other ``opencode*`` id — active rows before
+   inactive ones and the newest ``time_updated`` first inside a tier.
+3. The user-supplied fallback API key file
+   (``$XDG_CONFIG_HOME/ocgo/api.key``, mode ``0600``), read only when the
+   local store has no usable (non-expired) credential.
+
+The effective OpenCode data directory is the ``OCGO_DATA_DIR`` environment
+variable, then ``opencode_data_dir`` in ``$XDG_CONFIG_HOME/ocgo/config.json``,
+then ``$XDG_DATA_HOME/opencode`` (``~/.local/share/opencode``). ``OCGO_DB``
+overrides the database path directly.
 
 Credential values tolerate the shapes OpenCode v2 writes: one optional
 ``value`` wrapper around the credential object, the token in ``access``
 (oauth) or ``key`` (api key), an optional ``type``, and a sane ms-epoch
-``expires``.
+``expires``. Resolved credentials carry a ``kind`` (``"oauth"`` or
+``"api"``) so callers route to the matching usage endpoint.
 
 The token is never logged, printed in full, cached, or written anywhere.
-:func:`list_db_credentials` exposes display metadata only (id, label, active,
-email, org name) for CLI pickers.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import json
 import math
 import os
 import sqlite3
+import tempfile
 import time
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -42,9 +47,17 @@ EXPIRED_MESSAGE = "OpenCode credential expired — open OpenCode to refresh it."
 
 _ENV_TOKEN = "OCGO_TOKEN"
 _ENV_DB = "OCGO_DB"
+_ENV_DATA_DIR = "OCGO_DATA_DIR"
 _SOURCE_ENV = "OCGO_TOKEN environment"
 _SOURCE_DB = "OpenCode local database"
 _SOURCE_AUTH_JSON = "OpenCode auth.json file"
+_SOURCE_API_KEY = "Configured API key"
+_CONFIG_FILENAME = "config.json"
+_API_KEY_FILENAME = "api.key"
+
+KIND_OAUTH = "oauth"
+KIND_API = "api"
+
 # OpenCode-owned integrations: `opencode-go` preferred over `opencode` over
 # any other `opencode*` id (the same ranking `_integration_rank` applies to
 # legacy auth.json keys).
@@ -58,13 +71,6 @@ _PREFERENCE_ORDER = (
 _SELECT_QUERY = (
     f"SELECT value FROM credential WHERE {_ACCEPTED_IDS} "
     f"{_PREFERENCE_ORDER} LIMIT 1"
-)
-_PINNED_QUERY = (
-    f"SELECT value FROM credential WHERE {_ACCEPTED_IDS} AND id = ? LIMIT 1"
-)
-_LIST_QUERY = (
-    f"SELECT id, label, active, value FROM credential "
-    f"WHERE {_ACCEPTED_IDS} {_PREFERENCE_ORDER}"
 )
 _EXISTS_QUERY = f"SELECT 1 FROM credential WHERE {_ACCEPTED_IDS} LIMIT 1"
 
@@ -80,13 +86,6 @@ def _integration_rank(integration_id: str) -> int | None:
     return None
 
 
-def _missing_credential_message(credential_id: str) -> str:
-    return (
-        f"The OpenCode credential '{credential_id}' no longer exists in the "
-        "local database — remove this account or sign in again in OpenCode."
-    )
-
-
 class CredentialError(Exception):
     """No usable credential is available."""
 
@@ -98,6 +97,7 @@ class Credential:
     token: str = field(repr=False)
     source: str
     expires_ms: int | None = None
+    kind: str = KIND_OAUTH
 
     @property
     def expires_at(self) -> datetime | None:
@@ -109,36 +109,90 @@ class Credential:
             return None
 
 
-@dataclass(frozen=True)
-class DbCredential:
-    """Display metadata for one database credential; never carries a token."""
+def config_path() -> Path:
+    """``$XDG_CONFIG_HOME/ocgo/config.json`` or the ``~/.config`` fallback."""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(config_home) if config_home else Path.home() / ".config"
+    return base / "ocgo" / _CONFIG_FILENAME
 
-    id: str
-    label: str
-    active: bool
-    email: str | None = None
-    org_name: str | None = None
+
+def read_config() -> dict:
+    """Read ``config.json``; missing, unreadable, or malformed reads as ``{}``."""
+    try:
+        payload = json.loads(config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def get_configured_data_dir() -> str | None:
+    """The configured OpenCode data directory, or ``None`` when unset."""
+    value = read_config().get("opencode_data_dir")
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def set_configured_data_dir(path: str | None) -> None:
+    """Persist (or clear) ``opencode_data_dir`` in ``config.json``.
+
+    The write merges with any existing keys and is atomic: a temp file in
+    the same directory, then ``os.replace``. ``None`` removes the key.
+    """
+    payload = read_config()
+    if path is None:
+        payload.pop("opencode_data_dir", None)
+    else:
+        payload["opencode_data_dir"] = path
+    target = config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".ocgo-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _effective_data_dir() -> Path:
+    """OCGO_DATA_DIR, then the configured dir, then the XDG default."""
+    env_dir = os.environ.get(_ENV_DATA_DIR, "").strip()
+    if env_dir:
+        return Path(env_dir).expanduser()
+    configured = get_configured_data_dir()
+    if configured is not None:
+        return Path(configured).expanduser()
+    data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(data_home) if data_home else Path.home() / ".local" / "share"
+    return base / "opencode"
 
 
 def default_db_path() -> Path:
-    """``$XDG_DATA_HOME/opencode/opencode.db`` or the ``~/.local/share`` fallback."""
-    data_home = os.environ.get("XDG_DATA_HOME")
-    if data_home:
-        return Path(data_home) / "opencode" / "opencode.db"
-    return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    """``<data dir>/opencode.db`` under the effective OpenCode data directory."""
+    return _effective_data_dir() / "opencode.db"
 
 
 def default_auth_json_path() -> Path:
-    """``$XDG_DATA_HOME/opencode/auth.json`` or the ``~/.local/share`` fallback."""
-    data_home = os.environ.get("XDG_DATA_HOME")
-    if data_home:
-        return Path(data_home) / "opencode" / "auth.json"
-    return Path.home() / ".local" / "share" / "opencode" / "auth.json"
+    """``<data dir>/auth.json`` under the effective OpenCode data directory."""
+    return _effective_data_dir() / "auth.json"
 
 
 def _effective_db_path() -> Path:
     """The database the module reads: the ``OCGO_DB`` override or the default."""
     return Path(os.environ.get(_ENV_DB) or default_db_path()).expanduser()
+
+
+def _api_key_path() -> Path:
+    """``$XDG_CONFIG_HOME/ocgo/api.key`` beside ``config.json``."""
+    return config_path().parent / _API_KEY_FILENAME
 
 
 def mask_token(token: str) -> str:
@@ -148,26 +202,84 @@ def mask_token(token: str) -> str:
     return f"{token[:6]}…{token[-4:]}"
 
 
-def resolve_credential(
-    *, credential_id: str | None = None, now_ms: int | None = None
-) -> Credential:
-    """Resolve the credential to use; ``OCGO_TOKEN`` wins over the stores.
+def store_api_key(token: str) -> str:
+    """Store the fallback API key with ``0600`` permissions; returns a hint.
 
-    ``credential_id`` pins the lookup to that database row; ``None`` follows
-    the accepted-id preference order (``opencode-go``, then ``opencode``,
-    then other ``opencode*`` ids) and, when the database yields no
-    credential, the legacy ``auth.json`` login — expired logins on either
-    path raise ``EXPIRED_MESSAGE``. A pinned id never falls back: the
-    original database error is re-raised.
+    The write is atomic (temp file in the same directory, then
+    ``os.replace``, then ``chmod 0600``). A blank token raises
+    :class:`CredentialError`.
+    """
+    value = token.strip()
+    if not value:
+        raise CredentialError("no API key provided")
+    target = _api_key_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".ocgo-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target)
+        os.chmod(target, 0o600)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return mask_token(value)
+
+
+def read_api_key() -> str | None:
+    """The stored fallback API key, or ``None`` when absent or blank."""
+    try:
+        text = _api_key_path().read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    token = text.strip()
+    return token or None
+
+
+def has_api_key() -> bool:
+    """True when a non-blank fallback API key is stored."""
+    return read_api_key() is not None
+
+
+def clear_api_key() -> bool:
+    """Remove the stored fallback API key; ``True`` when one was removed."""
+    try:
+        _api_key_path().unlink()
+    except OSError:
+        return False
+    return True
+
+
+def resolve_credential(*, now_ms: int | None = None) -> Credential:
+    """Resolve the credential to use.
+
+    ``OCGO_TOKEN`` wins, then the local OpenCode store (database, then
+    legacy ``auth.json``), then the stored fallback API key. The key is
+    used only when the store has no usable credential (missing or
+    expired); otherwise the store's :class:`CredentialError` is re-raised.
     """
     env_token = os.environ.get(_ENV_TOKEN, "").strip()
     if env_token:
-        return Credential(token=env_token, source=_SOURCE_ENV)
+        return Credential(token=env_token, source=_SOURCE_ENV, kind=KIND_OAUTH)
     try:
-        return _resolve_db_credential(credential_id=credential_id, now_ms=now_ms)
+        return _resolve_stored_credential(now_ms=now_ms)
     except CredentialError:
-        if credential_id is not None:
+        token = read_api_key()
+        if token is None:
             raise
+        return Credential(token=token, source=_SOURCE_API_KEY, kind=KIND_API)
+
+
+def _resolve_stored_credential(*, now_ms: int | None = None) -> Credential:
+    """The local store credential: database row first, then the legacy file."""
+    try:
+        return _resolve_db_credential(now_ms=now_ms)
+    except CredentialError:
         legacy = _read_legacy_login()
         if legacy is None:
             raise
@@ -206,8 +318,10 @@ def _read_legacy_login() -> Credential | None:
     fields = _credential_fields(entry)
     if fields is None:
         return None
-    token, expires_ms = fields
-    return Credential(token=token, source=_SOURCE_AUTH_JSON, expires_ms=expires_ms)
+    token, expires_ms, kind = fields
+    return Credential(
+        token=token, source=_SOURCE_AUTH_JSON, expires_ms=expires_ms, kind=kind
+    )
 
 
 def _raise_if_expired(expires_ms: int | None, now_ms: int | None) -> None:
@@ -232,85 +346,54 @@ def _unwrap_value(payload: object) -> object:
     return payload
 
 
-def _credential_fields(payload: object) -> tuple[str, int | None] | None:
-    """Extract ``(token, expires_ms)`` from a credential payload.
+def _credential_fields(payload: object) -> tuple[str, int | None, str] | None:
+    """Extract ``(token, expires_ms, kind)`` from a credential payload.
 
     Tolerates one ``value`` wrapper around the credential object; the token
-    is ``access`` (oauth) or ``key`` (api key) and ``type`` is optional.
-    Anything that cannot yield a non-blank string token reads as ``None``.
+    is ``access`` (oauth, preferred) or ``key`` (api key) and ``type`` is
+    optional. Anything that cannot yield a non-blank string token reads as
+    ``None``.
     """
     payload = _unwrap_value(payload)
     if not isinstance(payload, dict):
         return None
     token = payload.get("access")
+    kind = KIND_OAUTH
     if not isinstance(token, str) or not token.strip():
         token = payload.get("key")
+        kind = KIND_API
     if not isinstance(token, str) or not token.strip():
         return None
-    return token.strip(), _parse_expiry(payload.get("expires"))
+    return token.strip(), _parse_expiry(payload.get("expires")), kind
 
 
-def _resolve_db_credential(
-    *, credential_id: str | None = None, now_ms: int | None = None
-) -> Credential:
+def _resolve_db_credential(*, now_ms: int | None = None) -> Credential:
     db_path = _effective_db_path()
     if not db_path.is_file():
-        if credential_id is not None:
-            raise CredentialError(_missing_credential_message(credential_id))
         raise CredentialError(NO_CREDENTIAL_MESSAGE)
-    token, expires_ms = _read_db_row(db_path, credential_id=credential_id)
+    token, expires_ms, kind = _read_db_row(db_path)
     _raise_if_expired(expires_ms, now_ms)
-    return Credential(token=token, source=_SOURCE_DB, expires_ms=expires_ms)
-
-
-def list_db_credentials() -> list[DbCredential]:
-    """List the database's OpenCode credentials for pickers (never tokens).
-
-    Rows come in the accepted-id preference order — ``opencode-go``, then
-    ``opencode``, then other ``opencode*`` ids — active rows before inactive
-    ones and newest ``time_updated`` first inside a tier. Malformed ``value``
-    JSON leaves the row listed with ``email``/``org_name`` as ``None``; an
-    unreadable database raises :class:`CredentialError` with
-    ``NO_CREDENTIAL_MESSAGE``.
-    """
-    db_path = _effective_db_path()
-    if not db_path.is_file():
-        raise CredentialError(NO_CREDENTIAL_MESSAGE)
-    uri = Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
-    try:
-        with closing(sqlite3.connect(uri, uri=True)) as connection:
-            rows = connection.execute(_LIST_QUERY).fetchall()
-    except sqlite3.Error as exc:
-        raise CredentialError(NO_CREDENTIAL_MESSAGE) from exc
-    credentials = []
-    for credential_id, label, active, value in rows:
-        email, org_name = _metadata_strings(value)
-        credentials.append(
-            DbCredential(
-                id=str(credential_id),
-                label=label.strip() if isinstance(label, str) else "",
-                active=bool(active),
-                email=email,
-                org_name=org_name,
-            )
-        )
-    return credentials
+    return Credential(
+        token=token, source=_SOURCE_DB, expires_ms=expires_ms, kind=kind
+    )
 
 
 def has_stored_login() -> bool:
-    """True when a login exists: ``OCGO_TOKEN``, a database row, or legacy.
+    """True when a credential exists: env token, a store login, or a key.
 
     The database check only asks whether an OpenCode-owned (``opencode*``)
-    row exists, on stable columns — a schema without the listing's ``label``
-    reads the same way. Rows count regardless of expiry: an expired login
-    still drives the seeded default's refresh messaging, and so does a legacy
-    ``auth.json`` login (presence, not expiry, is the question here).
+    row exists, on stable columns. Rows count regardless of expiry: an
+    expired login still drives the refresh messaging, and so does a legacy
+    ``auth.json`` login (presence, not expiry, is the question here). A
+    stored fallback API key is a login too.
     """
     if os.environ.get(_ENV_TOKEN, "").strip():
         return True
     if _db_has_stored_login():
         return True
-    return _read_legacy_login() is not None
+    if _read_legacy_login() is not None:
+        return True
+    return has_api_key()
 
 
 def _db_has_stored_login() -> bool:
@@ -330,12 +413,15 @@ def _db_has_stored_login() -> bool:
 def store_status() -> dict:
     """Where credentials can live and whether any login is present.
 
-    Reports the same paths the resolution reads so a caller (CLI, applet,
-    dialog) can show them verbatim. Every value is JSON-safe and the check
-    never raises: an unreadable store simply reads as absent.
+    Reports the same paths the resolution reads so a caller (CLI, frontend)
+    can show them verbatim, plus the effective and configured data
+    directories and the fallback API key state (hint masked). Every value is
+    JSON-safe and the check never raises: an unreadable store simply reads
+    as absent.
     """
     db_path = _effective_db_path()
     auth_json_path = default_auth_json_path()
+    api_key = read_api_key()
     return {
         "db_path": str(db_path),
         "db_exists": db_path.is_file(),
@@ -343,73 +429,36 @@ def store_status() -> dict:
         "auth_json_exists": auth_json_path.is_file(),
         "auth_json_login": _read_legacy_login() is not None,
         "has_login": has_stored_login(),
+        "data_dir": str(_effective_data_dir()),
+        "configured_data_dir": get_configured_data_dir(),
+        "api_key_configured": api_key is not None,
+        "api_key_hint": mask_token(api_key) if api_key is not None else None,
     }
 
 
-def _metadata_strings(value: object) -> tuple[str | None, str | None]:
-    """Extract ``(email, org_name)`` from a credential ``value`` payload.
+def _read_db_row(db_path: Path) -> tuple[str, int | None, str]:
+    """Read the preferred credential row as ``(token, expires_ms, kind)``.
 
-    Absent, non-object, or non-string members read as ``None``; the metadata
-    lives inside the credential object, so one ``value`` wrapper is tolerated
-    like resolution does.
-    """
-    if not isinstance(value, str):
-        return None, None
-    try:
-        payload = json.loads(value)
-    except (TypeError, ValueError):
-        return None, None
-    if not isinstance(payload, dict):
-        return None, None
-    payload = _unwrap_value(payload)
-    metadata = payload.get("metadata")
-    if not isinstance(metadata, dict):
-        return None, None
-    email = metadata.get("email")
-    org_name = metadata.get("orgName")
-    return (
-        email if isinstance(email, str) else None,
-        org_name if isinstance(org_name, str) else None,
-    )
-
-
-def _read_db_row(
-    db_path: Path, *, credential_id: str | None = None
-) -> tuple[str, int | None]:
-    """Read one credential row: pinned by id, else the preferred one.
-
-    The unpinned query follows the accepted-id preference order and, inside
-    a tier, prefers the credential that ``opencode auth switch`` marked
-    active. A pinned ``credential_id`` that cannot produce a usable token
-    raises the actionable "no longer exists" message instead of the generic
-    one.
+    The query follows the accepted-id preference order and, inside a tier,
+    prefers the credential that ``opencode auth switch`` marked active. A row
+    that cannot yield a usable token reads as no credential at all.
     """
     uri = Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
     try:
         with closing(sqlite3.connect(uri, uri=True)) as connection:
-            if credential_id is not None:
-                row = connection.execute(_PINNED_QUERY, (credential_id,)).fetchone()
-            else:
-                row = connection.execute(_SELECT_QUERY, ()).fetchone()
+            row = connection.execute(_SELECT_QUERY, ()).fetchone()
     except sqlite3.Error as exc:
         raise CredentialError(NO_CREDENTIAL_MESSAGE) from exc
     if not row or not row[0]:
-        raise _unusable_row_error(credential_id)
+        raise CredentialError(NO_CREDENTIAL_MESSAGE)
     try:
         payload = json.loads(row[0])
     except (TypeError, ValueError) as exc:
-        raise _unusable_row_error(credential_id) from exc
+        raise CredentialError(NO_CREDENTIAL_MESSAGE) from exc
     fields = _credential_fields(payload)
     if fields is None:
-        raise _unusable_row_error(credential_id)
+        raise CredentialError(NO_CREDENTIAL_MESSAGE)
     return fields
-
-
-def _unusable_row_error(credential_id: str | None) -> CredentialError:
-    """The error for a row that cannot yield a token (pinned rows name it)."""
-    if credential_id is not None:
-        return CredentialError(_missing_credential_message(credential_id))
-    return CredentialError(NO_CREDENTIAL_MESSAGE)
 
 
 def _parse_expiry(value: object) -> int | None:

@@ -11,6 +11,8 @@ from unittest import mock
 from _support import temp_dir
 from ocgo import creds
 
+_KEY = "oc_sk_test_abcdefghijklmnop1234"
+
 
 def _write_db(path: Path, rows: list[tuple]) -> None:
     """Create a credential table mirroring production and insert ``rows``.
@@ -42,19 +44,6 @@ def _write_db(path: Path, rows: list[tuple]) -> None:
         )
     connection.commit()
     connection.close()
-
-
-class EnvTestCase(unittest.TestCase):
-    """Temp dir plus an isolated process environment."""
-
-    def setUp(self):
-        self.tmp = Path(self.enterContext(temp_dir()))
-
-    def _env(self, **values):
-        """Isolate the process env and set only the given values."""
-        patcher = mock.patch.dict(os.environ, values, clear=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
 
 def _write_labelled_db(path: Path, rows: list[tuple]) -> None:
@@ -91,6 +80,34 @@ def _write_auth_json(root: Path, payload: object) -> Path:
     return path
 
 
+class EnvTestCase(unittest.TestCase):
+    """Temp dir plus an isolated process environment.
+
+    The base environment points every XDG directory (and ``HOME``) inside the
+    temp dir so no test can read the real machine's config, cache, or stores.
+    """
+
+    def setUp(self):
+        self.tmp = Path(self.enterContext(temp_dir()))
+
+    def _env(self, **values):
+        """Isolate the process env and set only the base values plus overrides."""
+        base = {
+            "HOME": str(self.tmp / "home"),
+            "XDG_CONFIG_HOME": str(self.tmp / "config"),
+            "XDG_CACHE_HOME": str(self.tmp / "cache"),
+            "XDG_DATA_HOME": str(self.tmp / "data"),
+        }
+        base.update(values)
+        patcher = mock.patch.dict(os.environ, base, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _api_key_path(self) -> Path:
+        """The stored fallback API key path under the isolated config home."""
+        return creds.config_path().parent / "api.key"
+
+
 class CredentialResolutionTests(EnvTestCase):
     def test_env_token_wins_over_db(self):
         db = self.tmp / "opencode.db"
@@ -99,6 +116,7 @@ class CredentialResolutionTests(EnvTestCase):
         credential = creds.resolve_credential()
         self.assertEqual(credential.token, "env-token")
         self.assertEqual(credential.source, "OCGO_TOKEN environment")
+        self.assertEqual(credential.kind, "oauth")
 
     def test_env_token_is_stripped(self):
         self._env(OCGO_TOKEN="  spaced-token  ")
@@ -120,6 +138,7 @@ class CredentialResolutionTests(EnvTestCase):
         credential = creds.resolve_credential()
         self.assertEqual(credential.token, "db-token-abcdefgh")
         self.assertEqual(credential.source, "OpenCode local database")
+        self.assertEqual(credential.kind, "oauth")
         self.assertEqual(credential.expires_ms, expires)
         self.assertIsNotNone(credential.expires_at)
 
@@ -271,6 +290,7 @@ class CredentialResolutionTests(EnvTestCase):
         self._env(OCGO_DB=str(db))
         credential = creds.resolve_credential()
         self.assertEqual(credential.token, "wrapped-token-1")
+        self.assertEqual(credential.kind, "oauth")
         self.assertEqual(credential.expires_ms, expires)
 
     def test_api_key_row_resolves_without_expiry(self):
@@ -283,13 +303,32 @@ class CredentialResolutionTests(EnvTestCase):
         credential = creds.resolve_credential()
         self.assertEqual(credential.token, "row-api-key-1")
         self.assertEqual(credential.source, "OpenCode local database")
+        self.assertEqual(credential.kind, "api")
         self.assertIsNone(credential.expires_ms)
 
-    def test_key_token_without_type_resolves(self):
+    def test_key_token_without_type_resolves_as_api(self):
         db = self.tmp / "opencode.db"
         _write_db(db, [("opencode", json.dumps({"key": "untyped-key-1"}))])
         self._env(OCGO_DB=str(db))
-        self.assertEqual(creds.resolve_credential().token, "untyped-key-1")
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "untyped-key-1")
+        self.assertEqual(credential.kind, "api")
+
+    def test_access_wins_over_key_when_both_are_present(self):
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode",
+                    json.dumps({"access": "access-token-1", "key": "key-token-1"}),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "access-token-1")
+        self.assertEqual(credential.kind, "oauth")
 
     def test_expired_opencode_go_row_raises_the_expired_message(self):
         now_ms = int(time.time() * 1000)
@@ -427,142 +466,128 @@ class CredentialResolutionTests(EnvTestCase):
         self.assertIsNone(credential.expires_at)
 
 
-class PinnedCredentialTests(EnvTestCase):
-    """``resolve_credential(credential_id=...)`` pins the database row."""
+class FallbackApiKeyResolutionTests(EnvTestCase):
+    """The stored API key backs the local store up when it has no login."""
 
-    def test_pinned_row_wins_over_active_and_newest(self):
+    def test_stored_key_resolves_when_the_store_is_missing(self):
+        self._env()
+        creds.store_api_key(_KEY)
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, _KEY)
+        self.assertEqual(credential.source, "Configured API key")
+        self.assertEqual(credential.kind, "api")
+        self.assertIsNone(credential.expires_ms)
+        self.assertIsNone(credential.expires_at)
+
+    def test_store_login_wins_over_the_stored_key(self):
         db = self.tmp / "opencode.db"
-        _write_db(
-            db,
-            [
-                (
-                    "aaa-active",
-                    "opencode",
-                    json.dumps({"access": "active-token-1"}),
-                    1,
-                    100,
-                ),
-                (
-                    "zzz-newest",
-                    "opencode",
-                    json.dumps({"access": "newest-token-1"}),
-                    0,
-                    300,
-                ),
-            ],
-        )
+        _write_db(db, [("opencode", json.dumps({"access": "db-token-1"}))])
         self._env(OCGO_DB=str(db))
-        credential = creds.resolve_credential(credential_id="zzz-newest")
-        self.assertEqual(credential.token, "newest-token-1")
+        creds.store_api_key(_KEY)
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "db-token-1")
         self.assertEqual(credential.source, "OpenCode local database")
-        # The auto path still follows the active row.
-        self.assertEqual(creds.resolve_credential().token, "active-token-1")
+        self.assertEqual(credential.kind, "oauth")
 
-    def test_pinned_row_returns_token_and_expiry(self):
-        expires = int(time.time() * 1000) + 3_600_000
-        db = self.tmp / "opencode.db"
-        _write_db(
-            db,
-            [
-                (
-                    "cred-pin",
-                    "opencode",
-                    json.dumps({"access": "pinned-token-1234", "expires": expires}),
-                    0,
-                    100,
-                )
-            ],
+    def test_legacy_login_wins_over_the_stored_key(self):
+        _write_auth_json(
+            self.tmp, {"opencode": {"type": "oauth", "access": "legacy-token-1"}}
         )
-        self._env(OCGO_DB=str(db))
-        credential = creds.resolve_credential(credential_id="cred-pin")
-        self.assertEqual(credential.token, "pinned-token-1234")
-        self.assertEqual(credential.expires_ms, expires)
-        self.assertIsNotNone(credential.expires_at)
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        creds.store_api_key(_KEY)
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "legacy-token-1")
+        self.assertEqual(credential.source, "OpenCode auth.json file")
 
-    def test_pinned_opencode_go_row_resolves(self):
-        db = self.tmp / "opencode.db"
-        _write_db(
-            db,
-            [
-                (
-                    "go-cred",
-                    "opencode-go",
-                    json.dumps({"access": "go-pinned-token"}),
-                    0,
-                    100,
-                ),
-                (
-                    "console-cred",
-                    "opencode",
-                    json.dumps({"access": "console-token-1"}),
-                    1,
-                    300,
-                ),
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        credential = creds.resolve_credential(credential_id="go-cred")
-        self.assertEqual(credential.token, "go-pinned-token")
-
-    def test_pinned_missing_row_is_actionable(self):
-        db = self.tmp / "opencode.db"
-        _write_db(
-            db, [("cred-1", "opencode", json.dumps({"access": "tok-1"}), 0, 100)]
-        )
-        self._env(OCGO_DB=str(db))
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.resolve_credential(credential_id="ghost")
-        self.assertEqual(
-            str(caught.exception),
-            "The OpenCode credential 'ghost' no longer exists in the local "
-            "database — remove this account or sign in again in OpenCode.",
-        )
-
-    def test_pinned_missing_db_file_is_actionable(self):
-        self._env(OCGO_DB=str(self.tmp / "nope.db"))
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.resolve_credential(credential_id="ghost")
-        message = str(caught.exception)
-        self.assertIn("ghost", message)
-        self.assertIn("no longer exists", message)
-
-    def test_pinned_malformed_row_is_actionable(self):
-        db = self.tmp / "opencode.db"
-        _write_db(db, [("cred-1", "opencode", "{not json", 0, 100)])
-        self._env(OCGO_DB=str(db))
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.resolve_credential(credential_id="cred-1")
-        self.assertIn("no longer exists", str(caught.exception))
-
-    def test_expired_pinned_row_uses_expired_message(self):
+    def test_expired_database_login_falls_back_to_the_stored_key(self):
         now_ms = int(time.time() * 1000)
         db = self.tmp / "opencode.db"
         _write_db(
             db,
             [
                 (
-                    "cred-pin",
                     "opencode",
-                    json.dumps({"access": "pinned-token-1234", "expires": now_ms - 1}),
-                    0,
-                    100,
+                    json.dumps({"access": "db-token-1", "expires": now_ms - 1}),
+                )
+            ],
+        )
+        self._env(OCGO_DB=str(db))
+        creds.store_api_key(_KEY)
+        credential = creds.resolve_credential(now_ms=now_ms)
+        self.assertEqual(credential.token, _KEY)
+        self.assertEqual(credential.source, "Configured API key")
+        self.assertEqual(credential.kind, "api")
+
+    def test_expired_legacy_login_falls_back_to_the_stored_key(self):
+        now_ms = int(time.time() * 1000)
+        _write_auth_json(
+            self.tmp,
+            {
+                "opencode": {
+                    "type": "oauth",
+                    "access": "legacy-token-1",
+                    "expires": now_ms - 1,
+                }
+            },
+        )
+        self._env(XDG_DATA_HOME=str(self.tmp))
+        creds.store_api_key(_KEY)
+        credential = creds.resolve_credential(now_ms=now_ms)
+        self.assertEqual(credential.token, _KEY)
+        self.assertEqual(credential.kind, "api")
+
+    def test_env_token_wins_over_the_stored_key(self):
+        self._env(OCGO_TOKEN="env-token")
+        creds.store_api_key(_KEY)
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "env-token")
+        self.assertEqual(credential.kind, "oauth")
+
+    def test_no_store_and_no_stored_key_raises_the_store_error(self):
+        self._env()
+        with self.assertRaises(creds.CredentialError) as caught:
+            creds.resolve_credential()
+        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
+
+    def test_expired_login_without_a_stored_key_raises_expired(self):
+        now_ms = int(time.time() * 1000)
+        db = self.tmp / "opencode.db"
+        _write_db(
+            db,
+            [
+                (
+                    "opencode",
+                    json.dumps({"access": "db-token-1", "expires": now_ms - 1}),
                 )
             ],
         )
         self._env(OCGO_DB=str(db))
         with self.assertRaises(creds.CredentialError) as caught:
-            creds.resolve_credential(credential_id="cred-pin", now_ms=now_ms)
+            creds.resolve_credential(now_ms=now_ms)
         self.assertEqual(str(caught.exception), creds.EXPIRED_MESSAGE)
 
-    def test_env_token_still_wins_when_pinned(self):
-        db = self.tmp / "opencode.db"
-        _write_db(
-            db, [("cred-1", "opencode", json.dumps({"access": "db-token"}), 0, 100)]
+    def test_ocgo_data_dir_points_at_the_legacy_store(self):
+        base = self.tmp / "custom"
+        _write_auth_json(
+            base, {"opencode": {"type": "oauth", "access": "custom-access-1"}}
         )
-        self._env(OCGO_TOKEN="env-token", OCGO_DB=str(db))
-        credential = creds.resolve_credential(credential_id="cred-1")
-        self.assertEqual(credential.token, "env-token")
-        self.assertEqual(credential.source, "OCGO_TOKEN environment")
+        self._env(OCGO_DATA_DIR=str(base / "opencode"))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "custom-access-1")
+        self.assertEqual(credential.source, "OpenCode auth.json file")
+
+    def test_configured_data_dir_points_at_the_database(self):
+        data_dir = self.tmp / "custom-opencode"
+        data_dir.mkdir()
+        _write_db(
+            data_dir / "opencode.db",
+            [("opencode", json.dumps({"access": "configured-db-token"}))],
+        )
+        self._env()
+        creds.set_configured_data_dir(str(data_dir))
+        credential = creds.resolve_credential()
+        self.assertEqual(credential.token, "configured-db-token")
+        self.assertEqual(credential.source, "OpenCode local database")
 
 
 class LegacyAuthJsonTests(EnvTestCase):
@@ -588,6 +613,7 @@ class LegacyAuthJsonTests(EnvTestCase):
         credential = creds.resolve_credential()
         self.assertEqual(credential.token, "legacy-access-1")
         self.assertEqual(credential.source, "OpenCode auth.json file")
+        self.assertEqual(credential.kind, "oauth")
         self.assertEqual(credential.expires_ms, expires)
         self.assertIsNotNone(credential.expires_at)
 
@@ -596,6 +622,7 @@ class LegacyAuthJsonTests(EnvTestCase):
         credential = creds.resolve_credential()
         self.assertEqual(credential.token, "legacy-api-key-1")
         self.assertEqual(credential.source, "OpenCode auth.json file")
+        self.assertEqual(credential.kind, "api")
         self.assertIsNone(credential.expires_ms)
         self.assertIsNone(credential.expires_at)
 
@@ -634,6 +661,7 @@ class LegacyAuthJsonTests(EnvTestCase):
         self._legacy_only({"opencode-go": {"key": "legacy-go-key"}})
         credential = creds.resolve_credential()
         self.assertEqual(credential.token, "legacy-go-key")
+        self.assertEqual(credential.kind, "api")
         self.assertIsNone(credential.expires_ms)
 
     def test_legacy_unknown_type_with_access_still_resolves(self):
@@ -820,284 +848,9 @@ class LegacyAuthJsonTests(EnvTestCase):
         self.assertEqual(credential.token, "legacy-access-1")
         self.assertIsNone(credential.expires_ms)
 
-    def test_pinned_lookup_never_falls_back_to_the_legacy_file(self):
-        self._legacy_only(
-            {"opencode": {"type": "oauth", "access": "legacy-access-1"}}
-        )
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.resolve_credential(credential_id="ghost")
-        message = str(caught.exception)
-        self.assertIn("ghost", message)
-        self.assertIn("no longer exists", message)
-
-    def test_malformed_legacy_keeps_a_pinned_error_unchanged(self):
-        path = self.tmp / "opencode" / "auth.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not json", encoding="utf-8")
-        self._env(XDG_DATA_HOME=str(self.tmp))
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.resolve_credential(credential_id="ghost")
-        self.assertIn("ghost", str(caught.exception))
-        self.assertIn("no longer exists", str(caught.exception))
-
-
-class ListDbCredentialsTests(EnvTestCase):
-    """``list_db_credentials`` exposes display metadata only."""
-
-    def test_fields_metadata_and_order(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(
-            db,
-            [
-                (
-                    "cred-new",
-                    "opencode",
-                    "New",
-                    json.dumps(
-                        {
-                            "access": "new-access-token",
-                            "metadata": {"email": "new@example.com", "orgName": "ACME"},
-                        }
-                    ),
-                    1,
-                    200,
-                ),
-                (
-                    "cred-old",
-                    "opencode",
-                    "Old",
-                    json.dumps({"access": "old-access-token"}),
-                    0,
-                    100,
-                ),
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        credentials = creds.list_db_credentials()
-        self.assertEqual(
-            [credential.id for credential in credentials], ["cred-new", "cred-old"]
-        )
-        self.assertEqual(
-            credentials[0],
-            creds.DbCredential(
-                id="cred-new",
-                label="New",
-                active=True,
-                email="new@example.com",
-                org_name="ACME",
-            ),
-        )
-        self.assertEqual(
-            credentials[1],
-            creds.DbCredential(
-                id="cred-old",
-                label="Old",
-                active=False,
-                email=None,
-                org_name=None,
-            ),
-        )
-
-    def test_opencode_go_is_listed_first(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(
-            db,
-            [
-                ("cred-x", "opencode-x", "Other", json.dumps({"access": "x"}), 0, 200),
-                (
-                    "cred-open",
-                    "opencode",
-                    "Console",
-                    json.dumps({"access": "o"}),
-                    1,
-                    300,
-                ),
-                ("cred-go", "opencode-go", "Go", json.dumps({"access": "g"}), 0, 100),
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        self.assertEqual(
-            [credential.id for credential in creds.list_db_credentials()],
-            ["cred-go", "cred-open", "cred-x"],
-        )
-
-    def test_value_wrapper_metadata_is_read(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(
-            db,
-            [
-                (
-                    "cred-go",
-                    "opencode-go",
-                    "Go",
-                    json.dumps(
-                        {
-                            "value": {
-                                "access": "wrapped-token",
-                                "metadata": {
-                                    "email": "go@example.com",
-                                    "orgName": "Go Org",
-                                },
-                            }
-                        }
-                    ),
-                    1,
-                    100,
-                )
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        credential = creds.list_db_credentials()[0]
-        self.assertEqual(credential.email, "go@example.com")
-        self.assertEqual(credential.org_name, "Go Org")
-
-    def test_malformed_value_still_lists_the_row(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(db, [("cred-1", "opencode", "Default", "{not json", 0, 100)])
-        self._env(OCGO_DB=str(db))
-        credentials = creds.list_db_credentials()
-        self.assertEqual(len(credentials), 1)
-        self.assertEqual(credentials[0].id, "cred-1")
-        self.assertEqual(credentials[0].label, "Default")
-        self.assertFalse(credentials[0].active)
-        self.assertIsNone(credentials[0].email)
-        self.assertIsNone(credentials[0].org_name)
-
-    def test_metadata_members_of_wrong_types_are_none(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(
-            db,
-            [
-                (
-                    "cred-1",
-                    "opencode",
-                    "Default",
-                    json.dumps(
-                        {
-                            "access": "token-value",
-                            "metadata": {"email": 7, "orgName": None},
-                        }
-                    ),
-                    1,
-                    100,
-                )
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        credential = creds.list_db_credentials()[0]
-        self.assertIsNone(credential.email)
-        self.assertIsNone(credential.org_name)
-
-    def test_non_object_metadata_is_none(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(
-            db,
-            [
-                (
-                    "cred-1",
-                    "opencode",
-                    "Default",
-                    json.dumps({"access": "token-value", "metadata": ["x"]}),
-                    1,
-                    100,
-                )
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        credential = creds.list_db_credentials()[0]
-        self.assertIsNone(credential.email)
-        self.assertIsNone(credential.org_name)
-
-    def test_no_token_material_in_results(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(
-            db,
-            [
-                (
-                    "cred-1",
-                    "opencode",
-                    "Default",
-                    json.dumps(
-                        {
-                            "access": "secret-access-token",
-                            "refresh": "secret-refresh-token",
-                        }
-                    ),
-                    1,
-                    100,
-                )
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        credentials = creds.list_db_credentials()
-        self.assertEqual(
-            set(creds.DbCredential.__dataclass_fields__),
-            {"id", "label", "active", "email", "org_name"},
-        )
-        rendered = " ".join(repr(credential) for credential in credentials)
-        self.assertNotIn("secret-access-token", rendered)
-        self.assertNotIn("secret-refresh-token", rendered)
-
-    def test_other_integrations_are_excluded(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(
-            db,
-            [
-                (
-                    "cred-google",
-                    "google",
-                    "Google",
-                    json.dumps({"access": "g"}),
-                    1,
-                    300,
-                ),
-                (
-                    "cred-open",
-                    "opencode",
-                    "Open",
-                    json.dumps({"access": "o"}),
-                    1,
-                    200,
-                ),
-            ],
-        )
-        self._env(OCGO_DB=str(db))
-        self.assertEqual(
-            [credential.id for credential in creds.list_db_credentials()],
-            ["cred-open"],
-        )
-
-    def test_empty_table_lists_nothing(self):
-        db = self.tmp / "opencode.db"
-        _write_labelled_db(db, [])
-        self._env(OCGO_DB=str(db))
-        self.assertEqual(creds.list_db_credentials(), [])
-
-    def test_missing_db_is_no_credential_message(self):
-        self._env(OCGO_DB=str(self.tmp / "nope.db"))
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.list_db_credentials()
-        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
-
-    def test_file_that_is_not_sqlite_is_no_credential_message(self):
-        db = self.tmp / "opencode.db"
-        db.write_text("this is not a database", encoding="utf-8")
-        self._env(OCGO_DB=str(db))
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.list_db_credentials()
-        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
-
-    def test_db_without_the_table_is_no_credential_message(self):
-        db = self.tmp / "opencode.db"
-        sqlite3.connect(db).close()
-        self._env(OCGO_DB=str(db))
-        with self.assertRaises(creds.CredentialError) as caught:
-            creds.list_db_credentials()
-        self.assertEqual(str(caught.exception), creds.NO_CREDENTIAL_MESSAGE)
-
 
 class HasStoredLoginTests(EnvTestCase):
-    """``has_stored_login`` backs the seeded-default registry entry."""
+    """``has_stored_login`` backs the frontends' login hints."""
 
     def test_env_token_is_a_stored_login(self):
         self._env(OCGO_TOKEN="env-token-123456", OCGO_DB=str(self.tmp / "nope.db"))
@@ -1114,7 +867,7 @@ class HasStoredLoginTests(EnvTestCase):
         self.assertFalse(creds.has_stored_login())
 
     def test_label_less_schema_still_counts_as_a_stored_login(self):
-        # The probe must not depend on the listing query's `label` column.
+        # The existence probe must not depend on the production `label` column.
         db = self.tmp / "opencode.db"
         _write_db(db, [("opencode", json.dumps({"access": "tok-abcdefgh"}))])
         self._env(OCGO_DB=str(db))
@@ -1248,6 +1001,231 @@ class HasStoredLoginTests(EnvTestCase):
         self._env(XDG_DATA_HOME=str(self.tmp))
         self.assertFalse(creds.has_stored_login())
 
+    def test_stored_api_key_is_a_stored_login(self):
+        self._env()
+        creds.store_api_key(_KEY)
+        self.assertTrue(creds.has_stored_login())
+
+    def test_blank_api_key_file_is_not_a_stored_login(self):
+        self._env()
+        path = self._api_key_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("   \n", encoding="utf-8")
+        self.assertFalse(creds.has_stored_login())
+
+
+class ApiKeyFileTests(EnvTestCase):
+    """The fallback API key lives in a ``0600`` file under the config home."""
+
+    def test_store_returns_a_hint_and_writes_0600(self):
+        self._env()
+        hint = creds.store_api_key(f"  {_KEY}  ")
+        self.assertEqual(hint, creds.mask_token(_KEY))
+        path = self._api_key_path()
+        self.assertEqual(path.read_text(encoding="utf-8").strip(), _KEY)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual([entry.name for entry in path.parent.iterdir()], ["api.key"])
+
+    def test_store_replaces_an_existing_key(self):
+        self._env()
+        creds.store_api_key("oc_sk_first_abcdefgh")
+        hint = creds.store_api_key("oc_sk_second_zyxwvuts")
+        self.assertEqual(creds.read_api_key(), "oc_sk_second_zyxwvuts")
+        self.assertEqual(hint, creds.mask_token("oc_sk_second_zyxwvuts"))
+
+    def test_store_blank_is_rejected(self):
+        self._env()
+        for blank in ("", "   ", "\n"):
+            with self.subTest(value=repr(blank)):
+                with self.assertRaises(creds.CredentialError):
+                    creds.store_api_key(blank)
+        self.assertFalse(self._api_key_path().exists())
+
+    def test_read_missing_is_none(self):
+        self._env()
+        self.assertIsNone(creds.read_api_key())
+        self.assertFalse(creds.has_api_key())
+
+    def test_read_blank_is_none(self):
+        self._env()
+        path = self._api_key_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("  \n", encoding="utf-8")
+        self.assertIsNone(creds.read_api_key())
+        self.assertFalse(creds.has_api_key())
+
+    def test_read_unreadable_is_none(self):
+        self._env()
+        self._api_key_path().mkdir(parents=True)  # a directory, not a file
+        self.assertIsNone(creds.read_api_key())
+        self.assertFalse(creds.has_api_key())
+
+    def test_clear_reports_removal(self):
+        self._env()
+        creds.store_api_key(_KEY)
+        self.assertTrue(creds.clear_api_key())
+        self.assertFalse(self._api_key_path().exists())
+
+    def test_clear_absent_is_false(self):
+        self._env()
+        self.assertFalse(creds.clear_api_key())
+
+
+class ConfigFileTests(EnvTestCase):
+    """``config.json`` holds the optional OpenCode data directory."""
+
+    def test_missing_config_reads_as_empty(self):
+        self._env()
+        self.assertEqual(creds.read_config(), {})
+        self.assertIsNone(creds.get_configured_data_dir())
+
+    def test_malformed_config_reads_as_empty(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        self.assertEqual(creds.read_config(), {})
+        self.assertIsNone(creds.get_configured_data_dir())
+
+    def test_non_object_config_reads_as_empty(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[1, 2]", encoding="utf-8")
+        self.assertEqual(creds.read_config(), {})
+        self.assertIsNone(creds.get_configured_data_dir())
+
+    def test_non_string_value_reads_as_unset(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"opencode_data_dir": 7}), encoding="utf-8")
+        self.assertIsNone(creds.get_configured_data_dir())
+
+    def test_blank_value_reads_as_unset(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"opencode_data_dir": "   "}), encoding="utf-8"
+        )
+        self.assertIsNone(creds.get_configured_data_dir())
+
+    def test_set_then_get_round_trip(self):
+        self._env()
+        target = self.tmp / "opencode-data"
+        creds.set_configured_data_dir(str(target))
+        self.assertEqual(creds.get_configured_data_dir(), str(target))
+        self.assertEqual(creds.read_config(), {"opencode_data_dir": str(target)})
+
+    def test_set_preserves_other_keys(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"theme": "dark", "opencode_data_dir": "/old"}),
+            encoding="utf-8",
+        )
+        creds.set_configured_data_dir("/new")
+        self.assertEqual(
+            json.loads(path.read_text(encoding="utf-8")),
+            {"theme": "dark", "opencode_data_dir": "/new"},
+        )
+
+    def test_set_replaces_a_malformed_config(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        creds.set_configured_data_dir("/new")
+        self.assertEqual(
+            json.loads(path.read_text(encoding="utf-8")),
+            {"opencode_data_dir": "/new"},
+        )
+
+    def test_clear_removes_only_the_key(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"theme": "dark", "opencode_data_dir": "/old"}),
+            encoding="utf-8",
+        )
+        creds.set_configured_data_dir(None)
+        self.assertEqual(
+            json.loads(path.read_text(encoding="utf-8")), {"theme": "dark"}
+        )
+        self.assertIsNone(creds.get_configured_data_dir())
+
+    def test_clear_without_a_config_file(self):
+        self._env()
+        creds.set_configured_data_dir(None)
+        self.assertIsNone(creds.get_configured_data_dir())
+
+    def test_set_leaves_no_temp_files(self):
+        self._env()
+        creds.set_configured_data_dir("/x")
+        self.assertEqual(
+            [entry.name for entry in creds.config_path().parent.iterdir()],
+            ["config.json"],
+        )
+
+
+class DataDirResolutionTests(EnvTestCase):
+    """The effective data dir: OCGO_DATA_DIR, then config, then XDG default."""
+
+    def test_xdg_data_home_default(self):
+        self._env()
+        self.assertEqual(
+            creds.default_db_path(), self.tmp / "data" / "opencode" / "opencode.db"
+        )
+        self.assertEqual(
+            creds.default_auth_json_path(),
+            self.tmp / "data" / "opencode" / "auth.json",
+        )
+
+    def test_ocgo_data_dir_wins_over_config(self):
+        self._env(OCGO_DATA_DIR=str(self.tmp / "env-opencode"))
+        creds.set_configured_data_dir(str(self.tmp / "config-opencode"))
+        self.assertEqual(
+            creds.default_db_path(), self.tmp / "env-opencode" / "opencode.db"
+        )
+        self.assertEqual(
+            creds.default_auth_json_path(),
+            self.tmp / "env-opencode" / "auth.json",
+        )
+
+    def test_configured_dir_wins_over_xdg_data_home(self):
+        self._env()
+        creds.set_configured_data_dir(str(self.tmp / "config-opencode"))
+        self.assertEqual(
+            creds.default_db_path(), self.tmp / "config-opencode" / "opencode.db"
+        )
+        self.assertEqual(
+            creds.default_auth_json_path(),
+            self.tmp / "config-opencode" / "auth.json",
+        )
+
+    def test_configured_tilde_is_expanded(self):
+        self._env()
+        creds.set_configured_data_dir("~/opencode-data")
+        self.assertEqual(
+            creds.default_db_path(),
+            self.tmp / "home" / "opencode-data" / "opencode.db",
+        )
+
+    def test_ocgo_db_overrides_the_data_dir(self):
+        self._env(
+            OCGO_DATA_DIR=str(self.tmp / "env-opencode"),
+            OCGO_DB=str(self.tmp / "direct.db"),
+        )
+        status = creds.store_status()
+        self.assertEqual(status["db_path"], str(self.tmp / "direct.db"))
+        self.assertEqual(
+            status["auth_json_path"], str(self.tmp / "env-opencode" / "auth.json")
+        )
+        self.assertEqual(status["data_dir"], str(self.tmp / "env-opencode"))
+
 
 class StoreStatusTests(EnvTestCase):
     """``store_status`` names the stores the applet/CLI looked at."""
@@ -1259,25 +1237,34 @@ class StoreStatusTests(EnvTestCase):
         "auth_json_exists",
         "auth_json_login",
         "has_login",
+        "data_dir",
+        "configured_data_dir",
+        "api_key_configured",
+        "api_key_hint",
     ]
 
     def test_nothing_present(self):
-        self._env(XDG_DATA_HOME=str(self.tmp))
+        self._env()
         status = creds.store_status()
         self.assertEqual(list(status), self._FIELDS)
         self.assertEqual(
-            status["db_path"], str(self.tmp / "opencode" / "opencode.db")
+            status["db_path"], str(self.tmp / "data" / "opencode" / "opencode.db")
         )
         self.assertFalse(status["db_exists"])
         self.assertEqual(
-            status["auth_json_path"], str(self.tmp / "opencode" / "auth.json")
+            status["auth_json_path"],
+            str(self.tmp / "data" / "opencode" / "auth.json"),
         )
         self.assertFalse(status["auth_json_exists"])
         self.assertFalse(status["auth_json_login"])
         self.assertFalse(status["has_login"])
+        self.assertEqual(status["data_dir"], str(self.tmp / "data" / "opencode"))
+        self.assertIsNone(status["configured_data_dir"])
+        self.assertFalse(status["api_key_configured"])
+        self.assertIsNone(status["api_key_hint"])
 
     def test_field_types(self):
-        self._env(XDG_DATA_HOME=str(self.tmp))
+        self._env()
         status = creds.store_status()
         self.assertEqual(list(status), self._FIELDS)
         self.assertIsInstance(status["db_path"], str)
@@ -1286,6 +1273,10 @@ class StoreStatusTests(EnvTestCase):
         self.assertIsInstance(status["auth_json_exists"], bool)
         self.assertIsInstance(status["auth_json_login"], bool)
         self.assertIsInstance(status["has_login"], bool)
+        self.assertIsInstance(status["data_dir"], str)
+        self.assertIsNone(status["configured_data_dir"])
+        self.assertIsInstance(status["api_key_configured"], bool)
+        self.assertIsNone(status["api_key_hint"])
 
     def test_database_only(self):
         db = self.tmp / "opencode" / "opencode.db"
@@ -1301,6 +1292,7 @@ class StoreStatusTests(EnvTestCase):
         self.assertFalse(status["auth_json_exists"])
         self.assertFalse(status["auth_json_login"])
         self.assertTrue(status["has_login"])
+        self.assertEqual(status["data_dir"], str(self.tmp / "opencode"))
 
     def test_legacy_only(self):
         _write_auth_json(self.tmp, {"opencode": {"type": "api", "key": "legacy-key-1"}})
@@ -1326,12 +1318,13 @@ class StoreStatusTests(EnvTestCase):
         self.assertTrue(status["has_login"])
 
     def test_env_token_only_counts_as_a_login(self):
-        self._env(XDG_DATA_HOME=str(self.tmp), OCGO_TOKEN="env-token-1")
+        self._env(OCGO_TOKEN="env-token-1")
         status = creds.store_status()
         self.assertFalse(status["db_exists"])
         self.assertFalse(status["auth_json_exists"])
         self.assertFalse(status["auth_json_login"])
         self.assertTrue(status["has_login"])
+        self.assertFalse(status["api_key_configured"])
 
     def test_malformed_legacy_file_is_not_a_login(self):
         path = self.tmp / "opencode" / "auth.json"
@@ -1343,10 +1336,48 @@ class StoreStatusTests(EnvTestCase):
         self.assertFalse(status["auth_json_login"])
         self.assertFalse(status["has_login"])
 
+    def test_configured_data_dir_is_reported(self):
+        self._env()
+        custom = self.tmp / "custom-opencode"
+        creds.set_configured_data_dir(str(custom))
+        status = creds.store_status()
+        self.assertEqual(status["data_dir"], str(custom))
+        self.assertEqual(status["configured_data_dir"], str(custom))
+        self.assertEqual(status["db_path"], str(custom / "opencode.db"))
+        self.assertEqual(status["auth_json_path"], str(custom / "auth.json"))
+
+    def test_env_data_dir_is_reported(self):
+        self._env(OCGO_DATA_DIR=str(self.tmp / "env-opencode"))
+        status = creds.store_status()
+        self.assertEqual(status["data_dir"], str(self.tmp / "env-opencode"))
+        self.assertIsNone(status["configured_data_dir"])
+
+    def test_stored_api_key_is_reported_masked(self):
+        self._env()
+        creds.store_api_key(_KEY)
+        status = creds.store_status()
+        self.assertTrue(status["api_key_configured"])
+        self.assertEqual(status["api_key_hint"], creds.mask_token(_KEY))
+        self.assertTrue(status["has_login"])
+        self.assertNotIn(_KEY, json.dumps(status))
+
+    def test_malformed_config_still_reports(self):
+        self._env()
+        path = creds.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        status = creds.store_status()
+        self.assertEqual(status["data_dir"], str(self.tmp / "data" / "opencode"))
+        self.assertIsNone(status["configured_data_dir"])
+
 
 class DefaultPathTests(unittest.TestCase):
     def test_xdg_data_home_wins(self):
-        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=True):
+        with mock.patch.dict(
+            os.environ,
+            {"XDG_DATA_HOME": "/xdg", "XDG_CONFIG_HOME": "/xdg-config"},
+            clear=True,
+        ):
             self.assertEqual(
                 creds.default_db_path(), Path("/xdg/opencode/opencode.db")
             )
@@ -1361,7 +1392,11 @@ class DefaultPathTests(unittest.TestCase):
 
 class AuthJsonPathTests(unittest.TestCase):
     def test_xdg_data_home_wins(self):
-        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=True):
+        with mock.patch.dict(
+            os.environ,
+            {"XDG_DATA_HOME": "/xdg", "XDG_CONFIG_HOME": "/xdg-config"},
+            clear=True,
+        ):
             self.assertEqual(
                 creds.default_auth_json_path(), Path("/xdg/opencode/auth.json")
             )
@@ -1371,6 +1406,22 @@ class AuthJsonPathTests(unittest.TestCase):
             self.assertEqual(
                 creds.default_auth_json_path(),
                 Path("/home/tester/.local/share/opencode/auth.json"),
+            )
+
+
+class ConfigPathTests(unittest.TestCase):
+    def test_xdg_config_home_wins(self):
+        with mock.patch.dict(
+            os.environ, {"XDG_CONFIG_HOME": "/xdg-config"}, clear=True
+        ):
+            self.assertEqual(
+                creds.config_path(), Path("/xdg-config/ocgo/config.json")
+            )
+
+    def test_home_fallback(self):
+        with mock.patch.dict(os.environ, {"HOME": "/home/tester"}, clear=True):
+            self.assertEqual(
+                creds.config_path(), Path("/home/tester/.config/ocgo/config.json")
             )
 
 
@@ -1385,6 +1436,10 @@ class MaskTokenTests(unittest.TestCase):
 
 
 class CredentialObjectTests(unittest.TestCase):
+    def test_kind_defaults_to_oauth(self):
+        credential = creds.Credential(token="tok-abcdefgh", source="test")
+        self.assertEqual(credential.kind, "oauth")
+
     def test_expires_at_returns_none_for_out_of_range_value(self):
         credential = creds.Credential(
             token="tok-abcdefgh", source="test", expires_ms=10**30
