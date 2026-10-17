@@ -11,27 +11,27 @@ already fetched.
 
 | Piece | Role |
 |-------|------|
-| Core CLI — `core/` | Python 3, standard library only. Resolves credentials, calls the console API, computes the percentages, writes the cache. Runs anywhere Python 3 runs. |
+| Core CLI — `core/` | Python 3, standard library only. Resolves one credential (OpenCode store, then a fallback API key), calls the matching OpenCode endpoint, computes the percentages, writes the cache. Runs anywhere Python 3 runs. |
 | GNOME frontend — `gnome/` | GNOME Shell 50 extension (ESM): top-bar indicator plus popup, GSettings preferences, timed and manual refresh. |
 | Cinnamon frontend — `cinnamon/` | Cinnamon 5.4+ applet: the same indicators, popup, and settings surface. |
-| Contracts | Cache JSON (schema v1), accounts registry (version 3), CLI interface. Versioned; every frontend depends on them and none may change them silently. |
+| Contracts | Cache JSON (schema v1) and the CLI interface. Versioned; every frontend depends on them and none may change them silently. |
 
 ## Data flow
 
 ```mermaid
 flowchart LR
-    api["OpenCode console API<br/>opencode.ai"]
+    api["OpenCode API<br/>console status / zen usage"]
     stores["OpenCode credential stores<br/>(database, legacy auth.json)"]
-    keyring["OS keyring<br/>(0600 file fallback)"]
+    keyfile["Fallback API key<br/>0600 config file"]
     subgraph core["ocgo core — Python 3, stdlib only"]
         cli["ocgo CLI"]
     end
-    cache["Cache JSON<br/>accounts registry"]
+    cache["Cache JSON<br/>status.json"]
     gnome["GNOME Shell extension"]
     cinnamon["Cinnamon applet"]
 
     stores -->|"read-only"| cli
-    keyring -->|"API keys"| cli
+    keyfile -->|"only when the store has none"| cli
     cli <-->|"HTTPS"| api
     cli -->|"atomic write"| cache
     cache -->|"read"| gnome
@@ -40,23 +40,28 @@ flowchart LR
     cinnamon -->|"run ocgo"| cli
 ```
 
-Credential stores feed the core and nothing else. The frontends read the cache
-for values and call the CLI for actions (refresh, account management); they
-never see a token.
+The credential stores and the fallback key file feed the core and nothing
+else. The frontends read the cache for values and call the CLI for actions
+(refresh, credential settings); they never see a token.
+
+A resolved credential carries a kind: `oauth` tokens (env token, store
+`access`) go to the console status endpoint, `api` keys (an `opencode.db` /
+`auth.json` `key`, or the fallback file) go to the zen usage endpoint.
 
 ## Hard invariants
 
 1. The core is Python 3 with the standard library only — no runtime
    dependencies, ever.
 2. Credentials are handled only by the core. Secrets never reach logs, argv,
-   the cache, or the frontends; API keys are entered over stdin.
+   the cache, or the frontends; the fallback API key is entered over stdin and
+   stored in a `0600` file only the core reads.
 3. Frontends stay thin: read the cache JSON, run `ocgo`, render the result.
    No credential access, no direct API calls.
-4. The cache JSON and the accounts registry are versioned contracts. Changes
-   are made by versioning the schema, never by silently breaking consumers.
-5. Never invent values. With no accounts configured the UI shows an explicit
-   empty state; a failed refresh keeps the last good values and records
-   `last_error`.
+4. The cache JSON is a versioned contract and so is the CLI surface. Changes
+   are made by versioning, never by silently breaking consumers.
+5. Never invent values. With no resolvable credential the CLI reports the
+   explicit no-credential error; a failed refresh keeps the last good values
+   and records `last_error`.
 6. All artifacts — code, docs, UI copy, commits — are written in English.
 
 ## Folder map

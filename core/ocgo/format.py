@@ -13,25 +13,6 @@ RED = "red"
 AMBER_AT = 50  # >= 50 is amber
 RED_AT = 85  # >= 85 is red
 
-CREDITS_LOW_MICROCENTS = 500_000_000  # console low-balance threshold ($5.00)
-
-
-def credits_state(
-    available_microcents: int, *, prepaid: bool, auto_recharge_healthy: bool
-) -> str:
-    """Console credits state: ``ok`` / ``low`` / ``empty``.
-
-    Mirrors the console: only prepaid balances can run low or empty; a low
-    balance is suppressed while auto-recharge is healthy (it would refill).
-    """
-    if not prepaid:
-        return "ok"
-    if available_microcents <= 0:
-        return "empty"
-    if available_microcents < CREDITS_LOW_MICROCENTS and not auto_recharge_healthy:
-        return "low"
-    return "ok"
-
 
 def percent(used_microcents: int, limit_microcents: int) -> int:
     """Single calibration point for the usage percentage.

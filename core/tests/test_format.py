@@ -36,67 +36,6 @@ class UsdTests(unittest.TestCase):
         self.assertEqual(fmt.usd_from_microcents(6000000000), 60.0)
 
 
-class CreditsStateTests(unittest.TestCase):
-    def test_non_prepaid_is_always_ok(self):
-        for available in (0, -1, 100, 499_999_999, 500_000_000, 1_000_000_000):
-            for healthy in (True, False):
-                with self.subTest(available=available, healthy=healthy):
-                    self.assertEqual(
-                        fmt.credits_state(
-                            available,
-                            prepaid=False,
-                            auto_recharge_healthy=healthy,
-                        ),
-                        "ok",
-                    )
-
-    def test_empty_at_or_below_zero(self):
-        for available in (0, -1):
-            for healthy in (True, False):
-                with self.subTest(available=available, healthy=healthy):
-                    self.assertEqual(
-                        fmt.credits_state(
-                            available,
-                            prepaid=True,
-                            auto_recharge_healthy=healthy,
-                        ),
-                        "empty",
-                    )
-
-    def test_low_below_the_threshold_when_auto_recharge_is_unhealthy(self):
-        self.assertEqual(
-            fmt.credits_state(312_600_514, prepaid=True, auto_recharge_healthy=False),
-            "low",
-        )
-        self.assertEqual(
-            fmt.credits_state(499_999_999, prepaid=True, auto_recharge_healthy=False),
-            "low",
-        )
-
-    def test_healthy_auto_recharge_suppresses_low(self):
-        self.assertEqual(
-            fmt.credits_state(312_600_514, prepaid=True, auto_recharge_healthy=True),
-            "ok",
-        )
-
-    def test_ok_at_and_above_the_threshold(self):
-        for available in (500_000_000, 500_000_001, 1_000_000_000):
-            for healthy in (True, False):
-                with self.subTest(available=available, healthy=healthy):
-                    self.assertEqual(
-                        fmt.credits_state(
-                            available,
-                            prepaid=True,
-                            auto_recharge_healthy=healthy,
-                        ),
-                        "ok",
-                    )
-
-    def test_low_threshold_constant_is_five_dollars(self):
-        self.assertEqual(fmt.CREDITS_LOW_MICROCENTS, 500_000_000)
-        self.assertEqual(fmt.usd_from_microcents(fmt.CREDITS_LOW_MICROCENTS), 5.0)
-
-
 class CountdownTests(unittest.TestCase):
     def test_days_and_hours(self):
         self.assertEqual(fmt.countdown(NOW, NOW + timedelta(days=9, hours=3)), "9d 3h")

@@ -12,27 +12,16 @@ import St from 'gi://St';
 
 const CACHE_DIR = 'ocgo';
 const CACHE_FILE = 'status.json';
-const ACCOUNTS_DIR = 'accounts';
 const TICK_SECONDS = 30;
 const DEFAULT_REFRESH_SECONDS = 300;
 const AMBER_AT = 50;
 const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
 
-const ACCOUNTS_SCHEMA = 2;
-const DEFAULT_ACCOUNT_ID = 'default';
-const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-
 const WINDOWS = [
     {key: 'rolling', label: 'Rolling usage', short: '5h'},
     {key: 'weekly', label: 'Weekly usage', short: '7d'},
     {key: 'monthly', label: 'Monthly usage', short: '30d'},
-];
-
-const CREDITS_ROWS = [
-    {key: 'credits', label: 'Credits'},
-    {key: 'extra_usage', label: 'Extra usage'},
-    {key: 'auto_recharge', label: 'Auto-recharge'},
 ];
 
 const PANEL_BOXES = ['left', 'center', 'right'];
@@ -151,102 +140,9 @@ function windowsOf(cache) {
     return windows;
 }
 
-function parseAccountList(text) {
-    if (typeof text !== 'string' || text.trim() === '')
-        return null;
-    let payload = null;
-    try {
-        payload = JSON.parse(text);
-    } catch (error) {
-        return null;
-    }
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-        return null;
-    if (payload.schema !== ACCOUNTS_SCHEMA || !Array.isArray(payload.accounts))
-        return null;
-
-    const accounts = [];
-    const seen = new Set();
-    for (const entry of payload.accounts) {
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
-            return null;
-        const id = entry.id;
-        if (typeof id !== 'string' || !ACCOUNT_ID_RE.test(id) || seen.has(id))
-            return null;
-        seen.add(id);
-        accounts.push({
-            id,
-            label: typeof entry.label === 'string' && entry.label.trim() !== ''
-                ? entry.label
-                : id,
-            kind: typeof entry.kind === 'string' ? entry.kind : '',
-            hint: typeof entry.hint === 'string' ? entry.hint : null,
-        });
-    }
-    const requested = typeof payload.active === 'string' ? payload.active : null;
-    const active = requested !== null && seen.has(requested) ? requested : null;
-    for (const account of accounts)
-        account.active = account.id === active;
-    return {accounts, active};
-}
-
 function windowOf(windows, key) {
     const window = windows[key];
     return window && typeof window === 'object' && !Array.isArray(window) ? window : {};
-}
-
-function isObject(value) {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function creditsOf(cache) {
-    return isObject(cache) && isObject(cache.credits) ? cache.credits : null;
-}
-
-function extraUsageOf(cache) {
-    const value = isObject(cache) ? cache.extra_usage : null;
-    return typeof value === 'boolean' ? value : null;
-}
-
-function dollarsText(value) {
-    if (typeof value !== 'number' || !Number.isFinite(value))
-        return null;
-    return Number.isInteger(value) ? `$${value}` : `$${value.toFixed(2)}`;
-}
-
-function creditsAmountText(available) {
-    if (typeof available !== 'number' || !Number.isFinite(available))
-        return '—';
-    if (available > 0 && available < 0.01)
-        return '<$0.01';
-    return `$${available.toFixed(2)}`;
-}
-
-function creditsSuffix(state) {
-    if (state === 'low')
-        return {text: 'Running low', styleClass: 'ocgo-amber'};
-    if (state === 'empty')
-        return {text: 'No credits left', styleClass: 'ocgo-red'};
-    return {text: '', styleClass: ''};
-}
-
-function autoRechargeValue(auto) {
-    if (auto.failed)
-        return {text: 'Failed', styleClass: 'ocgo-red'};
-    if (auto.pending)
-        return {text: 'Recharging…', styleClass: ''};
-    if (auto.enabled) {
-        const amount = dollarsText(auto.amount_usd);
-        const threshold = dollarsText(auto.threshold_usd);
-        if (amount === null || threshold === null)
-            return {text: 'On', styleClass: ''};
-        return {text: `Adds ${amount} below ${threshold}`, styleClass: ''};
-    }
-    return {text: 'Off', styleClass: ''};
-}
-
-function creditValueStyle(styleClass) {
-    return styleClass ? `ocgo-credit-value ${styleClass}` : 'ocgo-credit-value';
 }
 
 export default class OpenCodeGoMeterExtension extends Extension {
@@ -256,22 +152,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._refreshInProgress = false;
             this._monitor = null;
             this._monitorId = 0;
-            this._monitorAccountId = null;
             this._refreshTimerId = 0;
             this._tickTimerId = 0;
             this._panelBoxId = 0;
             this._panelPositionId = 0;
-            this._showCreditsId = 0;
-            this._menuOpenId = 0;
-            this._accounts = [];
-            this._activeAccountId = null;
-            this._accountsLoaded = false;
-            this._accountsLoading = false;
-            this._accountsErrorLogged = false;
-            this._accountsGeneration = 0;
-            this._accountsPending = null;
-            this._accountMenuSignature = null;
-            this._accountSubMenuItem = null;
 
             this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
             this._buildPanel();
@@ -282,13 +166,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
                 'changed::panel-box', () => this._reposition());
             this._panelPositionId = this._settings.connect(
                 'changed::panel-position', () => this._reposition());
-            this._showCreditsId = this._settings.connect(
-                'changed::show-credits', () => this._updateDisplay());
 
             this._updateDisplay();
             this._startTimers();
             this._startMonitor();
-            this._loadAccounts();
             this._triggerRefresh();
         } catch (error) {
             logError('could not enable the extension', error);
@@ -304,10 +185,6 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._settings?.disconnect(this._panelPositionId);
             this._panelPositionId = 0;
         }
-        if (this._showCreditsId) {
-            this._settings?.disconnect(this._showCreditsId);
-            this._showCreditsId = 0;
-        }
         if (this._refreshTimerId) {
             GLib.source_remove(this._refreshTimerId);
             this._refreshTimerId = 0;
@@ -319,13 +196,6 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._stopMonitor();
         if (this._indicator) {
             try {
-                if (this._menuOpenId)
-                    this._indicator.menu.disconnect(this._menuOpenId);
-            } catch (error) {
-                logError('could not disconnect the menu', error);
-            }
-            this._menuOpenId = 0;
-            try {
                 this._indicator.destroy();
             } catch (error) {
                 logError('could not destroy the indicator', error);
@@ -336,21 +206,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._panelPercents = null;
         this._panelParts = null;
         this._menuRows = null;
-        this._creditsItems = null;
-        this._creditsSeparatorItem = null;
         this._headerItem = null;
         this._warningItem = null;
         this._updatedItem = null;
         this._refreshItem = null;
-        this._accountSubMenuItem = null;
-        this._accountMenuSignature = null;
-        this._accounts = [];
-        this._activeAccountId = null;
-        this._accountsLoaded = false;
-        this._accountsLoading = false;
-        this._accountsErrorLogged = false;
-        this._accountsGeneration = 0;
-        this._accountsPending = null;
     }
 
     // -- panel ---------------------------------------------------------------
@@ -502,34 +361,6 @@ export default class OpenCodeGoMeterExtension extends Extension {
             this._menuRows.set(window.key, {percent, countdown});
         }
 
-        this._creditsSeparatorItem = new PopupMenu.PopupSeparatorMenuItem();
-        menu.addMenuItem(this._creditsSeparatorItem);
-
-        this._creditsItems = new Map();
-        for (const row of CREDITS_ROWS) {
-            const item = new PopupMenu.PopupBaseMenuItem({
-                reactive: false,
-                can_focus: false,
-            });
-            const label = new St.Label({
-                text: row.label,
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            const value = new St.Label({
-                text: '—',
-                style_class: 'ocgo-credit-value',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            item.add_child(label);
-            item.add_child(value);
-            menu.addMenuItem(item);
-            this._creditsItems.set(row.key, {item, value});
-        }
-
-        this._accountSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Account');
-        menu.addMenuItem(this._accountSubMenuItem);
-
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this._updatedItem = new PopupMenu.PopupMenuItem('Updated —', {
@@ -542,27 +373,13 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._refreshItem = new PopupMenu.PopupMenuItem('Refresh');
         this._refreshItem.connect('activate', () => this._triggerRefresh());
         menu.addMenuItem(this._refreshItem);
-
-        this._menuOpenId = menu.connect('open-state-changed', (_menu, isOpen) => {
-            if (isOpen)
-                this._loadAccounts();
-        });
     }
 
     _renderMenu(cache, windows, now) {
         const renewal = cache ? formatRenewal(cache.renewal_ends_at) : null;
-        if (!this._activeAccountId) {
-            this._headerItem.label.text = 'OpenCode Go';
-        } else if (this._activeAccountId === DEFAULT_ACCOUNT_ID) {
-            this._headerItem.label.text = renewal
-                ? `OpenCode Go — Renews ${renewal}`
-                : 'OpenCode Go';
-        } else {
-            const label = this._activeAccountLabel();
-            this._headerItem.label.text = renewal
-                ? `OpenCode Go · ${label} — Renews ${renewal}`
-                : `OpenCode Go · ${label}`;
-        }
+        this._headerItem.label.text = renewal
+            ? `OpenCode Go — Renews ${renewal}`
+            : 'OpenCode Go';
 
         const lastError = cache && typeof cache.last_error === 'string'
             ? cache.last_error.trim()
@@ -589,81 +406,18 @@ export default class OpenCodeGoMeterExtension extends Extension {
             row.countdown.text = `Resets in ${formatCountdown(target, now)}`;
         }
 
-        this._renderCredits(cache);
-
         const updated = cache ? formatAgo(cache.fetched_at, now) : null;
         this._updatedItem.label.text = updated ? `Updated ${updated}` : 'Updated —';
-    }
-
-    _showCreditsSetting() {
-        try {
-            return this._settings.get_boolean('show-credits');
-        } catch (error) {
-            logError('could not read show-credits; hiding the credits section', error);
-            return false;
-        }
-    }
-
-    _renderCredits(cache) {
-        const credits = creditsOf(cache);
-        const extraUsage = extraUsageOf(cache);
-        const autoRecharge = credits && isObject(credits.auto_recharge)
-            ? credits.auto_recharge
-            : null;
-
-        const visible = this._showCreditsSetting() &&
-            (credits !== null || extraUsage !== null);
-        this._creditsSeparatorItem.visible = visible;
-
-        const creditsRow = this._creditsItems.get('credits');
-        creditsRow.item.visible = visible && credits !== null;
-        if (credits) {
-            let text = 'Unavailable';
-            let styleClass = '';
-            if (typeof credits.error !== 'string') {
-                text = creditsAmountText(credits.available_usd);
-                const suffix = creditsSuffix(credits.state);
-                if (suffix.text)
-                    text = `${text} · ${suffix.text}`;
-                styleClass = suffix.styleClass;
-            }
-            creditsRow.value.text = text;
-            creditsRow.value.style_class = creditValueStyle(styleClass);
-        }
-
-        const extraRow = this._creditsItems.get('extra_usage');
-        extraRow.item.visible = visible && extraUsage !== null;
-        if (extraUsage !== null) {
-            extraRow.value.text = extraUsage ? 'On' : 'Off';
-            extraRow.value.style_class = creditValueStyle('');
-        }
-
-        const autoRow = this._creditsItems.get('auto_recharge');
-        autoRow.item.visible = visible && autoRecharge !== null;
-        if (autoRecharge) {
-            const auto = autoRechargeValue(autoRecharge);
-            autoRow.value.text = auto.text;
-            autoRow.value.style_class = creditValueStyle(auto.styleClass);
-        }
     }
 
     // -- cache ---------------------------------------------------------------
 
     _cachePath() {
-        if (!this._activeAccountId)
-            return null;
-        const parts = [GLib.get_user_cache_dir(), CACHE_DIR];
-        if (this._activeAccountId !== DEFAULT_ACCOUNT_ID)
-            parts.push(ACCOUNTS_DIR, this._activeAccountId, CACHE_FILE);
-        else
-            parts.push(CACHE_FILE);
-        return GLib.build_filenamev(parts);
+        return GLib.build_filenamev([GLib.get_user_cache_dir(), CACHE_DIR, CACHE_FILE]);
     }
 
     _readCache() {
         const path = this._cachePath();
-        if (!path)
-            return null;
         try {
             const file = Gio.File.new_for_path(path);
             const [ok, contents] = file.load_contents(null);
@@ -692,16 +446,9 @@ export default class OpenCodeGoMeterExtension extends Extension {
 
     _startMonitor() {
         const path = this._cachePath();
-        if (!path) {
-            this._monitor = null;
-            this._monitorId = 0;
-            this._monitorAccountId = this._activeAccountId;
-            return;
-        }
         try {
             const file = Gio.File.new_for_path(path);
             this._monitor = file.monitor_file(Gio.FileMonitorFlags.NONE, null);
-            this._monitorAccountId = this._activeAccountId;
             this._monitorId = this._monitor.connect('changed', () => {
                 try {
                     this._updateDisplay();
@@ -713,7 +460,6 @@ export default class OpenCodeGoMeterExtension extends Extension {
             logError('cache monitor unavailable; using the timer only', error);
             this._monitor = null;
             this._monitorId = 0;
-            this._monitorAccountId = null;
         }
     }
 
@@ -729,186 +475,6 @@ export default class OpenCodeGoMeterExtension extends Extension {
         }
         this._monitor = null;
         this._monitorId = 0;
-        this._monitorAccountId = null;
-    }
-
-    _retargetMonitor() {
-        if (this._monitor && this._monitorAccountId === this._activeAccountId)
-            return;
-        this._stopMonitor();
-        this._startMonitor();
-    }
-
-    // -- accounts ------------------------------------------------------------
-
-    _loadAccounts(onComplete = null) {
-        const generation = ++this._accountsGeneration;
-        if (this._accountsLoading) {
-            this._accountsPending = {generation, onComplete};
-            return;
-        }
-        this._startAccountLoad(generation, onComplete);
-    }
-
-    _startAccountLoad(generation, onComplete) {
-        const binary = this._ocgoPath();
-        if (!binary) {
-            this._finishAccountLoad(
-                generation, onComplete, null,
-                'ocgo not found; keeping the current account list');
-            return;
-        }
-        this._accountsLoading = true;
-        try {
-            const subprocess = Gio.Subprocess.new(
-                [binary, 'account', 'list', '--json'],
-                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
-            subprocess.communicate_utf8_async(null, null, (process, result) => {
-                this._accountsLoading = false;
-                if (!this._indicator) {
-                    this._accountsPending = null;
-                    return;
-                }
-                let stdout = '';
-                let errorMessage = null;
-                let error = null;
-                try {
-                    const [, out] = process.communicate_utf8_finish(result);
-                    stdout = out || '';
-                } catch (caught) {
-                    errorMessage = 'could not list accounts; keeping the current account list';
-                    error = caught;
-                }
-                if (!errorMessage && !process.get_successful())
-                    errorMessage = 'ocgo account list failed; keeping the current account list';
-                const parsed = errorMessage ? null : parseAccountList(stdout);
-                if (!errorMessage && !parsed)
-                    errorMessage = 'unexpected account list output; keeping the current account list';
-                this._finishAccountLoad(generation, onComplete, parsed, errorMessage, error);
-            });
-        } catch (error) {
-            this._accountsLoading = false;
-            this._finishAccountLoad(
-                generation, onComplete, null,
-                'could not start the account list; keeping the current account list', error);
-        }
-    }
-
-    _finishAccountLoad(generation, onComplete, parsed, errorMessage, error = null) {
-        if (!this._indicator) {
-            this._accountsPending = null;
-            return;
-        }
-        if (generation === this._accountsGeneration) {
-            // Newest request: apply the result (or the fallback) and run its
-            // callback on both paths, so a queued action is never dropped.
-            if (parsed) {
-                this._accounts = parsed.accounts;
-                this._activeAccountId = parsed.active;
-                this._accountsLoaded = true;
-                this._accountsErrorLogged = false;
-            } else {
-                if (!this._accountsLoaded) {
-                    this._accounts = [];
-                    this._activeAccountId = null;
-                }
-                this._accountsLoaded = true;
-                if (!this._accountsErrorLogged) {
-                    this._accountsErrorLogged = true;
-                    logError(errorMessage, error);
-                }
-            }
-            this._renderAccountMenu();
-            this._updateDisplay();
-            this._retargetMonitor();
-            if (onComplete)
-                onComplete();
-        }
-        // A stale result is discarded, never applied; if a newer request was
-        // coalesced while this one was in flight, start it now.
-        const pending = this._accountsPending;
-        this._accountsPending = null;
-        if (pending)
-            this._startAccountLoad(pending.generation, pending.onComplete);
-    }
-
-    _renderAccountMenu() {
-        if (!this._accountSubMenuItem)
-            return;
-        const accounts = this._accounts || [];
-        const signature = `${this._activeAccountId}|${accounts.map(
-            account => `${account.id}\u0000${account.label}`).join('\u0001')}`;
-        if (signature === this._accountMenuSignature)
-            return;
-        if (this._accountSubMenuItem.menu.isOpen)
-            return; // never destroy items while the submenu is open
-        this._accountMenuSignature = signature;
-
-        const submenu = this._accountSubMenuItem.menu;
-        submenu.removeAll();
-        if (accounts.length === 0) {
-            submenu.addMenuItem(new PopupMenu.PopupMenuItem('No accounts configured', {
-                reactive: false,
-                can_focus: false,
-            }));
-        } else {
-            for (const account of accounts) {
-                const item = new PopupMenu.PopupMenuItem(account.label);
-                item.setOrnament(account.id === this._activeAccountId
-                    ? PopupMenu.Ornament.DOT
-                    : PopupMenu.Ornament.NONE);
-                item.connect('activate', () => this._switchAccount(account.id));
-                submenu.addMenuItem(item);
-            }
-        }
-        submenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        const manageItem = new PopupMenu.PopupMenuItem('Manage accounts…');
-        manageItem.connect('activate', () => this.openPreferences());
-        submenu.addMenuItem(manageItem);
-    }
-
-    _switchAccount(accountId) {
-        if (!accountId || accountId === this._activeAccountId)
-            return;
-        const binary = this._ocgoPath();
-        if (!binary) {
-            logError('ocgo not found; cannot switch accounts');
-            return;
-        }
-        try {
-            const subprocess = Gio.Subprocess.new(
-                [binary, 'account', 'use', accountId],
-                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
-            subprocess.wait_async(null, (process, result) => {
-                if (!this._indicator)
-                    return;
-                try {
-                    process.wait_finish(result);
-                } catch (error) {
-                    logError(`could not switch to account '${accountId}'`, error);
-                    return;
-                }
-                if (!process.get_successful()) {
-                    logError(`could not switch to account '${accountId}'`);
-                    return;
-                }
-                // The CLI active account is already switched: reflect it now,
-                // retarget the monitor, refresh, then reconcile the UI with a
-                // fresh (newest-wins) account list.
-                this._activeAccountId = accountId;
-                this._retargetMonitor();
-                this._triggerRefresh();
-                this._loadAccounts();
-            });
-        } catch (error) {
-            logError(`could not start the account switch to '${accountId}'`, error);
-        }
-    }
-
-    _activeAccountLabel() {
-        const account = (this._accounts || []).find(
-            entry => entry.id === this._activeAccountId);
-        return account ? account.label : this._activeAccountId;
     }
 
     // -- refresh -------------------------------------------------------------
@@ -957,8 +523,6 @@ export default class OpenCodeGoMeterExtension extends Extension {
     _triggerRefresh() {
         if (this._refreshInProgress)
             return;
-        if (this._accountsLoaded && !this._activeAccountId)
-            return; // known-empty list: there is no account to refresh
         try {
             const binary = this._ocgoPath();
             if (!binary) {

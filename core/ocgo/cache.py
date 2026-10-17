@@ -7,49 +7,19 @@ import os
 import tempfile
 from pathlib import Path
 
-from .accounts import DEFAULT_ACCOUNT_ID, validate_account_id
-
 SCHEMA_VERSION = 1
 _FILENAME = "status.json"
-_ACCOUNTS_DIR = "accounts"
 
 
 class CacheError(Exception):
     """The cache cannot be read."""
 
 
-def cache_path(account_id: str | None = None) -> Path:
-    """Cache path for an account.
-
-    ``None`` or ``"default"`` keep the legacy path
-    (``$XDG_CACHE_HOME/ocgo/status.json`` or the ``~/.cache`` fallback); a
-    named account uses ``.../ocgo/accounts/<id>/status.json``. Invalid ids
-    raise ``accounts.AccountError``.
-    """
+def cache_path() -> Path:
+    """``$XDG_CACHE_HOME/ocgo/status.json`` or the ``~/.cache`` fallback."""
     cache_home = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache_home) if cache_home else Path.home() / ".cache"
-    if account_id is None or account_id == DEFAULT_ACCOUNT_ID:
-        return base / "ocgo" / _FILENAME
-    validate_account_id(account_id)
-    return base / "ocgo" / _ACCOUNTS_DIR / account_id / _FILENAME
-
-
-def remove_account_cache(account_id: str) -> None:
-    """Delete a named account's cache file and its now-empty directory.
-
-    Never touches the legacy/default cache; absent files are not an error.
-    """
-    if account_id is None or account_id == DEFAULT_ACCOUNT_ID:
-        return
-    target = cache_path(account_id)
-    try:
-        target.unlink()
-    except FileNotFoundError:
-        pass
-    try:
-        target.parent.rmdir()
-    except OSError:
-        pass
+    return base / "ocgo" / _FILENAME
 
 
 def raw_text(path: Path | None = None) -> str:
