@@ -84,8 +84,8 @@ Out:
     - Update `core/tests/test_format.py`, `core/tests/test_api.py`, and `core/tests/test_cli.py` first (RED: assert `"credits"` and `"extra_usage"` are absent from `to_cache_schema*` and `ocgo refresh`/`status` make only 1 HTTP call and print only the 3 usage windows), then implement GREEN.
   - Verification: `make test`, `make check-gnome`, `make check-cinnamon`.
 
-- [ ] **T2 — core (single-credential auto-detection + fallback API key + custom data dir): remove multi-account registry (`accounts.py`) and per-account cache; add `Credential.kind`, `api.key` fallback, and `config.json` data-dir support.**
-  - Route: delegated writer (writer trigger: 8 non-trivial files).
+- [x] **T2 — core (single-credential auto-detection + fallback API key + custom data dir): remove multi-account registry (`accounts.py`) and per-account cache; add `Credential.kind`, `api.key` fallback, and `config.json` data-dir support.**
+  - Route: delegated writer (writer trigger: 8 non-trivial files). Done 2026-10-17, commit `6a8af1a` (1,191+/5,238-): RED `Ran 235 tests — FAILED (failures=37, errors=61)`, GREEN `Ran 235 tests — OK`; parent spot check re-ran `make test` (`Ran 235 tests — OK`) and live-smoked `ocgo refresh` against the real store (`kind: api` → zen → `rolling 44% · weekly 46% · monthly 27%`). `accounts.py` + `test_accounts.py` deleted; suite 422 → 235 tests.
   - Files (`Allowed edit surfaces`):
     - `core/ocgo/creds.py`
     - `core/ocgo/accounts.py` (delete)
@@ -198,6 +198,7 @@ Out:
 
 - 2026-10-17 — Feature planned on `refactor/simplify-auth` (from `main` @ `6098125`). Ready for implementation of `T1`–`T5`.
 - 2026-10-17 — `T1` done (commit `dc9015b`): credits/billing surface removed from the core; suite 478 → 422 tests, all green.
+- 2026-10-17 — `T2` done (commit `6a8af1a`): multi-account registry deleted; single-credential detection + `Credential.kind` routing + `api.key` fallback + configurable data dir; suite 422 → 235 tests, all green; live refresh OK (`kind: api` → zen).
 
 ## Next step
 
