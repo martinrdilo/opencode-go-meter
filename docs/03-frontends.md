@@ -26,16 +26,18 @@ Both frontends show the consumed percentage per window, colored green below
 constants of the core, see
 [technical decisions](05-technical-decisions.md)).
 
-**Panel.** `5h 42% · 7d 64% · 30d 88%`. Without a cache the GNOME extension
-shows the explicit empty label `Go —`; the Cinnamon applet shows
-`5h — · 7d — · 30d —`.
+**Panel.** `0% (4h 58m) · 16% · 37%` in rolling, weekly, monthly order; only
+the rolling session carries its reset countdown, in parentheses. Without a
+cache both frontends show the explicit empty label `Go —`.
 
 **Popup.** The header names the subscription and the renewal date
 (`OpenCode Go — Renews Nov 1`). Below it: a warning row when the last refresh
 failed (`Last refresh failed: … · data from <ago>`), then one row per window —
 `Rolling usage`, `Weekly usage`, `Monthly usage` — each with its percent and a
-`Resets in …` countdown. The footer shows when the cache was last updated and
-hosts the manual refresh.
+parenthesized countdown (`(4h 58m)`, `(5d 8h)`, `(21d 10h)`); the monthly row
+counts down to the subscription renewal. Rows use compact padding and narrowed
+label, percent, and countdown columns. The footer shows when the cache was last
+updated and hosts the manual refresh.
 
 The Cinnamon applet additionally mirrors the header, update age, and last error
 into its panel tooltip; a failed credential command adds a `Credentials: …`

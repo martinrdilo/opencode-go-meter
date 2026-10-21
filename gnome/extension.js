@@ -19,9 +19,9 @@ const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
 
 const WINDOWS = [
-    {key: 'rolling', label: 'Rolling usage', short: '5h'},
-    {key: 'weekly', label: 'Weekly usage', short: '7d'},
-    {key: 'monthly', label: 'Monthly usage', short: '30d'},
+    {key: 'rolling', label: 'Rolling usage'},
+    {key: 'weekly', label: 'Weekly usage'},
+    {key: 'monthly', label: 'Monthly usage'},
 ];
 
 const PANEL_BOXES = ['left', 'center', 'right'];
@@ -204,6 +204,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
         }
         this._settings = null;
         this._panelPercents = null;
+        this._panelCountdown = null;
         this._panelParts = null;
         this._menuRows = null;
         this._headerItem = null;
@@ -233,20 +234,23 @@ export default class OpenCodeGoMeterExtension extends Extension {
                 this._panelBox.add_child(separator);
                 this._panelParts.push(separator);
             }
-            const name = new St.Label({
-                text: window.short,
-                style_class: 'ocgo-window-name',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
             const percent = new St.Label({
                 text: '—',
                 style_class: 'ocgo-pct',
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            this._panelBox.add_child(name);
             this._panelBox.add_child(percent);
-            this._panelParts.push(name, percent);
+            this._panelParts.push(percent);
             this._panelPercents.set(window.key, percent);
+            if (window.key === 'rolling') {
+                this._panelCountdown = new St.Label({
+                    text: '(—)',
+                    style_class: 'ocgo-panel-countdown',
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+                this._panelBox.add_child(this._panelCountdown);
+                this._panelParts.push(this._panelCountdown);
+            }
         });
 
         this._noDataLabel = new St.Label({
@@ -257,7 +261,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
         this._panelBox.add_child(this._noDataLabel);
     }
 
-    _renderPanel(hasCache, windows) {
+    _renderPanel(hasCache, windows, now) {
         for (const part of this._panelParts)
             part.visible = hasCache;
         this._noDataLabel.visible = !hasCache;
@@ -270,6 +274,8 @@ export default class OpenCodeGoMeterExtension extends Extension {
             label.text = percentText(percent);
             label.style_class = percentStyle(percent);
         }
+        const rolling = windowOf(windows, 'rolling');
+        this._panelCountdown.text = `(${formatCountdown(rolling.resets_at, now)})`;
     }
 
     // -- panel position ------------------------------------------------------
@@ -323,6 +329,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             can_focus: false,
         });
         this._headerItem.add_style_class_name('ocgo-header');
+        this._headerItem.add_style_class_name('ocgo-menu-row');
         menu.addMenuItem(this._headerItem);
 
         this._warningItem = new PopupMenu.PopupMenuItem('', {
@@ -330,6 +337,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             can_focus: false,
         });
         this._warningItem.add_style_class_name('ocgo-warning');
+        this._warningItem.add_style_class_name('ocgo-menu-row');
         this._warningItem.visible = false;
         menu.addMenuItem(this._warningItem);
 
@@ -339,9 +347,10 @@ export default class OpenCodeGoMeterExtension extends Extension {
                 reactive: false,
                 can_focus: false,
             });
+            item.add_style_class_name('ocgo-menu-row');
             const label = new St.Label({
                 text: window.label,
-                x_expand: true,
+                style_class: 'ocgo-row-label',
                 y_align: Clutter.ActorAlign.CENTER,
             });
             const percent = new St.Label({
@@ -350,7 +359,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             });
             const countdown = new St.Label({
-                text: 'Resets in —',
+                text: '(—)',
                 style_class: 'ocgo-countdown',
                 y_align: Clutter.ActorAlign.CENTER,
             });
@@ -368,9 +377,11 @@ export default class OpenCodeGoMeterExtension extends Extension {
             can_focus: false,
         });
         this._updatedItem.add_style_class_name('ocgo-footer');
+        this._updatedItem.add_style_class_name('ocgo-menu-row');
         menu.addMenuItem(this._updatedItem);
 
         this._refreshItem = new PopupMenu.PopupMenuItem('Refresh');
+        this._refreshItem.add_style_class_name('ocgo-menu-row');
         this._refreshItem.connect('activate', () => this._triggerRefresh());
         menu.addMenuItem(this._refreshItem);
     }
@@ -403,7 +414,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             row.percent.style_class = percentStyle(percent);
             // The month meter has no resetsAt; the console counts down to renewal.
             const target = window.key === 'monthly' ? cache?.renewal_ends_at : data.resets_at;
-            row.countdown.text = `Resets in ${formatCountdown(target, now)}`;
+            row.countdown.text = `(${formatCountdown(target, now)})`;
         }
 
         const updated = cache ? formatAgo(cache.fetched_at, now) : null;
@@ -437,7 +448,7 @@ export default class OpenCodeGoMeterExtension extends Extension {
             const now = new Date();
             const cache = this._readCache();
             const windows = windowsOf(cache);
-            this._renderPanel(cache !== null, windows);
+            this._renderPanel(cache !== null, windows, now);
             this._renderMenu(cache, windows, now);
         } catch (error) {
             logError('could not render the usage cache', error);

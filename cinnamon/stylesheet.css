@@ -11,3 +11,24 @@
     border: none;
     background-color: transparent;
 }
+
+/* Compact usage rows: the theme's 8px vertical padding and 6px spacing make
+   the five-row popup unnecessarily tall. The second class outranks the
+   theme's .popup-menu-item rule regardless of stylesheet load order. */
+.popup-menu-item.ocgo-menu-row {
+    padding: 5px 12px;
+    spacing: 4px;
+}
+
+.ocgo-row-label {
+    min-width: 7em;
+}
+
+.ocgo-pct {
+    min-width: 2.6em;
+}
+
+.ocgo-countdown {
+    margin-left: 8px;
+    min-width: 4.5em;
+}

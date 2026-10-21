@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CONTRIBUTING.md` (setup, checks, and conventions) and `SECURITY.md`
   (supported versions and the reporting channel), linked from the README.
 
+### Changed
+
+- The panel and popup are more compact: the panel drops the `5h` / `7d` / `30d`
+  labels and shows only the rolling session's countdown in parentheses; popup
+  rows show parenthesized reset times with tighter spacing and narrower columns.
+
 ## [0.1.0] - 2026-10-15
 
 Initial release.
