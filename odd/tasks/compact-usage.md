@@ -1,6 +1,6 @@
 # Feature: compact-usage — compact panel and popup usage display
 
-**Status**: COMPLETE — commit `4330bd7` (pending live UI confirmation)
+**Status**: COMPLETE — pushed to `main` at `44f83e9` (2026-10-22; pending live UI confirmation)
 **Repo**: `opencode-go-meter`
 **Branch**: `feat/compact-usage` (stacked on `refactor/simplify-auth` @ `6ee8c9a`)
 **Created**: 2026-10-21
@@ -63,8 +63,10 @@ frontends read like the Cloud app's compact meter:
   `0% (4h 38m) · 17% · 37%` and popup `(4h 38m)` / `(4d 9h)` / `(20d 12h)`.
   `make test` 235 OK, `make check-gnome`, `make check-cinnamon`, and `make pack`
   green.
+- L5 — Delivery (2026-10-22): merged `feat/compact-usage` into `main` with merge
+  commit `44f83e9` and pushed `main` to `origin`; checks re-run green on the
+  merged tree.
 
 ## Next step
 
-Confirm the compact layout live in GNOME Shell and Cinnamon. Push and PR remain
-the user's decision under ordinary repository policy.
+Confirm the compact layout live in GNOME Shell and Cinnamon.
