@@ -23,9 +23,9 @@ const RED_AT = 85;
 const MAX_WARNING_CHARS = 70;
 
 const WINDOWS = [
-    {key: 'rolling', label: 'Rolling usage', short: '5h'},
-    {key: 'weekly', label: 'Weekly usage', short: '7d'},
-    {key: 'monthly', label: 'Monthly usage', short: '30d'},
+    {key: 'rolling', label: 'Rolling usage'},
+    {key: 'weekly', label: 'Weekly usage'},
+    {key: 'monthly', label: 'Monthly usage'},
 ];
 
 // Adwaita palette variants chosen for the dark Cinnamon panel.
@@ -283,7 +283,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         try {
             const cache = this._readCache();
             const windows = windowsOf(cache);
-            this._renderLabel(windows);
+            this._renderLabel(cache, windows);
             this._renderMenu(cache, windows);
             this._renderTooltip(cache);
         } catch (error) {
@@ -291,10 +291,21 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         }
     }
 
-    _renderLabel(windows) {
+    _renderLabel(cache, windows) {
+        if (!cache) {
+            this._applet_label.clutter_text.set_markup('Go —');
+            return;
+        }
+        const now = new Date();
         const parts = WINDOWS.map(window => {
             const percent = windowOf(windows, window.key).percent;
-            return `${window.short} ${percentMarkup(percent)}`;
+            let part = percentMarkup(percent);
+            if (window.key === 'rolling') {
+                const countdown = formatCountdown(
+                    windowOf(windows, 'rolling').resets_at, now);
+                part += ` <span alpha="65%">(${countdown})</span>`;
+            }
+            return part;
         });
         this._applet_label.clutter_text.set_markup(parts.join(' · '));
     }
@@ -321,28 +332,34 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
 
     _buildMenu() {
         this._headerItem = new PopupMenu.PopupMenuItem('OpenCode Go', {reactive: false});
+        this._headerItem.actor.add_style_class_name('ocgo-menu-row');
         this.menu.addMenuItem(this._headerItem);
 
         this._warningItem = new PopupMenu.PopupMenuItem('', {reactive: false});
+        this._warningItem.actor.add_style_class_name('ocgo-menu-row');
         this._warningItem.actor.visible = false;
         this.menu.addMenuItem(this._warningItem);
 
         this._menuRows = new Map();
         for (const window of WINDOWS) {
             const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            item.actor.add_style_class_name('ocgo-menu-row');
             const name = new St.Label({
                 text: window.label,
+                style_class: 'ocgo-row-label',
                 y_align: Clutter.ActorAlign.CENTER,
             });
             const percent = new St.Label({
                 text: '—',
+                style_class: 'ocgo-pct',
                 y_align: Clutter.ActorAlign.CENTER,
             });
             const countdown = new St.Label({
-                text: 'Resets in —',
+                text: '(—)',
+                style_class: 'ocgo-countdown',
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            item.addActor(name, {expand: true});
+            item.addActor(name);
             item.addActor(percent);
             item.addActor(countdown);
             this.menu.addMenuItem(item);
@@ -352,6 +369,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this._refreshItem = new PopupMenu.PopupMenuItem('Updated — · Refresh');
+        this._refreshItem.actor.add_style_class_name('ocgo-menu-row');
         this._refreshItem.connect('activate', () => this._triggerRefresh());
         this.menu.addMenuItem(this._refreshItem);
     }
@@ -385,7 +403,7 @@ class OpenCodeGoMeterApplet extends Applet.TextApplet {
             const target = window.key === 'monthly'
                 ? (cache ? cache.renewal_ends_at : null)
                 : data.resets_at;
-            row.countdown.set_text(`Resets in ${formatCountdown(target, now)}`);
+            row.countdown.set_text(`(${formatCountdown(target, now)})`);
         }
 
         const updated = cache ? formatAgo(cache.fetched_at, now) : null;

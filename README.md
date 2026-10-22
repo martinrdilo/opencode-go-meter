@@ -47,18 +47,21 @@ Run the check alone with `make deps`, or skip it with
 
 ## What you see
 
-The panel shows all three windows as text: `5h 3% · 7d 64% · 30d 58%`.
-Figures are consumed percentages, colored green below 50%, amber 50–84%, red
-at 85% and above.
+The panel shows the three windows as percentages in rolling, weekly, monthly
+order, with the rolling session's reset countdown in parentheses:
+`0% (4h 58m) · 16% · 37%`. Figures are consumed percentages, colored green
+below 50%, amber 50–84%, red at 85% and above.
 
-Click the indicator for the popup: each window with its reset countdown, the
-subscription renewal date in the header, and a manual refresh with the time of
-the last update. The popup shows the three Go usage windows only; the
-console's credits and auto-recharge panel is not mirrored.
+Click the indicator for the popup: each window with its percentage and a
+parenthesized reset countdown, the subscription renewal date in the header, and
+a manual refresh with the time of the last update. The popup shows the three Go
+usage windows only; the console's credits and auto-recharge panel is not
+mirrored.
 
-In the terminal, `ocgo status` prints the same view and `ocgo refresh` updates
-it now. When a refresh fails, the panel keeps the last good values and the
-popup explains the error — nothing is invented.
+In the terminal, `ocgo status` prints the three windows with their consumed
+percentages and reset countdowns, and `ocgo refresh` updates the data now. When
+a refresh fails, the panel keeps the last good values and the popup explains the
+error — nothing is invented.
 
 ## Credentials
 
